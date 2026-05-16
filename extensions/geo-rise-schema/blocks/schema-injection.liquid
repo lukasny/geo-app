@@ -1,0 +1,292 @@
+{%- comment -%}
+  GEO Rise — JSON-LD Schema Injector
+  Injects structured data for AI search engines and Google rich results.
+  Target: head (app embed block — no visible output)
+{%- endcomment -%}
+
+{%- liquid
+  assign page_type = 'other'
+  if template contains 'product'
+    assign page_type = 'product'
+  elsif template contains 'collection'
+    assign page_type = 'collection'
+  elsif template contains 'article'
+    assign page_type = 'article'
+  elsif template contains 'blog'
+    assign page_type = 'blog'
+  elsif template contains 'index'
+    assign page_type = 'home'
+  endif
+-%}
+
+{%- comment -%} ── Organization (all pages) ── {%- endcomment -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": {{ shop.name | json }},
+  "url": {{ shop.url | json }}
+  {%- if shop.email != blank -%}
+  ,"contactPoint": {
+    "@type": "ContactPoint",
+    "email": {{ shop.email | json }},
+    "contactType": "customer service"
+  }
+  {%- endif -%}
+}
+</script>
+
+{%- comment -%} ── WebSite with SearchAction (home page only) ── {%- endcomment -%}
+{%- if page_type == 'home' -%}
+{%- assign search_placeholder = '{' | append: 'search_term_string}' -%}
+{%- assign search_url_template = shop.url | append: '/search?q=' | append: search_placeholder -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": {{ shop.name | json }},
+  "url": {{ shop.url | json }},
+  "potentialAction": {
+    "@type": "SearchAction",
+    "target": {
+      "@type": "EntryPoint",
+      "urlTemplate": {{ search_url_template | json }}
+    },
+    "query-input": "required name=search_term_string"
+  }
+}
+</script>
+{%- endif -%}
+
+{%- comment -%} ── Product Page ── {%- endcomment -%}
+{%- if page_type == 'product' -%}
+
+{%- liquid
+  assign current_variant = product.selected_or_first_available_variant
+  assign product_price   = current_variant.price | divided_by: 100.0
+  assign availability    = 'https://schema.org/OutOfStock'
+  if product.available
+    assign availability = 'https://schema.org/InStock'
+  endif
+
+  assign has_reviews      = false
+  assign review_rating    = product.metafields.reviews.rating.value
+  assign review_count_val = product.metafields.reviews.rating_count.value
+  if review_rating != blank and review_count_val != blank
+    assign has_reviews = true
+  endif
+
+  assign gtin_value = product.metafields.inventory.ean.value
+  if gtin_value == blank
+    assign gtin_value = product.metafields.inventory.barcode.value
+  endif
+-%}
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Product",
+  "name": {{ product.title | json }},
+  "url": {{ canonical_url | json }},
+  "description": {{ product.description | strip_html | truncate: 500 | json }}
+  {%- if product.vendor != blank -%}
+  ,"brand": {
+    "@type": "Brand",
+    "name": {{ product.vendor | json }}
+  }
+  {%- endif -%}
+  {%- if current_variant.sku != blank -%}
+  ,"sku": {{ current_variant.sku | json }}
+  {%- endif -%}
+  {%- if gtin_value != blank -%}
+  ,"gtin": {{ gtin_value | json }}
+  {%- endif -%}
+  {%- if product.images.size > 0 -%}
+  ,"image": [
+    {%- for image in product.images limit: 5 -%}
+      {{ image.src | json }}
+      {%- unless forloop.last -%},{%- endunless -%}
+    {%- endfor -%}
+  ]
+  {%- endif -%}
+  ,"offers": {
+    "@type": "Offer",
+    "price": {{ product_price }},
+    "priceCurrency": {{ shop.currency | json }},
+    "availability": {{ availability | json }},
+    "url": {{ canonical_url | json }},
+    "priceValidUntil": "{{ 'now' | date: '%Y' | plus: 1 }}-12-31",
+    "seller": {
+      "@type": "Organization",
+      "name": {{ shop.name | json }}
+    }
+  }
+  {%- if has_reviews -%}
+  ,"aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": {{ review_rating }},
+    "reviewCount": {{ review_count_val }},
+    "bestRating": "5",
+    "worstRating": "1"
+  }
+  {%- endif -%}
+}
+</script>
+
+{%- comment -%} Breadcrumb for product {%- endcomment -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": {{ shop.url | json }}
+    }
+    {%- if collection != blank -%}
+    ,{
+      "@type": "ListItem",
+      "position": 2,
+      "name": {{ collection.title | json }},
+      "item": {{ shop.url | append: collection.url | json }}
+    }
+    ,{
+      "@type": "ListItem",
+      "position": 3,
+      "name": {{ product.title | json }},
+      "item": {{ canonical_url | json }}
+    }
+    {%- else -%}
+    ,{
+      "@type": "ListItem",
+      "position": 2,
+      "name": {{ product.title | json }},
+      "item": {{ canonical_url | json }}
+    }
+    {%- endif -%}
+  ]
+}
+</script>
+
+{%- endif -%}
+
+{%- comment -%} ── Collection Page ── {%- endcomment -%}
+{%- if page_type == 'collection' -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "CollectionPage",
+  "name": {{ collection.title | json }},
+  "url": {{ canonical_url | json }}
+  {%- if collection.description != blank -%}
+  ,"description": {{ collection.description | strip_html | truncate: 300 | json }}
+  {%- endif -%}
+  ,"numberOfItems": {{ collection.products_count }}
+  ,"mainEntity": {
+    "@type": "ItemList",
+    "numberOfItems": {{ collection.products | size | at_most: 10 }},
+    "itemListElement": [
+      {%- for product in collection.products limit: 10 -%}
+      {
+        "@type": "ListItem",
+        "position": {{ forloop.index }},
+        "url": {{ shop.url | append: product.url | json }},
+        "name": {{ product.title | json }}
+      }
+      {%- unless forloop.last -%},{%- endunless -%}
+      {%- endfor -%}
+    ]
+  }
+}
+</script>
+{%- endif -%}
+
+{%- comment -%} ── Article Page ── {%- endcomment -%}
+{%- if page_type == 'article' -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": {{ article.title | json }},
+  "datePublished": {{ article.published_at | date: "%Y-%m-%dT%H:%M:%S%z" | json }},
+  "dateModified": {{ article.updated_at | date: "%Y-%m-%dT%H:%M:%S%z" | json }},
+  "url": {{ canonical_url | json }}
+  {%- if article.image != blank -%}
+  ,"image": {{ article.image.src | json }}
+  {%- endif -%}
+  {%- if article.content != blank -%}
+  ,"articleBody": {{ article.content | strip_html | truncate: 1000 | json }}
+  {%- endif -%}
+  {%- if article.author != blank -%}
+  ,"author": {
+    "@type": "Person",
+    "name": {{ article.author | json }}
+  }
+  {%- endif -%}
+  ,"publisher": {
+    "@type": "Organization",
+    "name": {{ shop.name | json }}
+    {%- if settings.logo != blank -%}
+    ,"logo": {
+      "@type": "ImageObject",
+      "url": {{ settings.logo | image_url: width: 600 | json }}
+    }
+    {%- endif -%}
+  }
+}
+</script>
+
+{%- comment -%} Breadcrumb for article {%- endcomment -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": {{ shop.url | json }}
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": {{ blog.title | json }},
+      "item": {{ shop.url | append: blog.url | json }}
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": {{ article.title | json }},
+      "item": {{ canonical_url | json }}
+    }
+  ]
+}
+</script>
+{%- endif -%}
+
+{%- comment -%} ── Blog Index Page ── {%- endcomment -%}
+{%- if page_type == 'blog' -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Blog",
+  "name": {{ blog.title | json }},
+  "url": {{ canonical_url | json }},
+  "publisher": {
+    "@type": "Organization",
+    "name": {{ shop.name | json }}
+  }
+}
+</script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "GEO Rise Schema",
+  "target": "head",
+  "settings": []
+}
+{% endschema %}

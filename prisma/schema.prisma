@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Plan {
+  FREE
+  GROWTH
+  PRO
+  ENTERPRISE
+}
+
+enum AuditCategory {
+  SCHEMA
+  CONTENT
+  TECHNICAL
+  ACCESSIBILITY
+  IMAGES
+  META
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum AiPlatform {
+  CHATGPT
+  GEMINI
+  PERPLEXITY
+  CLAUDE
+  GROK
+  GOOGLE_AI_OVERVIEW
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PENDING
+  CANCELLED
+  EXPIRED
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model Store {
+  id                      String    @id @default(cuid())
+  shopifyDomain           String    @unique
+  shopifyAccessToken      String
+  shopName                String
+  email                   String?
+  plan                    Plan      @default(FREE)
+  geoScore                Int       @default(0)
+  totalProducts           Int       @default(0)
+  auditedProducts         Int       @default(0)
+  llmsTxtEnabled          Boolean   @default(false)
+  schemaInjectionEnabled  Boolean   @default(false)
+  onboardingCompleted     Boolean   @default(false)
+  installedAt             DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  products        Product[]
+  auditResults    AuditResult[]
+  llmsFiles       LlmsFile[]
+  aiCitations     AiCitation[]
+  trackingPrompts TrackingPrompt[]
+  competitors     Competitor[]
+  aiTrafficEvents AiTrafficEvent[]
+  subscription    Subscription?
+}
+
+model Product {
+  id                  String    @id @default(cuid())
+  storeId             String
+  shopifyProductId    String
+  shopifyVariantIds   Json?
+  title               String
+  description         String?   @db.Text
+  handle              String
+  productType         String?
+  vendor              String?
+  status              String    @default("active")
+  price               String?
+  currency            String?
+  imageCount          Int       @default(0)
+  hasAltText          Boolean   @default(false)
+  altTextQuality      Int       @default(0)
+  hasMetaTitle        Boolean   @default(false)
+  hasMetaDescription  Boolean   @default(false)
+  hasSchema           Boolean   @default(false)
+  hasRichDescription  Boolean   @default(false)
+  descriptionWordCount Int      @default(0)
+  hasReviews          Boolean   @default(false)
+  reviewCount         Int       @default(0)
+  averageRating       Float?
+  variantCount        Int       @default(0)
+  variantsComplete    Boolean   @default(false)
+  hasTags             Boolean   @default(false)
+  aiReadinessScore    Int       @default(0)
+  lastAuditedAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  store        Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  auditResults AuditResult[]
+
+  @@unique([storeId, shopifyProductId])
+  @@index([storeId])
+}
+
+model AuditResult {
+  id             String        @id @default(cuid())
+  storeId        String
+  productId      String?
+  category       AuditCategory
+  severity       Severity
+  title          String
+  description    String        @db.Text
+  recommendation String        @db.Text
+  autoFixable    Boolean       @default(false)
+  fixed          Boolean       @default(false)
+  fixedAt        DateTime?
+  createdAt      DateTime      @default(now())
+
+  store   Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([productId])
+}
+
+model LlmsFile {
+  id                 String    @id @default(cuid())
+  storeId            String
+  content            String    @db.Text
+  marketCode         String    @default("default")
+  productCount       Int       @default(0)
+  collectionCount    Int       @default(0)
+  blogPostCount      Int       @default(0)
+  includeProducts    Boolean   @default(true)
+  includeCollections Boolean   @default(true)
+  includeBlogPosts   Boolean   @default(true)
+  allowChatGPT       Boolean   @default(true)
+  allowClaude        Boolean   @default(true)
+  allowGemini        Boolean   @default(true)
+  allowPerplexity    Boolean   @default(true)
+  allowDeepSeek      Boolean   @default(true)
+  allowGrok          Boolean   @default(true)
+  autoRefresh        Boolean   @default(true)
+  refreshInterval    String    @default("daily")
+  fileSizeBytes      Int       @default(0)
+  lastGeneratedAt    DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, marketCode])
+}
+
+model AiCitation {
+  id               String     @id @default(cuid())
+  storeId          String
+  platform         AiPlatform
+  prompt           String     @db.Text
+  promptCategory   String?
+  cited            Boolean    @default(false)
+  position         Int?
+  citationContext  String?    @db.Text
+  sentiment        Sentiment  @default(NEUTRAL)
+  competitorsCited Json?
+  productsCited    Json?
+  responseSnippet  String?    @db.Text
+  checkedAt        DateTime   @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, platform])
+  @@index([checkedAt])
+}
+
+model TrackingPrompt {
+  id              String    @id @default(cuid())
+  storeId         String
+  prompt          String    @db.Text
+  category        String?
+  targetKeywords  Json?
+  isActive        Boolean   @default(true)
+  lastCheckedAt   DateTime?
+  createdAt       DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+}
+
+model Competitor {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  domain    String
+  notes     String?
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+}
+
+model AiTrafficEvent {
+  id               String     @id @default(cuid())
+  storeId          String
+  platform         AiPlatform
+  referrerUrl      String?
+  landingPage      String
+  sessionId        String?
+  convertedToOrder Boolean    @default(false)
+  orderId          String?
+  orderRevenue     Float?
+  orderCurrency    String?
+  eventAt          DateTime   @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, eventAt])
+  @@index([storeId, platform])
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  storeId                String             @unique
+  shopifySubscriptionId  String?
+  plan                   Plan               @default(FREE)
+  status                 SubscriptionStatus @default(ACTIVE)
+  trialEndsAt            DateTime?
+  currentPeriodEnd       DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+}
