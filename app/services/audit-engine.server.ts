@@ -1601,12 +1601,33 @@ async function fixImagesIssue(
 
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
 
+export interface AutoFixOptions {
+  /** If set, restrict the run to issues in this audit category. Used by the
+   *  action plan page so each card's "Auto-fix" button only touches its own
+   *  bucket (e.g. "fix the 12 missing meta descriptions, leave the
+   *  descriptions for later"). Omit to fix every fixable issue, like the
+   *  audit page's "Auto-fix All" button. */
+  category?: "SCHEMA" | "CONTENT" | "TECHNICAL" | "ACCESSIBILITY" | "IMAGES" | "META";
+  /** If set, restrict the run to issues with this exact `AuditResult.title`.
+   *  Lets the action plan target a single fix-recipe (e.g. just the
+   *  "Missing SEO title" issues, not the "Missing meta description" ones,
+   *  even though both live under category=META). */
+  title?: string;
+}
+
 export async function autoFixIssues(
   storeId: string,
-  admin: AdminApiContext
+  admin: AdminApiContext,
+  options: AutoFixOptions = {}
 ): Promise<AutoFixSummary> {
   const fixableIssues = await prisma.auditResult.findMany({
-    where: { storeId, autoFixable: true, fixed: false },
+    where: {
+      storeId,
+      autoFixable: true,
+      fixed: false,
+      ...(options.category ? { category: options.category } : {}),
+      ...(options.title ? { title: options.title } : {}),
+    },
   });
 
   const store = await prisma.store.findUnique({ where: { id: storeId } });

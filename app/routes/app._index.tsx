@@ -705,6 +705,9 @@ export default function Index() {
               >
                 {hasAudit ? "Re-run AI Audit" : "Run AI Audit"}
               </Button>
+              {hasAudit && (
+                <Button url="/app/action-plan">See Action Plan</Button>
+              )}
               <Button url="/app/simulator">Try AI Simulation</Button>
               {!isFreePlan && (
                 <Button url="/app/tracking">AI Visibility Tracking</Button>
