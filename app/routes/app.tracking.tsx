@@ -43,6 +43,7 @@ interface LoaderPrompt {
     citationContext: string | null;
     productsCited: string[];
     competitorsCited: string[];
+    responseSnippet: string | null;
     checkedAt: string;
   } | null;
 }
@@ -122,6 +123,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             competitorsCited: Array.isArray(latest.competitorsCited)
               ? (latest.competitorsCited as string[])
               : [],
+            responseSnippet: latest.responseSnippet,
             checkedAt: latest.checkedAt.toISOString(),
           }
         : null,
@@ -538,25 +540,34 @@ function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardPro
                 </InlineStack>
               )}
 
-              <Button
-                variant="plain"
-                onClick={() => setExpanded((v) => !v)}
-                disclosure={expanded ? "up" : "down"}
-              >
-                {expanded ? "Hide full response" : "Show full AI response"}
-              </Button>
+              {prompt.latestCitation.responseSnippet && (
+                <>
+                  <Button
+                    variant="plain"
+                    onClick={() => setExpanded((v) => !v)}
+                    disclosure={expanded ? "up" : "down"}
+                  >
+                    {expanded ? "Hide full AI response" : "Show full AI response"}
+                  </Button>
 
-              {expanded && (
-                <Box
-                  padding="300"
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                >
-                  <Text as="p" variant="bodySm">
-                    Full response stored for review. Open this prompt's history
-                    page (coming soon) to see the complete AI answer.
-                  </Text>
-                </Box>
+                  {expanded && (
+                    <Box
+                      padding="400"
+                      background="bg-surface-secondary"
+                      borderRadius="200"
+                    >
+                      <Text as="p" variant="bodyMd">
+                        {prompt.latestCitation.responseSnippet
+                          .split(/\n\n+/)
+                          .map((para, i) => (
+                            <span key={i} style={{ display: "block", marginBottom: "0.5em" }}>
+                              {para}
+                            </span>
+                          ))}
+                      </Text>
+                    </Box>
+                  )}
+                </>
               )}
             </BlockStack>
           </>
