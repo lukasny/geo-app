@@ -41,6 +41,7 @@ interface LoaderPrompt {
     id: string;
     cited: boolean;
     position: number | null;
+    sentiment: "POSITIVE" | "NEUTRAL" | "NEGATIVE";
     citationContext: string | null;
     productsCited: string[];
     competitorsCited: string[];
@@ -117,6 +118,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             id: latest.id,
             cited: latest.cited,
             position: latest.position,
+            sentiment: latest.sentiment as "POSITIVE" | "NEUTRAL" | "NEGATIVE",
             citationContext: latest.citationContext,
             productsCited: Array.isArray(latest.productsCited)
               ? (latest.productsCited as string[])
@@ -619,6 +621,20 @@ function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardPro
                     {`Position ${prompt.latestCitation.position}`}
                   </Badge>
                 )}
+                {prompt.latestCitation.cited &&
+                  prompt.latestCitation.sentiment !== "NEUTRAL" && (
+                    <Badge
+                      tone={
+                        prompt.latestCitation.sentiment === "POSITIVE"
+                          ? "success"
+                          : "critical"
+                      }
+                    >
+                      {prompt.latestCitation.sentiment === "POSITIVE"
+                        ? "Positive tone"
+                        : "Negative tone"}
+                    </Badge>
+                  )}
               </InlineStack>
 
               {prompt.latestCitation.citationContext && (

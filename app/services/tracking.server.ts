@@ -5,6 +5,8 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type CitationSentiment = "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+
 export interface TrackingCheckResult {
   citationId: string;
   cited: boolean;
@@ -14,6 +16,7 @@ export interface TrackingCheckResult {
   productsCited: string[];
   vendorsCited: string[];
   competitorsDetected: string[];
+  sentiment: CitationSentiment;
 }
 
 export interface SuggestedPrompt {
@@ -68,6 +71,64 @@ function firstPosition(text: string, keywords: string[]): number | null {
   const before = text.slice(0, earliest);
   const listMarkers = before.match(/\n\s*\d+[.\)]/g) ?? [];
   return listMarkers.length + 1;
+}
+
+// ─── Sentiment Classification ─────────────────────────────────────────────────
+
+const SENTIMENT_SYSTEM_PROMPT = `You judge whether an AI assistant's mention of a specific store, brand, or product is POSITIVE, NEUTRAL, or NEGATIVE in tone toward that subject.
+
+- POSITIVE: recommended, praised, highlighted as a good choice, comparison-favored ("one of the best", "great for X", "stands out")
+- NEUTRAL: listed without judgment, mentioned as one option among many, simply named
+- NEGATIVE: criticized, advised against, comparison-disfavored, called out for problems
+
+If unsure or the mention is purely factual, return NEUTRAL.
+
+Output strictly as JSON: {"sentiment": "POSITIVE" | "NEUTRAL" | "NEGATIVE"}`;
+
+async function classifySentiment(
+  excerpt: string,
+  subjects: string[]
+): Promise<CitationSentiment> {
+  const cleanedSubjects = subjects.map((s) => s?.trim()).filter(Boolean);
+  if (!excerpt.trim() || cleanedSubjects.length === 0) return "NEUTRAL";
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 256,
+      system: SENTIMENT_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Subject(s): ${cleanedSubjects.join(", ")}
+
+AI response excerpt:
+"""
+${excerpt}
+"""
+
+Classify the tone toward the subject(s).`,
+        },
+      ],
+    });
+
+    const block = message.content[0];
+    if (block?.type !== "text") return "NEUTRAL";
+
+    const raw = block.text
+      .trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+
+    const parsed = JSON.parse(raw) as { sentiment?: string };
+    const s = parsed.sentiment?.toUpperCase();
+    if (s === "POSITIVE" || s === "NEGATIVE" || s === "NEUTRAL") return s;
+    return "NEUTRAL";
+  } catch {
+    return "NEUTRAL";
+  }
 }
 
 // ─── Claude Call ──────────────────────────────────────────────────────────────
@@ -204,6 +265,17 @@ export async function runTrackingCheck(
     (d) => !d.includes(shortDom) && !d.includes("shopify.com")
   );
 
+  // Sentiment: only meaningful when cited. Use a wider window than the
+  // citation snippet so Claude has enough surrounding context to judge tone
+  // (e.g. a recommendation may sit a sentence away from the brand name).
+  let sentiment: CitationSentiment = "NEUTRAL";
+  if (cited) {
+    const sentimentExcerpt =
+      snippetAround(responseText, positionKeywords, 400) ??
+      responseText.slice(0, 1500);
+    sentiment = await classifySentiment(sentimentExcerpt, positionKeywords);
+  }
+
   // Persist as AiCitation. Platform is CLAUDE for now — when we add OpenAI /
   // Perplexity / Gemini later, each will write its own row per check.
   const citation = await prisma.aiCitation.create({
@@ -215,7 +287,7 @@ export async function runTrackingCheck(
       cited,
       position: position ?? null,
       citationContext,
-      sentiment: "NEUTRAL", // Sentiment classification deferred to v1.1
+      sentiment,
       productsCited: mentionedProducts.length > 0 ? mentionedProducts : undefined,
       competitorsCited: competitorsDetected.length > 0 ? competitorsDetected : undefined,
       responseSnippet: responseText.slice(0, 2000),
@@ -236,6 +308,7 @@ export async function runTrackingCheck(
     productsCited: mentionedProducts,
     vendorsCited: mentionedVendors,
     competitorsDetected,
+    sentiment,
   };
 }
 
