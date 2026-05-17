@@ -192,6 +192,53 @@ interface ShopifyProductInput {
   rating: number | null;
 }
 
+/** Pull a numeric price value out of a string in any common formatting
+ *  ("$29.99", "29.99 USD", "kr 299,90", "29,99 €"). Returns null if no
+ *  number is found. Used by `priceStatus` so "29.99" from Shopify and
+ *  "$29.99 USD" from the AI count as the same value. */
+function extractPriceNumber(val: unknown): number | null {
+  if (val === null || val === undefined) return null;
+  const s = String(val);
+  const m = s.match(/-?\d+(?:[.,]\d+)?/);
+  if (!m) return null;
+  // Normalize European decimal comma to dot before parsing
+  const n = parseFloat(m[0].replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Price comparison: treats "29.99", "$29.99", and "29.99 USD" as equal.
+ *  Replaces the generic string-contains check which flagged "$29.99" vs
+ *  "29.99" as "partial" even though they represent the same value. */
+function priceStatus(shopifyVal: unknown, aiVal: unknown): FieldStatus {
+  const sNum = extractPriceNumber(shopifyVal);
+  const aNum = extractPriceNumber(aiVal);
+  if (sNum === null && aNum === null) return "missing";
+  if (sNum === null && aNum !== null) return "found";
+  if (sNum !== null && aNum === null) return "missing";
+  // Both are numbers — anything within 1 cent counts as a match.
+  return Math.abs((sNum ?? 0) - (aNum ?? 0)) <= 0.01 ? "found" : "mismatch";
+}
+
+/** Presence check for fields where the question is "did the AI extract
+ *  something meaningful?", not "does the AI's text match Shopify's
+ *  verbatim?". Used for description — Shopify stores the full long-form
+ *  HTML, the AI's JSON_SCHEMA caps at 300 chars, so a strict-match check
+ *  always disagrees even when AI clearly saw the description. */
+function presenceStatus(
+  shopifyVal: unknown,
+  aiVal: unknown,
+  minLength = 30
+): FieldStatus {
+  const shopifyEmpty =
+    !shopifyVal ||
+    (typeof shopifyVal === "string" && shopifyVal.trim().length === 0);
+  const aiStr = typeof aiVal === "string" ? aiVal.trim() : "";
+  const aiHasContent = aiStr.length >= minLength;
+  if (shopifyEmpty && !aiHasContent) return "missing";
+  if (!aiHasContent) return "missing"; // Shopify has it, AI didn't see it
+  return "found";
+}
+
 function statusFor(shopifyVal: unknown, aiVal: unknown): FieldStatus {
   const shopifyEmpty =
     shopifyVal === null ||
@@ -373,14 +420,27 @@ function buildComparison(
     },
   ];
 
-  return fields.map(({ fieldName, label, shopifyValue, aiValue, importance }) => ({
-    fieldName,
-    label,
-    shopifyValue,
-    aiExtractedValue: aiValue ?? null,
-    status: statusFor(shopifyValue, aiValue ?? null),
-    importance,
-  }));
+  return fields.map(({ fieldName, label, shopifyValue, aiValue, importance }) => {
+    // Field-specific status logic for the two fields where the generic
+    // string-includes check produced misleading "partial" / "mismatch"
+    // results even when the data was genuinely present.
+    let status: FieldStatus;
+    if (fieldName === "price") {
+      status = priceStatus(shopifyValue, aiValue ?? null);
+    } else if (fieldName === "description") {
+      status = presenceStatus(shopifyValue, aiValue ?? null, 30);
+    } else {
+      status = statusFor(shopifyValue, aiValue ?? null);
+    }
+    return {
+      fieldName,
+      label,
+      shopifyValue,
+      aiExtractedValue: aiValue ?? null,
+      status,
+      importance,
+    };
+  });
 }
 
 // ─── Main Export ──────────────────────────────────────────────────────────────
