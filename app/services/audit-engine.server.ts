@@ -1,5 +1,8 @@
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
+import Anthropic from "@anthropic-ai/sdk";
 import prisma from "~/db.server";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Shopify GraphQL Types ────────────────────────────────────────────────────
 
@@ -805,6 +808,90 @@ const UPDATE_IMAGE_ALT_MUTATION = `#graphql
   }
 `;
 
+// ─── Claude-Powered Content Generation (used by autoFixIssues) ─────────────────
+
+async function generateMetaDescriptionWithClaude(
+  product: { title: string; description: string | null; vendor: string | null; productType: string | null },
+  storeName: string
+): Promise<string> {
+  const plainDesc = product.description ? stripHtml(product.description).slice(0, 500) : "";
+  const fallback = `${product.title}${plainDesc ? ` — ${plainDesc.split(/[.!?]/)[0]?.trim() ?? ""}` : ""}. Shop ${product.vendor || ""} ${product.productType || ""} at ${storeName}.`
+    .replace(/\s+/g, " ")
+    .slice(0, 160)
+    .trim();
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 256,
+      system:
+        "You are an expert e-commerce SEO copywriter. You write concise, compelling meta descriptions that get clicked. Output ONLY the meta description — no quotes, no preamble, no labels.",
+      messages: [
+        {
+          role: "user",
+          content: `Write a meta description (120–160 characters) for this product. It must include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis.
+
+Product title: ${product.title}
+${plainDesc ? `Product description: ${plainDesc}` : "Product description: (none provided)"}
+${product.vendor ? `Brand: ${product.vendor}` : ""}
+${product.productType ? `Category: ${product.productType}` : ""}
+Store: ${storeName}`,
+        },
+      ],
+    });
+
+    const block = message.content[0];
+    if (block?.type === "text") {
+      const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
+      if (cleaned.length >= 50 && cleaned.length <= 200) {
+        return cleaned.slice(0, 160);
+      }
+    }
+  } catch (err) {
+    console.error("[GEO Rise] Claude meta description failed, using fallback:", err);
+  }
+  return fallback;
+}
+
+async function generateAltTextWithClaude(
+  product: { title: string; vendor: string | null; productType: string | null },
+  imageUrl: string
+): Promise<string> {
+  const fallback = `${product.title}${product.vendor ? ` by ${product.vendor}` : ""}${product.productType ? `. ${product.productType}` : ""}.`;
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 200,
+      system:
+        "You are an accessibility expert writing image alt text for e-commerce product photos. Describe the SPECIFIC visual contents of the image — colors, materials, angle, context, what's visible — not just the product name. Output ONLY the alt text. No quotes, no preamble.",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "url", url: imageUrl } },
+            {
+              type: "text",
+              text: `Write descriptive alt text (under 125 characters) for this product image. The product is "${product.title}"${product.vendor ? ` by ${product.vendor}` : ""}. Focus on what is visible in the image, not the product name.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const block = message.content[0];
+    if (block?.type === "text") {
+      const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
+      if (cleaned.length >= 10 && cleaned.length <= 200) {
+        return cleaned.slice(0, 125);
+      }
+    }
+  } catch (err) {
+    console.error("[GEO Rise] Claude alt text failed, using fallback:", err);
+  }
+  return fallback;
+}
+
 export async function autoFixIssues(
   storeId: string,
   admin: AdminApiContext
@@ -825,16 +912,16 @@ export async function autoFixIssues(
         });
         if (!product) { failed++; continue; }
 
-        const plainDesc = product.description
-          ? stripHtml(product.description)
-          : "";
-        const firstSentence = plainDesc.split(/[.!?]/)[0]?.trim() ?? "";
         const store = await prisma.store.findUnique({ where: { id: storeId } });
-
-        const metaDesc = `${product.title}${firstSentence ? ` — ${firstSentence}` : ""}. Shop ${product.vendor || ""} ${product.productType || ""} at ${store?.shopName ?? "our store"}.`
-          .replace(/\s+/g, " ")
-          .slice(0, 160)
-          .trim();
+        const metaDesc = await generateMetaDescriptionWithClaude(
+          {
+            title: product.title,
+            description: product.description,
+            vendor: product.vendor,
+            productType: product.productType,
+          },
+          store?.shopName ?? "our store"
+        );
 
         const response = await admin.graphql(UPDATE_PRODUCT_META_MUTATION, {
           variables: {
@@ -898,21 +985,30 @@ export async function autoFixIssues(
             product: {
               media: {
                 edges: {
-                  node: { id: string; alt: string | null };
+                  node: { id: string; alt: string | null; image?: { url: string } | null };
                 }[];
               };
             };
           };
         };
 
-        const mediaWithoutAlt = imgJson.data.product.media.edges
-          .filter((e) => !e.node.alt || e.node.alt.trim() === "")
-          .map((e) => ({
-            id: e.node.id,
-            alt: `${product.title}${product.vendor ? ` by ${product.vendor}` : ""}${product.productType ? `. ${product.productType}` : ""}.`,
-          }));
+        const missingAlt = imgJson.data.product.media.edges
+          .filter((e) => !e.node.alt || e.node.alt.trim() === "");
 
-        if (mediaWithoutAlt.length === 0) { fixed++; continue; }
+        if (missingAlt.length === 0) { fixed++; continue; }
+
+        // Generate descriptive alt text per image via Claude vision
+        const mediaWithoutAlt: { id: string; alt: string }[] = [];
+        for (const edge of missingAlt) {
+          const imageUrl = edge.node.image?.url;
+          const alt = imageUrl
+            ? await generateAltTextWithClaude(
+                { title: product.title, vendor: product.vendor, productType: product.productType },
+                imageUrl
+              )
+            : `${product.title}${product.vendor ? ` by ${product.vendor}` : ""}.`;
+          mediaWithoutAlt.push({ id: edge.node.id, alt });
+        }
 
         const updateResponse = await admin.graphql(UPDATE_IMAGE_ALT_MUTATION, {
           variables: {
