@@ -215,7 +215,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         "This product has no description. AI search engines like ChatGPT and Perplexity rely on product descriptions to understand what the product is and who it is for. Without a description, this product is nearly invisible to AI-powered search.",
       recommendation:
         "Write a description of at least 100 words in natural, conversational language. Describe what the product is, who it is for, key features, materials, and use cases.",
-      autoFixable: false,
+      autoFixable: true,
     });
   }
 
@@ -228,7 +228,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       description: `This product description is only ${wc} words. AI search engines need enough context to confidently cite and recommend your product. Short descriptions lead to lower AI visibility.`,
       recommendation:
         "Expand the description to at least 100 words. Include the product's key features, materials, use cases, and who it is designed for.",
-      autoFixable: false,
+      autoFixable: true,
     });
   }
 
@@ -247,7 +247,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         "This description appears to be mostly bullet points or formatted lists. AI language models extract information better from natural prose that explains the product in sentences.",
       recommendation:
         "Rewrite the description with at least 2-3 full sentences that describe the product in natural language. Bullet points are fine for specifications, but the main description should read like a human explanation.",
-      autoFixable: false,
+      autoFixable: true,
     });
   }
 
@@ -263,7 +263,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         "This description doesn't mention specific attributes like materials, dimensions, weights, or quantities. AI search engines parse these details to match your product to specific queries.",
       recommendation:
         "Add concrete details: materials (e.g., '100% organic cotton'), dimensions (e.g., '30cm × 20cm'), weights, capacity, or other measurable attributes relevant to your product.",
-      autoFixable: false,
+      autoFixable: true,
     });
   }
 
@@ -326,7 +326,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         description: `Your meta description is ${seoDesc.length} characters. The ideal range is 120–160 characters. AI search engines use meta descriptions to generate product summaries.`,
         recommendation:
           "Rewrite the meta description to be 120–160 characters. Make it a concise, informative summary of the product's key benefit.",
-        autoFixable: false,
+        autoFixable: true,
       });
     }
   } else {
@@ -790,10 +790,10 @@ export async function runFullAudit(
 
 // ─── Auto-Fix ─────────────────────────────────────────────────────────────────
 
-const UPDATE_PRODUCT_META_MUTATION = `#graphql
-  mutation UpdateProductSeo($input: ProductInput!) {
+const UPDATE_PRODUCT_MUTATION = `#graphql
+  mutation UpdateProduct($input: ProductInput!) {
     productUpdate(input: $input) {
-      product { id seo { title description } }
+      product { id descriptionHtml seo { title description } }
       userErrors { field message }
     }
   }
@@ -853,6 +853,64 @@ Store: ${storeName}`,
   return fallback;
 }
 
+async function generateProductDescriptionWithClaude(
+  product: {
+    title: string;
+    description: string | null;
+    vendor: string | null;
+    productType: string | null;
+    tags?: string[];
+  },
+  imageUrl: string | null,
+  storeName: string
+): Promise<string> {
+  const existing = product.description ? stripHtml(product.description).slice(0, 500).trim() : "";
+  const fallback = `<p>${product.title}${product.vendor ? ` by ${product.vendor}` : ""}.${product.productType ? ` ${product.productType}.` : ""}${existing ? ` ${existing}` : ""}</p>`;
+
+  try {
+    const userContent: Anthropic.ContentBlockParam[] = [];
+    if (imageUrl) {
+      userContent.push({ type: "image", source: { type: "url", url: imageUrl } });
+    }
+    userContent.push({
+      type: "text",
+      text: `Write a product description for an e-commerce store. The description should be 150–250 words, formatted as 2–3 short HTML paragraphs (<p>...</p>).
+
+The first paragraph should describe what the product is and its main benefit. The second paragraph should cover features, materials, and what makes it distinctive. If applicable, a third paragraph can cover use cases or who the product is for.
+
+Write in natural, conversational prose. Mention specific details visible in the image — colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion"). Do NOT use all-caps or emojis.
+
+Product title: ${product.title}
+${product.vendor ? `Brand: ${product.vendor}` : ""}
+${product.productType ? `Category: ${product.productType}` : ""}
+${product.tags && product.tags.length > 0 ? `Tags: ${product.tags.join(", ")}` : ""}
+${existing ? `Existing description (improve and expand — don't just copy verbatim): ${existing}` : "No existing description."}
+Store: ${storeName}
+
+Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around the output.`,
+    });
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      system:
+        "You are an expert e-commerce product copywriter. You write factual, specific, benefit-focused descriptions optimized for AI search engines (ChatGPT, Perplexity, Google AI Overview) and human shoppers. Output is valid HTML using <p> tags.",
+      messages: [{ role: "user", content: userContent }],
+    });
+
+    const block = message.content[0];
+    if (block?.type === "text") {
+      const cleaned = block.text.trim();
+      if (cleaned.length >= 100 && cleaned.length <= 3000 && cleaned.includes("<p>")) {
+        return cleaned;
+      }
+    }
+  } catch (err) {
+    console.error("[GEO Rise] Claude description failed, using fallback:", err);
+  }
+  return fallback;
+}
+
 async function generateAltTextWithClaude(
   product: { title: string; vendor: string | null; productType: string | null },
   imageUrl: string
@@ -905,7 +963,85 @@ export async function autoFixIssues(
 
   for (const issue of fixableIssues) {
     try {
-      if (issue.category === "META" && issue.productId) {
+      if (issue.category === "CONTENT" && issue.productId) {
+        const product = await prisma.product.findUnique({
+          where: { id: issue.productId },
+        });
+        if (!product) { failed++; continue; }
+
+        const store = await prisma.store.findUnique({ where: { id: storeId } });
+
+        // Fetch the featured image URL + tags for the vision input
+        let imageUrl: string | null = null;
+        let tags: string[] = [];
+        try {
+          const ctxResponse = await admin.graphql(
+            `#graphql
+            query GetProductContext($id: ID!) {
+              product(id: $id) {
+                featuredImage { url }
+                tags
+              }
+            }`,
+            { variables: { id: product.shopifyProductId } }
+          );
+          const ctxJson = (await ctxResponse.json()) as {
+            data: { product: { featuredImage: { url: string } | null; tags: string[] } };
+          };
+          imageUrl = ctxJson.data.product.featuredImage?.url ?? null;
+          tags = ctxJson.data.product.tags ?? [];
+        } catch {
+          // Continue without image/tags
+        }
+
+        const descriptionHtml = await generateProductDescriptionWithClaude(
+          {
+            title: product.title,
+            description: product.description,
+            vendor: product.vendor,
+            productType: product.productType,
+            tags,
+          },
+          imageUrl,
+          store?.shopName ?? "our store"
+        );
+
+        const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
+          variables: {
+            input: {
+              id: product.shopifyProductId,
+              descriptionHtml,
+            },
+          },
+        });
+
+        const json = (await response.json()) as {
+          data: {
+            productUpdate: {
+              userErrors: { field: string; message: string }[];
+            };
+          };
+        };
+
+        if (json.data.productUpdate.userErrors.length === 0) {
+          const wc = stripHtml(descriptionHtml).split(/\s+/).filter((w) => w.length > 0).length;
+          await prisma.auditResult.update({
+            where: { id: issue.id },
+            data: { fixed: true, fixedAt: new Date() },
+          });
+          await prisma.product.update({
+            where: { id: issue.productId },
+            data: {
+              description: descriptionHtml,
+              descriptionWordCount: wc,
+              hasRichDescription: wc >= 100,
+            },
+          });
+          fixed++;
+        } else {
+          failed++;
+        }
+      } else if (issue.category === "META" && issue.productId) {
         // Find product to generate meta description
         const product = await prisma.product.findUnique({
           where: { id: issue.productId },
@@ -923,7 +1059,7 @@ export async function autoFixIssues(
           store?.shopName ?? "our store"
         );
 
-        const response = await admin.graphql(UPDATE_PRODUCT_META_MUTATION, {
+        const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
           variables: {
             input: {
               id: product.shopifyProductId,
