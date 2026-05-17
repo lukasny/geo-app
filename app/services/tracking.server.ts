@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import prisma from "~/db.server";
+import { withRetry } from "./ai-retry.server";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -123,14 +124,16 @@ async function classifySentiment(
   if (!excerpt.trim() || cleanedSubjects.length === 0) return "NEUTRAL";
 
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 256,
-      system: SENTIMENT_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Subject(s): ${cleanedSubjects.join(", ")}
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 256,
+          system: SENTIMENT_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: `Subject(s): ${cleanedSubjects.join(", ")}
 
 AI response excerpt:
 """
@@ -138,9 +141,11 @@ ${excerpt}
 """
 
 Classify the tone toward the subject(s).`,
-        },
-      ],
-    });
+            },
+          ],
+        }),
+      "classifySentiment"
+    );
 
     const block = message.content[0];
     if (block?.type !== "text") return "NEUTRAL";
@@ -171,17 +176,21 @@ interface ClaudeWebSearchResponse {
 }
 
 async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    tools: [
-      // Anthropic's server-hosted web search tool — runs the search on
-      // Anthropic's infrastructure and returns citations inline.
-      { type: "web_search_20260209", name: "web_search", max_uses: 5 },
-    ],
-    messages: [{ role: "user", content: prompt }],
-  });
+  const message = await withRetry(
+    () =>
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2048,
+        system: SYSTEM_PROMPT,
+        tools: [
+          // Anthropic's server-hosted web search tool — runs the search on
+          // Anthropic's infrastructure and returns citations inline.
+          { type: "web_search_20260209", name: "web_search", max_uses: 5 },
+        ],
+        messages: [{ role: "user", content: prompt }],
+      }),
+    "askClaudeWithWebSearch"
+  );
 
   let responseText = "";
   const sourceDomains = new Set<string>();
@@ -226,13 +235,17 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
 async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
   if (!openai) throw new Error("OPENAI_API_KEY not configured");
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-search-preview",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: prompt },
-    ],
-  });
+  const completion = await withRetry(
+    () =>
+      openai!.chat.completions.create({
+        model: "gpt-4o-search-preview",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+      }),
+    "askOpenAIWithWebSearch"
+  );
 
   const msg = completion.choices[0]?.message;
   const responseText = msg?.content ?? "";
@@ -265,13 +278,17 @@ async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
 async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
   if (!perplexity) throw new Error("PERPLEXITY_API_KEY not configured");
 
-  const completion = await perplexity.chat.completions.create({
-    model: "sonar",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: prompt },
-    ],
-  });
+  const completion = await withRetry(
+    () =>
+      perplexity!.chat.completions.create({
+        model: "sonar",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+      }),
+    "askPerplexityWithWebSearch"
+  );
 
   const responseText = completion.choices[0]?.message?.content ?? "";
   const sourceDomains = new Set<string>();
@@ -569,23 +586,27 @@ export async function suggestTrackingPrompts(storeId: string): Promise<Suggested
   for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
   const vendors = [...vendorSet];
 
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1500,
-    system: SUGGEST_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `Store name: ${store.shopName}
+  const message = await withRetry(
+    () =>
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1500,
+        system: SUGGEST_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `Store name: ${store.shopName}
 ${vendors.length > 0 ? `Brands sold: ${vendors.join(", ")}` : ""}
 
 Products (up to 25):
 ${productLines}
 
 Generate 8 tracking prompts for this store.`,
-      },
-    ],
-  });
+          },
+        ],
+      }),
+    "suggestTrackingPrompts"
+  );
 
   const block = message.content[0];
   if (block?.type !== "text") {

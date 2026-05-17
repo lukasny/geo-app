@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { withRetry } from "./ai-retry.server";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -526,17 +527,21 @@ function parseExtractedJson(raw: string): Partial<AiExtractedData> {
 }
 
 async function extractWithClaude(cleanedHtml: string): Promise<ExtractResult> {
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
-      },
-    ],
-  });
+  const message = await withRetry(
+    () =>
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
+          },
+        ],
+      }),
+    "extractWithClaude"
+  );
 
   const content = message.content[0];
   const rawResponse = content.type === "text" ? content.text : "";
@@ -547,20 +552,24 @@ async function extractWithClaude(cleanedHtml: string): Promise<ExtractResult> {
 async function extractWithOpenAI(cleanedHtml: string): Promise<ExtractResult> {
   if (!openai) throw new Error("OPENAI_API_KEY not configured");
 
-  const completion = await openai.chat.completions.create({
-    // gpt-4o-mini is the cost-sweet-spot — pure HTML extraction doesn't need
-    // search (so no `-search-preview` variant) and doesn't need the full 4o.
-    model: "gpt-4o-mini",
-    max_tokens: 1024,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
-      },
-    ],
-  });
+  const completion = await withRetry(
+    () =>
+      openai!.chat.completions.create({
+        // gpt-4o-mini is the cost-sweet-spot — pure HTML extraction doesn't need
+        // search (so no `-search-preview` variant) and doesn't need the full 4o.
+        model: "gpt-4o-mini",
+        max_tokens: 1024,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
+          },
+        ],
+      }),
+    "extractWithOpenAI"
+  );
 
   const rawResponse = completion.choices[0]?.message?.content ?? "";
   const data = parseExtractedJson(rawResponse);

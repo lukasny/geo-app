@@ -1,6 +1,10 @@
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import Anthropic from "@anthropic-ai/sdk";
 import prisma from "~/db.server";
+import {
+  isPermanentApiError,
+  withRetry,
+} from "./ai-retry.server";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -832,57 +836,9 @@ type GenResult =
   | { ok: true; value: string; source: "claude" | "fallback" }
   | { ok: false; reason: "claude_credits" | "claude_other" };
 
-/** Anthropic returns these for permanent failures we should NOT retry: bad
- *  API key, exhausted credits, banned content, request too large. Surfacing
- *  these to the merchant requires they (or we) fix something external. */
-function isClaudeAuthOrCreditError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /credit balance.*too low|insufficient_quota|authentication_error|permission_error|billing/i.test(
-    msg
-  );
-}
-
-/** Transient errors worth retrying with backoff: 429s, 5xx, network drops. */
-function isTransientError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /rate.?limit|\b429\b|\b5\d\d\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|overloaded/i.test(
-    msg
-  );
-}
-
-/** Retry a Claude (or any) async call up to `maxAttempts` times with
- *  exponential backoff. Bails immediately on permanent errors (credit/auth)
- *  so we don't waste time retrying things that will never succeed. */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  label: string,
-  maxAttempts = 3
-): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (isClaudeAuthOrCreditError(err)) {
-        // Permanent — give up immediately, surface upward
-        throw err;
-      }
-      if (attempt === maxAttempts || !isTransientError(err)) {
-        // Either out of retries or not a retryable error
-        throw err;
-      }
-      const backoffMs = 500 * 2 ** (attempt - 1); // 500ms, 1s, 2s
-      console.warn(
-        `[GEO Rise auto-fix] ${label} attempt ${attempt} failed (${
-          err instanceof Error ? err.message : String(err)
-        }), retrying in ${backoffMs}ms`
-      );
-      await new Promise<void>((r) => setTimeout(r, backoffMs));
-    }
-  }
-  throw lastErr;
-}
+// Retry/error helpers live in `./ai-retry.server` — shared with tracking +
+// simulator now that all three call third-party AI vendors with the same
+// failure modes. Imports at top of file.
 
 async function generateMetaDescriptionWithClaude(
   product: { title: string; description: string | null; vendor: string | null; productType: string | null },
@@ -931,7 +887,7 @@ Store: ${storeName}`,
     console.error("[GEO Rise auto-fix] meta description generator failed:", err);
     return {
       ok: false,
-      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+      reason: isPermanentApiError(err) ? "claude_credits" : "claude_other",
     };
   }
 }
@@ -992,7 +948,7 @@ Store: ${storeName}`,
     console.error("[GEO Rise auto-fix] SEO title generator failed:", err);
     return {
       ok: false,
-      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+      reason: isPermanentApiError(err) ? "claude_credits" : "claude_other",
     };
   }
 }
@@ -1058,7 +1014,7 @@ Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around th
     console.error("[GEO Rise auto-fix] description generator failed:", err);
     return {
       ok: false,
-      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+      reason: isPermanentApiError(err) ? "claude_credits" : "claude_other",
     };
   }
 }
@@ -1105,7 +1061,7 @@ async function generateAltTextWithClaude(
     console.error("[GEO Rise auto-fix] alt text generator failed:", err);
     return {
       ok: false,
-      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+      reason: isPermanentApiError(err) ? "claude_credits" : "claude_other",
     };
   }
 }
