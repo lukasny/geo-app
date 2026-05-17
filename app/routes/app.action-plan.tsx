@@ -310,7 +310,10 @@ export default function ActionPlanPage() {
   return (
     <Page>
       <TitleBar title="Action Plan">
-        <button onClick={handleAudit} disabled={isAuditing}>
+        {/* Disable during ANY fetcher state, not just runAudit — otherwise
+            a merchant could trigger an audit while an auto-fix is mid-flight,
+            which clobbers the in-flight request and leaves partial state. */}
+        <button onClick={handleAudit} disabled={isWorking}>
           {isAuditing ? "Re-auditing…" : "Re-run audit"}
         </button>
       </TitleBar>
