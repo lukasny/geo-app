@@ -65,7 +65,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ─── Action ───────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin, session, redirect: shopifyRedirect } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
@@ -73,10 +73,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
       const confirmationUrl = await createSubscription(admin, planKey, session.shop);
-      // Return the URL as data — the client escapes the embedded-app iframe
-      // by navigating window.top. A server-side redirect to Shopify's billing
-      // page is silently aborted by the iframe (InvalidStateError).
-      return { confirmationUrl };
+      // Use shopify-app-remix's redirect with target=_top — it sends the
+      // response over App Bridge's iframe-escape protocol so the parent admin
+      // window navigates to Shopify's billing confirmation page. Also return
+      // the URL as data so the client useEffect can fall back to open(_top)
+      // if App Bridge somehow doesn't intercept.
+      return shopifyRedirect(confirmationUrl, { target: "_top" });
     } catch (err) {
       return { error: err instanceof Error ? err.message : "Subscription creation failed." };
     }
