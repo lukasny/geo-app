@@ -185,8 +185,19 @@ export async function getActionPlan(
     };
   });
 
-  // Rank by total impact desc, take the top N.
-  actions.sort((a, b) => b.impactPoints - a.impactPoints);
+  // Rank: severity tier first, then count as tiebreaker within each tier.
+  // Reason: a small bucket of CRITICAL issues should always rank above a
+  // huge bucket of LOW issues — fixing a critical-but-rare problem usually
+  // adds more score per click than knocking out many cosmetic ones. A pure
+  // `severity × count` impact score lets count drown out severity (e.g. 35
+  // HIGH alt-text > 2 CRITICAL missing descriptions, which is the wrong
+  // UX). `impactPoints` is still computed and stored on each item in case
+  // we want to expose it later, but it doesn't drive ordering.
+  actions.sort((a, b) => {
+    const sevDiff = SEVERITY_WEIGHT[b.severity] - SEVERITY_WEIGHT[a.severity];
+    if (sevDiff !== 0) return sevDiff;
+    return b.count - a.count;
+  });
 
   return {
     actions: actions.slice(0, MAX_ACTIONS),
