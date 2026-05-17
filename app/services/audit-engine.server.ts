@@ -299,7 +299,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         title: `SEO title length is ${seoTitle.length < 30 ? "too short" : "too long"} (${seoTitle.length} chars)`,
         description: `Your SEO title is ${seoTitle.length} characters. The ideal range is 30–60 characters for maximum readability in AI search results and Google snippets.`,
         recommendation: `Adjust your SEO title to be between 30 and 60 characters. Current title: "${seoTitle}"`,
-        autoFixable: false,
+        autoFixable: true,
       });
     }
   } else {
@@ -311,7 +311,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         "This product is using its default title as the SEO title, or has no SEO title set. A custom SEO title optimized for AI search helps AI engines classify and surface your product for the right queries.",
       recommendation:
         "Set a custom SEO title that includes the product's key benefit or differentiator (e.g., 'Organic Cotton Yoga Mat – Non-Slip, Eco-Friendly | Brand'). Keep it between 30–60 characters.",
-      autoFixable: false,
+      autoFixable: true,
     });
   }
 
@@ -856,6 +856,46 @@ Store: ${storeName}`,
   return fallback;
 }
 
+async function generateSeoTitleWithClaude(
+  product: { title: string; description: string | null; vendor: string | null; productType: string | null },
+  storeName: string
+): Promise<string> {
+  const plainDesc = product.description ? stripHtml(product.description).slice(0, 300) : "";
+  const fallback = `${product.title}${product.vendor ? ` | ${product.vendor}` : ""}`.slice(0, 60);
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 128,
+      system:
+        "You are an expert e-commerce SEO copywriter. You write concise, click-worthy SEO titles for product pages. Output ONLY the title — no quotes, no preamble, no labels.",
+      messages: [
+        {
+          role: "user",
+          content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. Format: "Product Name — Key Benefit | Brand" or similar variants. Include the key feature or benefit and the brand if it fits. No clickbait, no all-caps, no emojis.
+
+Product title: ${product.title}
+${plainDesc ? `Description: ${plainDesc}` : ""}
+${product.vendor ? `Brand: ${product.vendor}` : ""}
+${product.productType ? `Category: ${product.productType}` : ""}
+Store: ${storeName}`,
+        },
+      ],
+    });
+
+    const block = message.content[0];
+    if (block?.type === "text") {
+      const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
+      if (cleaned.length >= 20 && cleaned.length <= 80) {
+        return cleaned;
+      }
+    }
+  } catch (err) {
+    console.error("[GEO Rise] Claude SEO title failed, using fallback:", err);
+  }
+  return fallback;
+}
+
 async function generateProductDescriptionWithClaude(
   product: {
     title: string;
@@ -1045,28 +1085,45 @@ export async function autoFixIssues(
           failed++;
         }
       } else if (issue.category === "META" && issue.productId) {
-        // Find product to generate meta description
         const product = await prisma.product.findUnique({
           where: { id: issue.productId },
         });
         if (!product) { failed++; continue; }
 
         const store = await prisma.store.findUnique({ where: { id: storeId } });
-        const metaDesc = await generateMetaDescriptionWithClaude(
-          {
-            title: product.title,
-            description: product.description,
-            vendor: product.vendor,
-            productType: product.productType,
-          },
-          store?.shopName ?? "our store"
-        );
+        const shopName = store?.shopName ?? "our store";
+
+        // Decide whether this issue is about the SEO title or the meta description.
+        const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
+
+        const seoUpdate: { title?: string; description?: string } = {};
+        if (isSeoTitleIssue) {
+          seoUpdate.title = await generateSeoTitleWithClaude(
+            {
+              title: product.title,
+              description: product.description,
+              vendor: product.vendor,
+              productType: product.productType,
+            },
+            shopName
+          );
+        } else {
+          seoUpdate.description = await generateMetaDescriptionWithClaude(
+            {
+              title: product.title,
+              description: product.description,
+              vendor: product.vendor,
+              productType: product.productType,
+            },
+            shopName
+          );
+        }
 
         const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
           variables: {
             input: {
               id: product.shopifyProductId,
-              seo: { description: metaDesc },
+              seo: seoUpdate,
             },
           },
         });
@@ -1086,7 +1143,9 @@ export async function autoFixIssues(
           });
           await prisma.product.update({
             where: { id: issue.productId },
-            data: { hasMetaDescription: true },
+            data: isSeoTitleIssue
+              ? { hasMetaTitle: true }
+              : { hasMetaDescription: true },
           });
           fixed++;
         } else {
