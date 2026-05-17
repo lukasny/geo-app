@@ -298,39 +298,54 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
             <>
               <Button disabled fullWidth>Current plan</Button>
               {planKey !== "FREE" && shopifySubId && (
-                <fetcher.Form method="POST">
-                  <input type="hidden" name="intent" value="cancel" />
-                  <input type="hidden" name="subscriptionId" value={shopifySubId} />
-                  <Button
-                    variant="plain"
-                    tone="critical"
-                    submit
-                    loading={isLoading}
-                    fullWidth
-                  >
-                    Cancel plan
-                  </Button>
-                </fetcher.Form>
+                <Button
+                  variant="plain"
+                  tone="critical"
+                  loading={isLoading}
+                  fullWidth
+                  onClick={() => {
+                    console.log("[GEO Rise] Cancel clicked", { planKey });
+                    fetcher.submit(
+                      { intent: "cancel", subscriptionId: shopifySubId },
+                      { method: "POST" }
+                    );
+                  }}
+                >
+                  Cancel plan
+                </Button>
               )}
             </>
           ) : isEnterprise ? (
             <Button url="mailto:hello@boda.no" fullWidth>Contact us</Button>
           ) : isUpgrade ? (
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="subscribe" />
-              <input type="hidden" name="plan" value={planKey} />
-              <Button variant="primary" submit loading={isLoading} fullWidth>
-                Start 7-day free trial
-              </Button>
-            </fetcher.Form>
+            <Button
+              variant="primary"
+              loading={isLoading}
+              fullWidth
+              onClick={() => {
+                console.log("[GEO Rise] Subscribe clicked", { planKey });
+                fetcher.submit(
+                  { intent: "subscribe", plan: planKey },
+                  { method: "POST" }
+                );
+              }}
+            >
+              Start 7-day free trial
+            </Button>
           ) : isDowngrade ? (
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="cancel" />
-              <input type="hidden" name="subscriptionId" value={shopifySubId ?? ""} />
-              <Button variant="plain" submit loading={isLoading} fullWidth>
-                Downgrade to {def.name}
-              </Button>
-            </fetcher.Form>
+            <Button
+              variant="plain"
+              loading={isLoading}
+              fullWidth
+              onClick={() => {
+                fetcher.submit(
+                  { intent: "cancel", subscriptionId: shopifySubId ?? "" },
+                  { method: "POST" }
+                );
+              }}
+            >
+              Downgrade to {def.name}
+            </Button>
           ) : null}
 
           <Divider />
