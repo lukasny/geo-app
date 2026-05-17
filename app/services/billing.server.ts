@@ -28,6 +28,27 @@ export async function createSubscription(
   const plan = PLAN_DEFINITIONS[planKey];
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/pricing`;
 
+  // Detect dev stores via shop.plan.partnerDevelopment. Dev stores must use
+  // Shopify test billing (test: true) so no real payment method is required and
+  // no real charge is made — even when the app itself is running on production
+  // hosting (Render). Falling back to NODE_ENV is unreliable: NODE_ENV is
+  // "production" on Render even for a dev-store merchant.
+  const shopPlanResponse = await admin.graphql(
+    `#graphql
+    query ShopPlanForBilling {
+      shop {
+        plan {
+          partnerDevelopment
+          shopifyPlus
+        }
+      }
+    }`
+  );
+  const shopPlanJson = (await shopPlanResponse.json()) as {
+    data?: { shop?: { plan?: { partnerDevelopment?: boolean; shopifyPlus?: boolean } } };
+  };
+  const isDevStore = shopPlanJson.data?.shop?.plan?.partnerDevelopment === true;
+
   const response = await admin.graphql(
     `#graphql
     mutation AppSubscriptionCreate(
@@ -59,7 +80,7 @@ export async function createSubscription(
         name: plan.name,
         returnUrl,
         trialDays: plan.trialDays,
-        test: process.env.NODE_ENV !== "production",
+        test: isDevStore,
         lineItems: [
           {
             plan: {
