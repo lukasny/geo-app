@@ -25,6 +25,7 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { generateLlmsTxt } from "~/services/llms-generator.server";
 import { runFullAudit } from "~/services/audit-engine.server";
+import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -690,6 +691,10 @@ export default function Index() {
                 {hasAudit ? "Re-run AI Audit" : "Run AI Audit"}
               </Button>
               <Button url="/app/simulator">Try AI Simulation</Button>
+              {!isFreePlan && (
+                <Button url="/app/tracking">AI Visibility Tracking</Button>
+              )}
+              <Button url="/app/llms-txt">llms.txt Manager</Button>
               {!isFreePlan && <Button url="/app/pricing">View Plan</Button>}
             </ButtonGroup>
             {isLoading && (
@@ -706,26 +711,38 @@ export default function Index() {
         </Card>
 
         {/* ── ROW 4: Plan upgrade ── */}
+        {/* Pricing pulls from PLAN_DEFINITIONS so we don't drift again — this
+            copy was stale-by-a-pivot until late on 2026-05-17. */}
         {isFreePlan ? (
           <CalloutCard
             title="Unlock the full GEO Rise experience"
             illustration=""
-            primaryAction={{ content: "Start Free Trial →", url: "/app/pricing" }}
+            primaryAction={{ content: "Start 7-day free trial →", url: "/app/pricing" }}
           >
             <Text as="p" variant="bodyMd">
-              You&apos;re on the Free plan. Upgrade to <strong>Growth ($39/mo)</strong> to
-              unlock unlimited product optimization, AI visibility tracking,
-              competitor monitoring, and weekly insight reports — with a 7-day
-              free trial.
+              You&apos;re on the Free plan. Upgrade to{" "}
+              <strong>
+                {PLAN_DEFINITIONS.GROWTH.name} (${PLAN_DEFINITIONS.GROWTH.price}/mo)
+              </strong>{" "}
+              to unlock unlimited product audits and auto-fix,{" "}
+              {PLAN_LIMITS.GROWTH.maxTrackingPrompts} AI tracking prompts across
+              Claude / ChatGPT / Perplexity, and the multi-AI simulator — with
+              a 7-day free trial.
             </Text>
           </CalloutCard>
         ) : store.plan === "GROWTH" ? (
           <Banner
             tone="info"
-            action={{ content: "Upgrade to Pro", url: "/app/pricing" }}
+            action={{ content: `Upgrade to ${PLAN_DEFINITIONS.PRO.name}`, url: "/app/pricing" }}
           >
             <Text as="p" variant="bodyMd">
-              Want competitor monitoring and AI revenue attribution? Upgrade to Pro ($79/mo).
+              Tracking up to {PLAN_LIMITS.GROWTH.maxTrackingPrompts} prompts on
+              Growth — upgrade to{" "}
+              <strong>
+                {PLAN_DEFINITIONS.PRO.name} (${PLAN_DEFINITIONS.PRO.price}/mo)
+              </strong>{" "}
+              for {PLAN_LIMITS.PRO.maxTrackingPrompts} prompts and scheduled
+              daily/weekly checks.
             </Text>
           </Banner>
         ) : null}
