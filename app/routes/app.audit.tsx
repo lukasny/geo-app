@@ -430,6 +430,34 @@ export default function AuditPage() {
   const [scoreFilter, setScoreFilter] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
   const PAGE_SIZE = 25;
+  // Auto-fix UX: confirm before writing (so we don't surprise the merchant)
+  // and show a persistent post-fix banner with "Re-run audit" CTA.
+  const [showAutoFixConfirm, setShowAutoFixConfirm] = useState(false);
+  const [lastFixResult, setLastFixResult] = useState<{
+    fixed: number;
+    skipped: number;
+    failed: number;
+    aborted: boolean;
+  } | null>(null);
+
+  // ── Auto-fix breakdown by category ──
+  // Powers the "we're about to..." modal so the merchant sees exactly what
+  // they're authorizing before clicking through.
+  const autoFixBreakdown = useMemo(() => {
+    const fixable = auditResults.filter((r) => r.autoFixable && !r.fixed);
+    const isSeoTitle = (r: AuditResultItem) =>
+      r.title.toLowerCase().includes("seo title");
+    return {
+      descriptions: fixable.filter((r) => r.category === "CONTENT").length,
+      metaDescriptions: fixable.filter(
+        (r) => r.category === "META" && !isSeoTitle(r)
+      ).length,
+      seoTitles: fixable.filter((r) => r.category === "META" && isSeoTitle(r))
+        .length,
+      altTexts: fixable.filter((r) => r.category === "IMAGES").length,
+      total: fixable.length,
+    };
+  }, [auditResults]);
 
   // ── Loading flags ──
   const isRunningAudit =
@@ -451,11 +479,17 @@ export default function AuditPage() {
       shopify.toast.show(
         `Audit complete! Your GEO score is ${s.storeScore}/100`
       );
+      // Audit just finished — the post-fix banner is stale info, clear it.
+      setLastFixResult(null);
     } else if ("fixed" in data) {
       const f = data.fixed as number;
       const s = (data.skipped as number) ?? 0;
       const fl = (data.failed as number) ?? 0;
       const aborted = (data.aborted as boolean) ?? false;
+      // Persist a Banner with the breakdown + "Re-run audit" CTA — the toast
+      // disappears in 5 seconds; the banner stays until the merchant either
+      // re-runs the audit or dismisses it.
+      setLastFixResult({ fixed: f, skipped: s, failed: fl, aborted });
       if (aborted) {
         const fixedPart = `Auto-fixed ${f} issue${f !== 1 ? "s" : ""}`;
         shopify.toast.show(
@@ -636,7 +670,10 @@ export default function AuditPage() {
             : "Run First Audit"}
         </button>
         {issueCounts.autoFixable > 0 && (
-          <button onClick={() => submit("autoFix")} disabled={isAutoFixing}>
+          <button
+            onClick={() => setShowAutoFixConfirm(true)}
+            disabled={isAutoFixing}
+          >
             {isAutoFixing
               ? "Fixing…"
               : `Auto-fix All (${issueCounts.autoFixable})`}
@@ -645,6 +682,69 @@ export default function AuditPage() {
       </TitleBar>
 
       <BlockStack gap="500">
+        {/* ── Post-fix banner — persists until re-audit or dismiss ── */}
+        {lastFixResult && !isAutoFixing && !isRunningAudit && (
+          <Banner
+            tone={
+              lastFixResult.aborted
+                ? "warning"
+                : lastFixResult.failed > 0
+                ? "warning"
+                : "success"
+            }
+            title={
+              lastFixResult.aborted
+                ? `Auto-fix stopped early — ${lastFixResult.fixed} fix${
+                    lastFixResult.fixed !== 1 ? "es" : ""
+                  } applied`
+                : `Auto-fix complete: ${lastFixResult.fixed} fix${
+                    lastFixResult.fixed !== 1 ? "es" : ""
+                  } applied`
+            }
+            onDismiss={() => setLastFixResult(null)}
+          >
+            <BlockStack gap="200">
+              <Text as="p" variant="bodyMd">
+                {lastFixResult.aborted
+                  ? "The AI service hit a limit before we could finish. Try clicking Auto-fix again in a few minutes to pick up the rest."
+                  : (() => {
+                      const parts: string[] = [];
+                      if (lastFixResult.fixed > 0) {
+                        parts.push(
+                          `Wrote new content for ${lastFixResult.fixed} issue${
+                            lastFixResult.fixed !== 1 ? "s" : ""
+                          }.`
+                        );
+                      }
+                      if (lastFixResult.skipped > 0) {
+                        parts.push(
+                          `Skipped ${lastFixResult.skipped} that were already correct.`
+                        );
+                      }
+                      if (lastFixResult.failed > 0) {
+                        parts.push(
+                          `${lastFixResult.failed} failed and may need a manual look.`
+                        );
+                      }
+                      return parts.join(" ");
+                    })()}
+              </Text>
+              <div>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setLastFixResult(null);
+                    submit("runAudit");
+                  }}
+                  loading={isRunningAudit}
+                >
+                  Re-run audit to update your score
+                </Button>
+              </div>
+            </BlockStack>
+          </Banner>
+        )}
+
         {/* ── Running banner ── */}
         {isRunningAudit && (
           <Banner tone="info">
@@ -652,6 +752,19 @@ export default function AuditPage() {
               <Spinner size="small" />
               <Text as="p" variant="bodyMd">
                 Auditing your store… This may take a minute for large catalogs.
+              </Text>
+            </InlineStack>
+          </Banner>
+        )}
+
+        {/* ── Auto-fixing banner ── */}
+        {isAutoFixing && (
+          <Banner tone="info">
+            <InlineStack gap="200" blockAlign="center">
+              <Spinner size="small" />
+              <Text as="p" variant="bodyMd">
+                Writing fresh content with Claude… ~3 seconds per fix. Stay on
+                this page; we'll show the results when done.
               </Text>
             </InlineStack>
           </Banner>
@@ -737,7 +850,10 @@ export default function AuditPage() {
                 label: "Auto-fixable",
                 count: issueCounts.autoFixable,
                 tone: "info" as const,
-                action: issueCounts.autoFixable > 0 ? () => submit("autoFix") : undefined,
+                action:
+                  issueCounts.autoFixable > 0
+                    ? () => setShowAutoFixConfirm(true)
+                    : undefined,
               },
             ].map(({ label, count, tone, action: onAction }) => (
               <Card key={label}>
@@ -853,6 +969,96 @@ export default function AuditPage() {
         issues={modalIssues}
         onClose={() => setSelectedProduct(null)}
       />
+
+      {/* ── Auto-fix confirmation modal ── */}
+      {/* Shown before submitting "Auto-fix All" so the merchant sees exactly
+          what's about to be written + estimated time. Stops the surprise of
+          "clicked the button, 90 seconds passed, products rewritten." */}
+      <Modal
+        open={showAutoFixConfirm}
+        onClose={() => setShowAutoFixConfirm(false)}
+        title="Start Auto-fix?"
+        primaryAction={{
+          content: `Auto-fix ${autoFixBreakdown.total} issue${
+            autoFixBreakdown.total !== 1 ? "s" : ""
+          }`,
+          onAction: () => {
+            setShowAutoFixConfirm(false);
+            setLastFixResult(null); // clear old result while new run is in flight
+            submit("autoFix");
+          },
+          disabled: autoFixBreakdown.total === 0,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: () => setShowAutoFixConfirm(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          <BlockStack gap="300">
+            <Text as="p" variant="bodyMd">
+              We&apos;ll use Claude to write fresh content for these:
+            </Text>
+            <BlockStack gap="100">
+              {autoFixBreakdown.descriptions > 0 && (
+                <Text as="p" variant="bodyMd">
+                  •{" "}
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {autoFixBreakdown.descriptions}
+                  </Text>{" "}
+                  product description
+                  {autoFixBreakdown.descriptions !== 1 ? "s" : ""} (writes a new
+                  2–3 paragraph blurb using Claude vision on the product image)
+                </Text>
+              )}
+              {autoFixBreakdown.metaDescriptions > 0 && (
+                <Text as="p" variant="bodyMd">
+                  •{" "}
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {autoFixBreakdown.metaDescriptions}
+                  </Text>{" "}
+                  meta description
+                  {autoFixBreakdown.metaDescriptions !== 1 ? "s" : ""}{" "}
+                  (120–158 chars, what shows up in search results)
+                </Text>
+              )}
+              {autoFixBreakdown.seoTitles > 0 && (
+                <Text as="p" variant="bodyMd">
+                  •{" "}
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {autoFixBreakdown.seoTitles}
+                  </Text>{" "}
+                  SEO title{autoFixBreakdown.seoTitles !== 1 ? "s" : ""}{" "}
+                  (30–58 chars, the clickable headline in Google)
+                </Text>
+              )}
+              {autoFixBreakdown.altTexts > 0 && (
+                <Text as="p" variant="bodyMd">
+                  •{" "}
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {autoFixBreakdown.altTexts}
+                  </Text>{" "}
+                  image alt text{autoFixBreakdown.altTexts !== 1 ? "s" : ""}{" "}
+                  (descriptive text Claude generates by actually looking at the
+                  image)
+                </Text>
+              )}
+            </BlockStack>
+            <Banner tone="info">
+              <Text as="p" variant="bodyMd">
+                Estimated time: ~
+                {Math.max(10, Math.ceil(autoFixBreakdown.total * 3))} seconds.
+                We&apos;ll skip anything you&apos;ve already fixed manually, and
+                the page refreshes when done. Your existing data is overwritten
+                — there&apos;s no undo, so review one product first if
+                you&apos;re unsure.
+              </Text>
+            </Banner>
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }
