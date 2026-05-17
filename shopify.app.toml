@@ -2,14 +2,14 @@
 
 client_id = "37b74e8919e819fbda10974661a0983b"
 name = "GEO Rise"
-application_url = "https://example.com"
+application_url = "https://geo-app-hkhi.onrender.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
 
 [app_proxy]
-url = "https://example.com/proxy/llms-txt"
+url = "https://geo-app-hkhi.onrender.com/proxy/llms-txt"
 subpath = "llms-txt"
 prefix = "a"
 
@@ -49,4 +49,8 @@ api_version = "2025-01"
 scopes = "write_products,read_content,write_content,read_themes,read_orders"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [
+  "https://geo-app-hkhi.onrender.com/auth/callback",
+  "https://geo-app-hkhi.onrender.com/auth/shopify/callback",
+  "https://geo-app-hkhi.onrender.com/api/auth/callback",
+]
