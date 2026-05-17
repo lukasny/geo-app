@@ -244,8 +244,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const result = await runTrackingCheck(promptId);
       return { success: true, intent, result };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      return { error: `Tracking check failed: ${msg}` };
+      return { error: sanitizeTrackingError(err) };
     }
   }
 
@@ -263,8 +262,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const suggestions = await suggestTrackingPrompts(store.id);
       return { success: true, intent, suggestions };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      return { error: `Couldn't generate suggestions: ${msg}` };
+      return { error: sanitizeTrackingError(err) };
     }
   }
 
@@ -300,6 +298,32 @@ const SCHEDULE_OPTIONS = [
   { label: "Daily", value: "DAILY" },
   { label: "Weekly", value: "WEEKLY" },
 ];
+
+/** Map raw service errors to user-safe messages. Anthropic returns the raw
+ *  "credit balance is too low" / "rate limit" / "invalid_request_error" strings
+ *  which mention "Anthropic" and "Plans & Billing" — a merchant would think
+ *  that refers to their Shopify billing and panic. Always log the raw error
+ *  server-side, return a clean message to the UI. */
+function sanitizeTrackingError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  console.error("[tracking] action error:", raw);
+  // Known user-friendly errors from our service layer — pass through verbatim
+  if (/run an audit first/i.test(raw)) return raw;
+  if (/couldn't parse claude/i.test(raw)) {
+    return "We had trouble understanding the AI response. Please try again.";
+  }
+  // Vendor failure modes — show a clean message without leaking Anthropic/etc.
+  if (/credit balance.*too low|insufficient_quota|billing/i.test(raw)) {
+    return "Tracking is temporarily unavailable. Please try again in a few minutes.";
+  }
+  if (/rate.?limit|\b429\b/i.test(raw)) {
+    return "AI service is busy — please try again in a moment.";
+  }
+  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
+    return "AI service didn't respond in time. Please try again.";
+  }
+  return "Tracking check failed. Please try again in a moment.";
+}
 
 function relativeFuture(iso: string | null): string {
   if (!iso) return "—";
