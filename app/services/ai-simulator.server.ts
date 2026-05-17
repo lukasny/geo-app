@@ -46,6 +46,11 @@ export interface SimulationResult {
   totalFields: number;
   foundFields: number;
   missingFields: number;
+  /** True when the live page couldn't be read (password-protected, 4xx, blocked, etc.)
+   *  and we fell back to simulating against Shopify product data instead. */
+  usedFallback: boolean;
+  /** Human-readable reason for the fallback, when one was used. */
+  fallbackReason: string | null;
 }
 
 // ─── HTML Cleaning ────────────────────────────────────────────────────────────
@@ -335,12 +340,77 @@ function buildComparison(
 
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
+function isPasswordPage(html: string): boolean {
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('name="password"') ||
+    lower.includes("enter using password") ||
+    lower.includes("storefront access denied") ||
+    lower.includes("password-protected")
+  );
+}
+
+function buildFallbackHtml(d: ShopifyProductInput): string {
+  // Emit a synthetic but well-structured product page that mirrors what a
+  // healthy public Shopify product page would expose to an AI crawler.
+  // Include JSON-LD because that's exactly what our theme extension injects
+  // on production stores.
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: d.title,
+    description: d.description ?? undefined,
+    brand: d.vendor ? { "@type": "Brand", name: d.vendor } : undefined,
+    sku: d.sku ?? undefined,
+    category: d.productType ?? undefined,
+    offers: {
+      "@type": "Offer",
+      price: d.price ?? undefined,
+      priceCurrency: d.currency ?? "USD",
+      availability: d.available
+        ? "https://schema.org/InStock"
+        : "https://schema.org/OutOfStock",
+    },
+    aggregateRating:
+      d.hasReviews && d.rating != null && d.reviewCount > 0
+        ? {
+            "@type": "AggregateRating",
+            ratingValue: d.rating,
+            reviewCount: d.reviewCount,
+          }
+        : undefined,
+  };
+
+  const variantList = d.variants.length > 0
+    ? `<ul>${d.variants.map((v) => `<li>${v}</li>`).join("")}</ul>`
+    : "";
+
+  return `<!DOCTYPE html><html><head><title>${d.title}</title>
+<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+</head><body>
+<h1>${d.title}</h1>
+${d.vendor ? `<p class="vendor">Brand: ${d.vendor}</p>` : ""}
+${d.productType ? `<p class="type">Category: ${d.productType}</p>` : ""}
+<div class="price">${d.price ?? ""} ${d.currency ?? "USD"}</div>
+<div class="availability">${d.available ? "In stock" : "Out of stock"}</div>
+${d.sku ? `<div class="sku">SKU: ${d.sku}</div>` : ""}
+${d.description ? `<div class="description">${d.description}</div>` : ""}
+${variantList ? `<div class="variants">${variantList}</div>` : ""}
+${d.imageCount > 0 ? `<div class="images">${Array.from({ length: Math.min(d.imageCount, 5) }, () => `[Image: ${d.hasAltText ? d.title : "no alt text"}]`).join("")}</div>` : ""}
+${d.hasReviews && d.reviewCount > 0 ? `<div class="reviews">Rating: ${d.rating ?? "—"} (${d.reviewCount} reviews)</div>` : ""}
+</body></html>`;
+}
+
 export async function simulateAiView(
   productUrl: string,
   shopifyProductData: ShopifyProductInput
 ): Promise<SimulationResult> {
-  // 1. Fetch the raw HTML
+  // 1. Fetch the raw HTML — but be ready to fall back if the live page isn't
+  //    usable (404, password-protected dev store, etc).
   let rawHtml = "";
+  let usedFallback = false;
+  let fallbackReason: string | null = null;
+
   try {
     const res = await fetch(productUrl, {
       headers: {
@@ -350,14 +420,28 @@ export async function simulateAiView(
       },
       signal: AbortSignal.timeout(15000),
     });
-    rawHtml = await res.text();
+
+    if (!res.ok) {
+      usedFallback = true;
+      fallbackReason = `Product page returned HTTP ${res.status}. Showing what AI would see if the page were public.`;
+    } else {
+      const body = await res.text();
+      if (isPasswordPage(body)) {
+        usedFallback = true;
+        fallbackReason =
+          "Your storefront is password-protected, so AI agents can't actually read this page yet. We're simulating against your Shopify product data to show what AI would see once you remove the password.";
+      } else {
+        rawHtml = body;
+      }
+    }
   } catch {
-    // If we can't fetch the URL (e.g., dev store not public), use product data directly
-    rawHtml = `<html><body>
-      <h1>${shopifyProductData.title}</h1>
-      <p>${shopifyProductData.description ?? ""}</p>
-      <span class="price">${shopifyProductData.price ?? ""}</span>
-    </body></html>`;
+    usedFallback = true;
+    fallbackReason =
+      "Couldn't reach the live product page. Showing what AI would see if the page were public.";
+  }
+
+  if (usedFallback) {
+    rawHtml = buildFallbackHtml(shopifyProductData);
   }
 
   // 2. Clean HTML
@@ -413,6 +497,8 @@ export async function simulateAiView(
     aiRawResponse,
     totalFields,
     foundFields,
+    usedFallback,
+    fallbackReason,
     missingFields,
   };
 }

@@ -538,6 +538,16 @@ export default function SimulatorPage() {
 
           return (
             <BlockStack gap="500">
+              {/* Fallback notice — explains why we're simulating off Shopify data
+                  instead of the live page (password protected, 404, etc.) */}
+              {result.usedFallback && result.fallbackReason && (
+                <Banner tone="warning" title="Simulating on Shopify data — live page not reachable">
+                  <Text as="p" variant="bodyMd">
+                    {result.fallbackReason}
+                  </Text>
+                </Banner>
+              )}
+
               {/* Score banner */}
               <Banner tone={scoreTone}>
                 <InlineStack gap="300" blockAlign="center">
