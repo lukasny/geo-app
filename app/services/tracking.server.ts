@@ -100,7 +100,7 @@ function firstPosition(text: string, keywords: string[]): number | null {
   // Count occurrences of either "1." / "1)" or newlines before earliest to
   // approximate a list position. Imperfect but good enough for v1.
   const before = text.slice(0, earliest);
-  const listMarkers = before.match(/\n\s*\d+[.\)]/g) ?? [];
+  const listMarkers = before.match(/\n\s*\d+[.)]/g) ?? [];
   return listMarkers.length + 1;
 }
 

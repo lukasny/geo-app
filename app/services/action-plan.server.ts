@@ -63,15 +63,52 @@ const MAX_ACTIONS = 7;
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+export interface GetActionPlanOptions {
+  /** Plan-tier cap on how many audited products to consider, matching the
+   *  audit page's loader filter. On Free (cap=3), if the merchant was on
+   *  Pro yesterday and audited 20 products, those 20 still have audit
+   *  results today; without this filter the action plan would expose them.
+   *  Omit (or pass Infinity) for unlimited. */
+  productLimit?: number;
+}
+
 /** Build a prioritized action plan for the given store. Groups unfixed audit
  *  issues by (category, title), ranks each group by `severityWeight × count`,
  *  and returns the top N as ActionItems for the UI to render. */
-export async function getActionPlan(storeId: string): Promise<ActionPlan> {
+export async function getActionPlan(
+  storeId: string,
+  options: GetActionPlanOptions = {}
+): Promise<ActionPlan> {
+  // Determine which products the caller is allowed to surface (plan cap).
+  // For uncapped plans (Pro / Enterprise) we skip the lookup entirely.
+  let allowedProductIds: string[] | null = null;
+  if (
+    options.productLimit !== undefined &&
+    Number.isFinite(options.productLimit)
+  ) {
+    const allowed = await prisma.product.findMany({
+      where: { storeId, lastAuditedAt: { not: null } },
+      orderBy: { aiReadinessScore: "asc" },
+      take: options.productLimit,
+      select: { id: true },
+    });
+    allowedProductIds = allowed.map((p) => p.id);
+  }
+
   // Has this store ever had an audit produce any rows? Cheaper than
   // counting and helps the route show the right empty state.
   const [unfixedIssues, anyAuditResult] = await Promise.all([
     prisma.auditResult.findMany({
-      where: { storeId, fixed: false },
+      where: {
+        storeId,
+        fixed: false,
+        // Restrict to allowed products on capped plans. Issues with no
+        // productId are also excluded under the cap — they're rare and
+        // safer to hide than to leak.
+        ...(allowedProductIds !== null
+          ? { productId: { in: allowedProductIds } }
+          : {}),
+      },
     }),
     prisma.auditResult.findFirst({
       where: { storeId },

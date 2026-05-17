@@ -545,7 +545,8 @@ function CompetitorCard({
     stats;
   const platformBadges = Object.entries(byPlatform).filter(([, n]) => n > 0);
   const citedRate =
-    totalChecks > 0 ? Math.round((citedCount / totalChecks) * 100) : 0;
+    totalChecks > 0 ? Math.round((citedCount / totalChecks) * 100) : null;
+  const hasAnyTrackingData = totalChecks > 0;
 
   return (
     <Card>
@@ -576,45 +577,67 @@ function CompetitorCard({
           </ButtonGroup>
         </InlineStack>
 
-        <InlineStack gap="500" wrap>
-          <Box minWidth="120px">
-            <BlockStack gap="050">
-              <Text as="span" variant="bodySm" tone="subdued">
-                Cited in
-              </Text>
-              <Text as="span" variant="headingLg">
-                {citedCount}
-              </Text>
-              <Text as="span" variant="bodySm" tone="subdued">
-                of {totalChecks} checks ({citedRate}%)
-              </Text>
-            </BlockStack>
+        {!hasAnyTrackingData ? (
+          <Box
+            padding="300"
+            background="bg-surface-secondary"
+            borderRadius="200"
+          >
+            <Text as="p" variant="bodySm" tone="subdued">
+              No tracking checks have run yet. Add some prompts on{" "}
+              <Link to="/app/tracking">AI Tracking</Link> and run them — once
+              there&apos;s data, this card will show how often AI search
+              engines cite {competitor.name} alongside (or instead of) your
+              store.
+            </Text>
           </Box>
-          <Box minWidth="160px">
-            <BlockStack gap="050">
-              <Text as="span" variant="bodySm" tone="subdued">
-                You vs them, head-to-head
-              </Text>
-              <Text as="span" variant="bodyMd">
-                <Text as="span" variant="bodyMd" fontWeight="semibold">
-                  {storeCitedSameQueries}
-                </Text>{" "}
-                of the {citedCount} times they were cited, your store was
-                cited too
-              </Text>
-            </BlockStack>
-          </Box>
-          <Box minWidth="120px">
-            <BlockStack gap="050">
-              <Text as="span" variant="bodySm" tone="subdued">
-                Last cited
-              </Text>
-              <Text as="span" variant="bodyMd">
-                {relativeTime(lastCitedAt)}
-              </Text>
-            </BlockStack>
-          </Box>
-        </InlineStack>
+        ) : (
+          <InlineStack gap="500" wrap>
+            <Box minWidth="120px">
+              <BlockStack gap="050">
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Cited in
+                </Text>
+                <Text as="span" variant="headingLg">
+                  {citedCount}
+                </Text>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  of {totalChecks} checks ({citedRate ?? 0}%)
+                </Text>
+              </BlockStack>
+            </Box>
+            <Box minWidth="160px">
+              <BlockStack gap="050">
+                <Text as="span" variant="bodySm" tone="subdued">
+                  You vs them, head-to-head
+                </Text>
+                <Text as="span" variant="bodyMd">
+                  {citedCount === 0 ? (
+                    "They haven't been cited yet in your tracking results."
+                  ) : (
+                    <>
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">
+                        {storeCitedSameQueries}
+                      </Text>{" "}
+                      of the {citedCount} times they were cited, your store
+                      was cited too
+                    </>
+                  )}
+                </Text>
+              </BlockStack>
+            </Box>
+            <Box minWidth="120px">
+              <BlockStack gap="050">
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Last cited
+                </Text>
+                <Text as="span" variant="bodyMd">
+                  {relativeTime(lastCitedAt)}
+                </Text>
+              </BlockStack>
+            </Box>
+          </InlineStack>
+        )}
 
         {platformBadges.length > 0 && (
           <InlineStack gap="200" blockAlign="center" wrap>

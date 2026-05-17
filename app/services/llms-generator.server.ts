@@ -210,6 +210,8 @@ async function fetchAllProducts(
   );
 
   while (hasNextPage && products.length < maxProducts) {
+    // eslint-disable-next-line no-loop-func -- closure is awaited
+    // synchronously within the iteration, so capturing `cursor` is safe.
     const data = await withRetry(() =>
       shopifyGraphql<{
         products: {
@@ -262,6 +264,7 @@ async function fetchAllCollections(
   let hasNextPage = true;
 
   while (hasNextPage) {
+    // eslint-disable-next-line no-loop-func -- closure awaited synchronously
     const data = await withRetry(() =>
       shopifyGraphql<{
         collections: {
@@ -316,6 +319,7 @@ async function fetchAllArticles(
   let hasNextPage = true;
 
   while (hasNextPage) {
+    // eslint-disable-next-line no-loop-func -- closure awaited synchronously
     const data = await withRetry(() =>
       shopifyGraphql<{
         blogs: {

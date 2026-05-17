@@ -46,7 +46,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: session.shop },
-    select: { id: true, geoScore: true },
+    select: { id: true, geoScore: true, plan: true },
   });
   if (!store) {
     return {
@@ -57,7 +57,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     } satisfies LoaderData;
   }
 
-  const plan = await getActionPlan(store.id);
+  // Plumb the plan-tier audit cap into the service so a Pro→Free downgrade
+  // doesn't leak the merchant's pre-downgrade issue list. Same pattern as
+  // the audit page loader.
+  const { PLAN_LIMITS } = await import("~/services/billing.shared");
+  const planLimits =
+    PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+  const productLimit = Number.isFinite(planLimits.maxAuditProducts)
+    ? planLimits.maxAuditProducts
+    : undefined;
+
+  const plan = await getActionPlan(store.id, { productLimit });
   return {
     storeScore: store.geoScore,
     actions: plan.actions,
@@ -411,12 +421,13 @@ function ActionCard({ action, rank, onAutoFix, isFixing, anyInFlight }: ActionCa
                 {CATEGORY_LABEL[action.category] ?? action.category}
               </Badge>
               <Badge>{`${action.count} issue${action.count === 1 ? "" : "s"}`}</Badge>
-              {action.affectedProductCount !== action.count && (
-                <Text as="span" variant="bodySm" tone="subdued">
-                  across {action.affectedProductCount} product
-                  {action.affectedProductCount === 1 ? "" : "s"}
-                </Text>
-              )}
+              {action.affectedProductCount > 0 &&
+                action.affectedProductCount !== action.count && (
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    across {action.affectedProductCount} product
+                    {action.affectedProductCount === 1 ? "" : "s"}
+                  </Text>
+                )}
             </InlineStack>
             <Text as="h3" variant="headingMd">
               {action.title}

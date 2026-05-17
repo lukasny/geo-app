@@ -190,7 +190,7 @@ function hasSpecificAttributes(text: string): boolean {
 
 function isConversational(text: string): boolean {
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
-  const bulletLines = lines.filter((l) => /^[\s]*[•\-\*]/.test(l)).length;
+  const bulletLines = lines.filter((l) => /^\s*[•\-*]/.test(l)).length;
   const hasSentences = /[.!?]/.test(text);
   const bulletRatio = lines.length > 0 ? bulletLines / lines.length : 0;
   const isAllCaps = text === text.toUpperCase() && text.length > 20;
