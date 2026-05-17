@@ -1,7 +1,37 @@
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import prisma from "~/db.server";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// OpenAI: real ChatGPT-equivalent answers via gpt-4o-search-preview.
+// Perplexity exposes an OpenAI-compatible API at api.perplexity.ai so the
+// same SDK works — just a different base URL + key. Both clients are
+// constructed lazily so missing keys don't crash on module load; the
+// per-platform fetcher checks before calling.
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+const perplexity = process.env.PERPLEXITY_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY,
+      baseURL: "https://api.perplexity.ai",
+    })
+  : null;
+
+type AiPlatform = "CLAUDE" | "CHATGPT" | "PERPLEXITY";
+
+/** Which platforms are configured at runtime. Used by the orchestrator
+ *  in `runTrackingCheck` to decide which API calls to fan out. CLAUDE
+ *  is always available (ANTHROPIC_API_KEY is required at module init);
+ *  the other two are optional. */
+function enabledPlatforms(): AiPlatform[] {
+  const out: AiPlatform[] = [];
+  if (process.env.ANTHROPIC_API_KEY) out.push("CLAUDE");
+  if (openai) out.push("CHATGPT");
+  if (perplexity) out.push("PERPLEXITY");
+  return out;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -191,39 +221,126 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
   return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
 }
 
+/** OpenAI's gpt-4o-search-preview model has built-in web search. Citations
+ *  come back as `message.annotations[].url_citation.url`. */
+async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
+  if (!openai) throw new Error("OPENAI_API_KEY not configured");
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-search-preview",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const msg = completion.choices[0]?.message;
+  const responseText = msg?.content ?? "";
+  const sourceDomains = new Set<string>();
+
+  // OpenAI returns inline citations on the message as `annotations`. The shape
+  // is `{ type: "url_citation", url_citation: { url, title, ... } }`. Pull
+  // hostnames from each.
+  const annotations = (msg as unknown as {
+    annotations?: Array<{ type?: string; url_citation?: { url?: string } }>;
+  }).annotations;
+  if (Array.isArray(annotations)) {
+    for (const ann of annotations) {
+      const url = ann.url_citation?.url;
+      if (!url) continue;
+      try {
+        sourceDomains.add(new URL(url).hostname.toLowerCase());
+      } catch {
+        // skip unparseable
+      }
+    }
+  }
+
+  return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
+}
+
+/** Perplexity's `sonar` family has web search built in. Citations come back
+ *  on the completion object as either `citations: string[]` (older) or
+ *  `search_results: [{ url, ... }]` (newer). Handle both. */
+async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
+  if (!perplexity) throw new Error("PERPLEXITY_API_KEY not configured");
+
+  const completion = await perplexity.chat.completions.create({
+    model: "sonar",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const responseText = completion.choices[0]?.message?.content ?? "";
+  const sourceDomains = new Set<string>();
+
+  const extra = completion as unknown as {
+    citations?: string[];
+    search_results?: Array<{ url?: string }>;
+  };
+  if (Array.isArray(extra.citations)) {
+    for (const url of extra.citations) {
+      try {
+        sourceDomains.add(new URL(url).hostname.toLowerCase());
+      } catch {
+        // skip
+      }
+    }
+  }
+  if (Array.isArray(extra.search_results)) {
+    for (const item of extra.search_results) {
+      if (!item.url) continue;
+      try {
+        sourceDomains.add(new URL(item.url).hostname.toLowerCase());
+      } catch {
+        // skip
+      }
+    }
+  }
+
+  return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
+}
+
 // ─── Main Tracking Check ──────────────────────────────────────────────────────
 
-export async function runTrackingCheck(
-  promptId: string
-): Promise<TrackingCheckResult> {
-  const prompt = await prisma.trackingPrompt.findUnique({
-    where: { id: promptId },
-    include: { store: true },
-  });
-  if (!prompt) throw new Error("Tracking prompt not found");
-
-  // Load identifying signals for the store: domain, brand name, vendor names,
-  // and product titles. Mention detection compares these against the AI's
-  // response text and the source URLs Claude cited.
-  const products = await prisma.product.findMany({
-    where: { storeId: prompt.storeId },
-    select: { title: true, vendor: true, handle: true },
-    take: 100,
-  });
-  const productTitles = [...new Set(products.map((p) => p.title).filter(Boolean))];
-  const vendorSet = new Set<string>();
-  for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
-  const vendors = [...vendorSet];
-
-  const storeName = prompt.store.shopName;
-  const shortDom = shortDomain(prompt.store.shopifyDomain);
-  const fullDom = prompt.store.shopifyDomain.toLowerCase();
-
-  // Run the AI search.
-  const { responseText, sourceDomains } = await askClaudeWithWebSearch(
-    prompt.prompt
-  );
-
+/** Per-platform processor: takes one platform's web-search result, runs
+ *  mention detection / position scoring / sentiment classification, and
+ *  persists an AiCitation row tagged with that platform. Called once per
+ *  enabled platform by the orchestrator below. */
+async function processPlatformCitation(args: {
+  prompt: { id: string; storeId: string; prompt: string; category: string | null };
+  storeName: string;
+  shortDom: string;
+  fullDom: string;
+  productTitles: string[];
+  vendors: string[];
+  platform: AiPlatform;
+  apiResult: ClaudeWebSearchResponse;
+}): Promise<{
+  citationId: string;
+  cited: boolean;
+  position: number | null;
+  citationContext: string | null;
+  responseSnippet: string;
+  productsCited: string[];
+  vendorsCited: string[];
+  competitorsDetected: string[];
+  sentiment: CitationSentiment;
+  platform: AiPlatform;
+}> {
+  const {
+    prompt,
+    storeName,
+    shortDom,
+    fullDom,
+    productTitles,
+    vendors,
+    platform,
+    apiResult,
+  } = args;
+  const { responseText, sourceDomains } = apiResult;
   const lower = responseText.toLowerCase();
 
   const mentionedDomain =
@@ -244,8 +361,6 @@ export async function runTrackingCheck(
     mentionedProducts.length > 0 ||
     mentionedVendors.length > 0;
 
-  // For the position approximation, look for our brand / product references
-  // in the response text.
   const positionKeywords = [
     storeName,
     shortDom,
@@ -253,21 +368,14 @@ export async function runTrackingCheck(
     ...mentionedVendors.slice(0, 3),
   ].filter(Boolean) as string[];
   const position = cited ? firstPosition(responseText, positionKeywords) : null;
-
   const citationContext = cited
     ? snippetAround(responseText, positionKeywords)
     : null;
 
-  // Competitor detection: source domains other than our own that look like
-  // ecommerce/store domains. A rough first pass — we don't try to filter
-  // marketplaces vs reviews here.
   const competitorsDetected = sourceDomains.filter(
     (d) => !d.includes(shortDom) && !d.includes("shopify.com")
   );
 
-  // Sentiment: only meaningful when cited. Use a wider window than the
-  // citation snippet so Claude has enough surrounding context to judge tone
-  // (e.g. a recommendation may sit a sentence away from the brand name).
   let sentiment: CitationSentiment = "NEUTRAL";
   if (cited) {
     const sentimentExcerpt =
@@ -276,12 +384,10 @@ export async function runTrackingCheck(
     sentiment = await classifySentiment(sentimentExcerpt, positionKeywords);
   }
 
-  // Persist as AiCitation. Platform is CLAUDE for now — when we add OpenAI /
-  // Perplexity / Gemini later, each will write its own row per check.
   const citation = await prisma.aiCitation.create({
     data: {
       storeId: prompt.storeId,
-      platform: "CLAUDE",
+      platform,
       prompt: prompt.prompt,
       promptCategory: prompt.category,
       cited,
@@ -289,19 +395,10 @@ export async function runTrackingCheck(
       citationContext,
       sentiment,
       productsCited: mentionedProducts.length > 0 ? mentionedProducts : undefined,
-      competitorsCited: competitorsDetected.length > 0 ? competitorsDetected : undefined,
+      competitorsCited:
+        competitorsDetected.length > 0 ? competitorsDetected : undefined,
       responseSnippet: responseText.slice(0, 2000),
     },
-  });
-
-  // Only update lastCheckedAt. The schedule clock (`nextRunAt`) is owned by
-  // the scheduler tick — manual clicks are intentionally separate from the
-  // automatic schedule. This avoids drift (recomputing nextRunAt based on
-  // `now` would push it forward by check-duration each run) and lets a
-  // merchant probe ad-hoc without disrupting their daily/weekly cadence.
-  await prisma.trackingPrompt.update({
-    where: { id: promptId },
-    data: { lastCheckedAt: new Date() },
   });
 
   return {
@@ -314,6 +411,121 @@ export async function runTrackingCheck(
     vendorsCited: mentionedVendors,
     competitorsDetected,
     sentiment,
+    platform,
+  };
+}
+
+export async function runTrackingCheck(
+  promptId: string
+): Promise<TrackingCheckResult> {
+  const prompt = await prisma.trackingPrompt.findUnique({
+    where: { id: promptId },
+    include: { store: true },
+  });
+  if (!prompt) throw new Error("Tracking prompt not found");
+
+  // Load identifying signals ONCE and share across all platform fanouts.
+  const products = await prisma.product.findMany({
+    where: { storeId: prompt.storeId },
+    select: { title: true, vendor: true, handle: true },
+    take: 100,
+  });
+  const productTitles = [...new Set(products.map((p) => p.title).filter(Boolean))];
+  const vendorSet = new Set<string>();
+  for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
+  const vendors = [...vendorSet];
+
+  const storeName = prompt.store.shopName;
+  const shortDom = shortDomain(prompt.store.shopifyDomain);
+  const fullDom = prompt.store.shopifyDomain.toLowerCase();
+
+  const platforms = enabledPlatforms();
+  if (platforms.length === 0) {
+    throw new Error(
+      "No AI tracking platforms configured — set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or PERPLEXITY_API_KEY"
+    );
+  }
+
+  const askFn = {
+    CLAUDE: askClaudeWithWebSearch,
+    CHATGPT: askOpenAIWithWebSearch,
+    PERPLEXITY: askPerplexityWithWebSearch,
+  } as const;
+
+  // Parallel fanout. allSettled so one platform's failure (network, rate
+  // limit, model deprecated, missing model permission) doesn't abort the
+  // others — partial results are still useful tracking data.
+  const settled = await Promise.allSettled(
+    platforms.map(async (p) => {
+      const apiResult = await askFn[p](prompt.prompt);
+      return processPlatformCitation({
+        prompt,
+        storeName,
+        shortDom,
+        fullDom,
+        productTitles,
+        vendors,
+        platform: p,
+        apiResult,
+      });
+    })
+  );
+
+  const results = settled
+    .filter(
+      (r): r is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof processPlatformCitation>>
+      > => r.status === "fulfilled"
+    )
+    .map((r) => r.value);
+
+  // Always log rejections so the merchant can correlate "I expected ChatGPT
+  // to run but it didn't" with a concrete error in Render logs.
+  for (const r of settled) {
+    if (r.status === "rejected") {
+      console.error(
+        "[tracking] platform check failed:",
+        r.reason instanceof Error ? r.reason.message : String(r.reason)
+      );
+    }
+  }
+
+  if (results.length === 0) {
+    const failureMessages = settled
+      .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+      .join("; ");
+    throw new Error(
+      `All ${platforms.length} AI platform check${
+        platforms.length === 1 ? "" : "s"
+      } failed: ${failureMessages}`
+    );
+  }
+
+  // lastCheckedAt is owned by the orchestrator, not the scheduler — manual
+  // clicks intentionally don't disturb the schedule clock (see A4 audit).
+  await prisma.trackingPrompt.update({
+    where: { id: promptId },
+    data: { lastCheckedAt: new Date() },
+  });
+
+  // Aggregate for the caller. "cited" reflects whether ANY platform cited
+  // the store. We surface the first cited platform's snippet / sentiment /
+  // position to the UI (or just the first result if none cited) — the full
+  // per-platform breakdown lives in the AiCitation rows the loader pulls.
+  const anyCited = results.some((r) => r.cited);
+  const primary = results.find((r) => r.cited) ?? results[0];
+
+  return {
+    citationId: primary.citationId,
+    cited: anyCited,
+    position: primary.position,
+    citationContext: primary.citationContext,
+    responseSnippet: primary.responseSnippet,
+    productsCited: primary.productsCited,
+    vendorsCited: primary.vendorsCited,
+    competitorsDetected: primary.competitorsDetected,
+    sentiment: primary.sentiment,
   };
 }
 

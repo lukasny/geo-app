@@ -32,10 +32,28 @@ import type { PlanKey } from "~/services/billing.shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+type AiPlatform =
+  | "CLAUDE"
+  | "CHATGPT"
+  | "PERPLEXITY"
+  | "GEMINI"
+  | "GROK"
+  | "GOOGLE_AI_OVERVIEW";
+
+const PLATFORM_LABELS: Record<AiPlatform, string> = {
+  CLAUDE: "Claude",
+  CHATGPT: "ChatGPT",
+  PERPLEXITY: "Perplexity",
+  GEMINI: "Gemini",
+  GROK: "Grok",
+  GOOGLE_AI_OVERVIEW: "Google AI",
+};
+
 interface HistoryPoint {
   id: string;
   cited: boolean;
   sentiment: "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+  platform: AiPlatform;
   checkedAt: string;
 }
 
@@ -56,12 +74,17 @@ interface LoaderPrompt {
     cited: boolean;
     position: number | null;
     sentiment: "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+    platform: AiPlatform;
     citationContext: string | null;
     productsCited: string[];
     competitorsCited: string[];
     responseSnippet: string | null;
     checkedAt: string;
   } | null;
+  /** Per-platform "cited / not cited" summary across the most recent
+   *  AiCitation rows for this prompt — one entry per distinct platform
+   *  that's actually run a check. */
+  platformBreakdown: { platform: AiPlatform; cited: boolean }[];
 }
 
 interface LoaderData {
@@ -118,6 +141,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const loaderPrompts: LoaderPrompt[] = prompts.map((p) => {
     const cs = citationsByPrompt.get(p.id) ?? [];
     const latest = cs[0];
+
+    // Per-platform breakdown: most recent citation row per distinct platform.
+    // Shown as small badges on the result card so the merchant can see, e.g.
+    // "Cited by Claude, not by ChatGPT" at a glance.
+    const latestByPlatform = new Map<string, (typeof cs)[number]>();
+    for (const c of cs) {
+      if (!latestByPlatform.has(c.platform)) {
+        latestByPlatform.set(c.platform, c);
+      }
+    }
+    const platformBreakdown = Array.from(latestByPlatform.entries()).map(
+      ([platform, c]) => ({ platform: platform as AiPlatform, cited: c.cited })
+    );
+
     return {
       id: p.id,
       prompt: p.prompt,
@@ -138,6 +175,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           id: c.id,
           cited: c.cited,
           sentiment: c.sentiment as "POSITIVE" | "NEUTRAL" | "NEGATIVE",
+          platform: c.platform as AiPlatform,
           checkedAt: c.checkedAt.toISOString(),
         })),
       totalChecks: cs.length,
@@ -148,6 +186,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             cited: latest.cited,
             position: latest.position,
             sentiment: latest.sentiment as "POSITIVE" | "NEUTRAL" | "NEGATIVE",
+            platform: latest.platform as AiPlatform,
             citationContext: latest.citationContext,
             productsCited: Array.isArray(latest.productsCited)
               ? (latest.productsCited as string[])
@@ -159,6 +198,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             checkedAt: latest.checkedAt.toISOString(),
           }
         : null,
+      platformBreakdown,
     };
   });
 
@@ -388,7 +428,7 @@ function TrendTimeline({ history }: { history: HistoryPoint[] }) {
               stroke={stroke}
               strokeWidth={1}
             >
-              <title>{`${formatTooltipDate(p.checkedAt)} — ${label}`}</title>
+              <title>{`${formatTooltipDate(p.checkedAt)} • ${PLATFORM_LABELS[p.platform] ?? p.platform} • ${label}`}</title>
             </circle>
           );
         })}
@@ -865,6 +905,9 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                 <Badge tone={prompt.latestCitation.cited ? "success" : "critical"}>
                   {prompt.latestCitation.cited ? "Cited" : "Not cited"}
                 </Badge>
+                <Badge tone="info">
+                  {`on ${PLATFORM_LABELS[prompt.latestCitation.platform] ?? prompt.latestCitation.platform}`}
+                </Badge>
                 {prompt.latestCitation.position != null && (
                   <Badge tone="info">
                     {`Position ${prompt.latestCitation.position}`}
@@ -885,6 +928,24 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                     </Badge>
                   )}
               </InlineStack>
+
+              {prompt.platformBreakdown.length > 1 && (
+                <InlineStack gap="200" blockAlign="center" wrap>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    Most recent per platform:
+                  </Text>
+                  {prompt.platformBreakdown.map((pb) => (
+                    <Badge
+                      key={pb.platform}
+                      tone={pb.cited ? "success" : undefined}
+                    >
+                      {`${PLATFORM_LABELS[pb.platform] ?? pb.platform}: ${
+                        pb.cited ? "cited" : "not cited"
+                      }`}
+                    </Badge>
+                  ))}
+                </InlineStack>
+              )}
 
               {prompt.latestCitation.citationContext && (
                 <Box

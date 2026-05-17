@@ -67,13 +67,19 @@ geo-rise/
 ## Environment variables (.env)
 
 ```
-DATABASE_URL=                  # Neon PostgreSQL connection string
-ANTHROPIC_API_KEY=             # Anthropic API key (for AI Simulator)
+DATABASE_URL=                  # Neon PostgreSQL connection string (pooled)
+DIRECT_URL=                    # Neon direct (non-pooled) — for prisma migrations
+ANTHROPIC_API_KEY=             # Claude — required (simulator, auto-fix, tracking)
+OPENAI_API_KEY=                # OpenAI — optional (ChatGPT platform in AI Tracking)
+PERPLEXITY_API_KEY=            # Perplexity — optional (Perplexity platform in AI Tracking)
 SHOPIFY_API_KEY=               # From shopify.app.toml client_id
 SHOPIFY_API_SECRET=            # From Shopify Partner Dashboard
 SHOPIFY_APP_URL=               # Public URL (set by CLI during dev)
 SCOPES=write_products
+SCHEDULER_ENABLED=             # Optional: "false" disables the tracking-check cron (default: enabled)
 ```
+
+Multi-platform tracking is opt-in per platform. With only `ANTHROPIC_API_KEY` set, the AI Tracking feature runs Claude only (current behavior). Adding `OPENAI_API_KEY` and/or `PERPLEXITY_API_KEY` makes each tracking-check fan out to those platforms too — one `AiCitation` row per platform per check, displayed alongside Claude on each prompt card.
 
 ---
 
