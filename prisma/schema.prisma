@@ -48,6 +48,12 @@ enum Sentiment {
   NEGATIVE
 }
 
+enum TrackingSchedule {
+  MANUAL
+  DAILY
+  WEEKLY
+}
+
 enum SubscriptionStatus {
   ACTIVE
   PENDING
@@ -216,18 +222,21 @@ model AiCitation {
 }
 
 model TrackingPrompt {
-  id              String    @id @default(cuid())
+  id              String           @id @default(cuid())
   storeId         String
-  prompt          String    @db.Text
+  prompt          String           @db.Text
   category        String?
   targetKeywords  Json?
-  isActive        Boolean   @default(true)
+  isActive        Boolean          @default(true)
   lastCheckedAt   DateTime?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime         @default(now())
+  schedule        TrackingSchedule @default(MANUAL)
+  nextRunAt       DateTime?
 
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
+  @@index([nextRunAt])
 }
 
 model Competitor {

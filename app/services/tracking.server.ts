@@ -1,5 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import prisma from "~/db.server";
+import {
+  computeNextRunAt,
+  type TrackingSchedule,
+} from "./tracking-scheduler.shared";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -294,9 +298,17 @@ export async function runTrackingCheck(
     },
   });
 
+  // Reset the schedule clock: any run (manual or scheduled) pushes the next
+  // run forward by a full interval, so a manual click doesn't trigger an
+  // immediate duplicate scheduled run.
+  const nextRunAt = computeNextRunAt(
+    prompt.schedule as TrackingSchedule,
+    new Date()
+  );
+
   await prisma.trackingPrompt.update({
     where: { id: promptId },
-    data: { lastCheckedAt: new Date() },
+    data: { lastCheckedAt: new Date(), nextRunAt },
   });
 
   return {

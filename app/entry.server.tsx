@@ -8,6 +8,11 @@ import {
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
+// Side-effect import: boots the in-process tracking-check scheduler exactly
+// once per server lifetime (HMR-safe via a globalThis guard). See
+// services/scheduler.server.ts.
+import "./services/scheduler.server";
+
 export const streamTimeout = 5000;
 
 export default async function handleRequest(

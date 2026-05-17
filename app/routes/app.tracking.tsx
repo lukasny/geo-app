@@ -23,6 +23,10 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { runTrackingCheck, suggestTrackingPrompts } from "~/services/tracking.server";
 import type { SuggestedPrompt } from "~/services/tracking.server";
+import {
+  computeNextRunAt,
+  type TrackingSchedule,
+} from "~/services/tracking-scheduler.shared";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 
@@ -35,6 +39,8 @@ interface LoaderPrompt {
   isActive: boolean;
   lastCheckedAt: string | null;
   createdAt: string;
+  schedule: TrackingSchedule;
+  nextRunAt: string | null;
   totalChecks: number;
   citedCount: number;
   latestCitation: {
@@ -111,6 +117,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       isActive: p.isActive,
       lastCheckedAt: p.lastCheckedAt?.toISOString() ?? null,
       createdAt: p.createdAt.toISOString(),
+      schedule: p.schedule as TrackingSchedule,
+      nextRunAt: p.nextRunAt?.toISOString() ?? null,
       totalChecks: cs.length,
       citedCount: cs.filter((c) => c.cited).length,
       latestCitation: latest
@@ -164,6 +172,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "addPrompt") {
     const promptText = (formData.get("prompt") as string).trim();
     const category = (formData.get("category") as string)?.trim() || null;
+    const scheduleRaw = (formData.get("schedule") as string) || "MANUAL";
+    const schedule: TrackingSchedule = (
+      ["MANUAL", "DAILY", "WEEKLY"].includes(scheduleRaw) ? scheduleRaw : "MANUAL"
+    ) as TrackingSchedule;
     if (!promptText) return { error: "Prompt cannot be empty." };
     if (promptText.length > 500)
       return { error: "Prompt must be 500 characters or fewer." };
@@ -183,9 +195,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         prompt: promptText,
         category,
         isActive: true,
+        schedule,
+        nextRunAt: computeNextRunAt(schedule),
       },
     });
     return { success: true, intent, promptId: created.id, addedPrompt: promptText };
+  }
+
+  if (intent === "setSchedule") {
+    const promptId = formData.get("promptId") as string;
+    const scheduleRaw = (formData.get("schedule") as string) || "MANUAL";
+    if (!promptId) return { error: "Missing prompt ID." };
+    if (!["MANUAL", "DAILY", "WEEKLY"].includes(scheduleRaw)) {
+      return { error: "Invalid schedule." };
+    }
+    const owns = await prisma.trackingPrompt.findFirst({
+      where: { id: promptId, storeId: store.id },
+      select: { id: true },
+    });
+    if (!owns) return { error: "Prompt not found." };
+    const schedule = scheduleRaw as TrackingSchedule;
+    await prisma.trackingPrompt.update({
+      where: { id: promptId },
+      data: { schedule, nextRunAt: computeNextRunAt(schedule) },
+    });
+    return { success: true, intent };
   }
 
   if (intent === "runCheck") {
@@ -252,6 +286,26 @@ const CATEGORY_OPTIONS = [
   { label: "Brand", value: "brand" },
 ];
 
+const SCHEDULE_OPTIONS = [
+  { label: "Manual only", value: "MANUAL" },
+  { label: "Daily", value: "DAILY" },
+  { label: "Weekly", value: "WEEKLY" },
+];
+
+function relativeFuture(iso: string | null): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  const diff = then - Date.now();
+  if (diff <= 0) return "any moment now";
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "in <1m";
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `in ${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `in ${days}d`;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TrackingPage() {
@@ -262,6 +316,7 @@ export default function TrackingPage() {
 
   const [promptDraft, setPromptDraft] = useState("");
   const [categoryDraft, setCategoryDraft] = useState("");
+  const [scheduleDraft, setScheduleDraft] = useState<string>("MANUAL");
   // Suggestions returned by the suggest action live in client state so the
   // user can dismiss them individually as they get added (without re-running
   // the (expensive) suggest call).
@@ -285,6 +340,7 @@ export default function TrackingPage() {
         shopify.toast.show("Tracking prompt added");
         setPromptDraft("");
         setCategoryDraft("");
+        setScheduleDraft("MANUAL");
       }
       setAddingSuggestion(null);
     } else if (data.success && data.intent === "runCheck") {
@@ -296,6 +352,8 @@ export default function TrackingPage() {
       );
     } else if (data.success && data.intent === "deletePrompt") {
       shopify.toast.show("Tracking prompt deleted");
+    } else if (data.success && data.intent === "setSchedule") {
+      shopify.toast.show("Schedule updated");
     } else if (data.success && data.intent === "suggestPrompts") {
       const list = (data.suggestions as SuggestedPrompt[] | undefined) ?? [];
       setSuggestions(list);
@@ -406,6 +464,14 @@ export default function TrackingPage() {
                     options={CATEGORY_OPTIONS}
                     value={categoryDraft}
                     onChange={setCategoryDraft}
+                  />
+                  <Select
+                    label="Schedule"
+                    name="schedule"
+                    options={SCHEDULE_OPTIONS}
+                    value={scheduleDraft}
+                    onChange={setScheduleDraft}
+                    helpText="Daily or Weekly reruns this prompt automatically. Manual = only when you click Run check."
                   />
                   <InlineStack align="end">
                     <Button
@@ -543,6 +609,21 @@ function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardPro
     isWorking &&
     currentIntent?.intent === "deletePrompt" &&
     currentIntent.promptId === prompt.id;
+  const isSchedulingThis =
+    isWorking &&
+    currentIntent?.intent === "setSchedule" &&
+    currentIntent.promptId === prompt.id;
+
+  const handleScheduleChange = (newSchedule: string) => {
+    fetcher.submit(
+      {
+        intent: "setSchedule",
+        promptId: prompt.id,
+        schedule: newSchedule,
+      },
+      { method: "POST" }
+    );
+  };
 
   const citedRate =
     prompt.totalChecks > 0
@@ -568,6 +649,28 @@ function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardPro
                 <Text as="span" variant="bodySm" tone="subdued">
                   Cited in {prompt.citedCount} of {prompt.totalChecks} checks
                   ({citedRate}%)
+                </Text>
+              )}
+            </InlineStack>
+            <InlineStack gap="200" blockAlign="center" wrap>
+              <div style={{ minWidth: 160 }}>
+                <Select
+                  label="Schedule"
+                  labelHidden
+                  options={SCHEDULE_OPTIONS}
+                  value={prompt.schedule}
+                  onChange={handleScheduleChange}
+                  disabled={isWorking && !isSchedulingThis}
+                />
+              </div>
+              {prompt.schedule !== "MANUAL" && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Next auto-run: {relativeFuture(prompt.nextRunAt)}
+                </Text>
+              )}
+              {isSchedulingThis && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Saving…
                 </Text>
               )}
             </InlineStack>
