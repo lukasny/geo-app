@@ -872,7 +872,15 @@ async function generateSeoTitleWithClaude(
       messages: [
         {
           role: "user",
-          content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. Format: "Product Name — Key Benefit | Brand" or similar variants. Include the key feature or benefit and the brand if it fits. No clickbait, no all-caps, no emojis.
+          content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. The title MUST be different from the product title. Lead with the product name, then add a short benefit, descriptor, or brand suffix to differentiate.
+
+Good formats (pick whatever fits best):
+- "Product Name — Key Benefit | Brand"
+- "Product Name | Brand"
+- "Product Name — Use Case"
+- "Adjective Product Type | Brand"
+
+No clickbait, no all-caps, no emojis. Do NOT just repeat the product title verbatim.
 
 Product title: ${product.title}
 ${plainDesc ? `Description: ${plainDesc}` : ""}
@@ -886,7 +894,12 @@ Store: ${storeName}`,
     const block = message.content[0];
     if (block?.type === "text") {
       const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
-      if (cleaned.length >= 20 && cleaned.length <= 80) {
+      // Reject empty, wrong length, or identical-to-product-title outputs.
+      if (
+        cleaned.length >= 20 &&
+        cleaned.length <= 80 &&
+        cleaned.toLowerCase() !== product.title.toLowerCase()
+      ) {
         return cleaned;
       }
     }
@@ -1096,7 +1109,29 @@ export async function autoFixIssues(
         // Decide whether this issue is about the SEO title or the meta description.
         const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
 
-        const seoUpdate: { title?: string; description?: string } = {};
+        // CRITICAL: Shopify's productUpdate replaces the seo object wholesale —
+        // sending `seo: { title }` nulls description and vice versa. We must
+        // always send BOTH fields. Fetch current values first, then update only
+        // the one this issue covers.
+        const currentResponse = await admin.graphql(
+          `#graphql
+          query GetCurrentSeo($id: ID!) {
+            product(id: $id) {
+              seo { title description }
+            }
+          }`,
+          { variables: { id: product.shopifyProductId } }
+        );
+        const currentJson = (await currentResponse.json()) as {
+          data: { product: { seo: { title: string | null; description: string | null } } | null };
+        };
+        const currentSeo = currentJson.data.product?.seo ?? { title: null, description: null };
+
+        const seoUpdate: { title: string | null; description: string | null } = {
+          title: currentSeo.title,
+          description: currentSeo.description,
+        };
+
         if (isSeoTitleIssue) {
           seoUpdate.title = await generateSeoTitleWithClaude(
             {
@@ -1131,12 +1166,20 @@ export async function autoFixIssues(
         const json = (await response.json()) as {
           data: {
             productUpdate: {
+              product?: { seo?: { title?: string | null; description?: string | null } };
               userErrors: { field: string; message: string }[];
             };
           };
         };
 
-        if (json.data.productUpdate.userErrors.length === 0) {
+        // Verify the field we asked to set actually persisted — userErrors=[]
+        // alone is not enough; Shopify has silently returned success on no-ops.
+        const updatedSeo = json.data.productUpdate.product?.seo;
+        const persisted = isSeoTitleIssue
+          ? updatedSeo?.title === seoUpdate.title
+          : updatedSeo?.description === seoUpdate.description;
+
+        if (json.data.productUpdate.userErrors.length === 0 && persisted) {
           await prisma.auditResult.update({
             where: { id: issue.id },
             data: { fixed: true, fixedAt: new Date() },
