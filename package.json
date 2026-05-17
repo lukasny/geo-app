@@ -41,6 +41,7 @@
     "prisma": "^6.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "resend": "^6.12.3",
     "vite-tsconfig-paths": "^5.0.1"
   },
   "devDependencies": {

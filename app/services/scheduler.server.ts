@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { runDueTrackingChecks } from "./tracking-scheduler.server";
+import { runWeeklyInsightDigest } from "./insight-email.server";
 
 // ─── HMR-safe singleton ───────────────────────────────────────────────────────
 
@@ -9,7 +10,11 @@ import { runDueTrackingChecks } from "./tracking-scheduler.server";
 
 interface SchedulerState {
   registered: boolean;
+  /** True while the tracking-check tick is mid-run, prevents overlap. */
   isRunning: boolean;
+  /** Separate guard for the weekly digest tick — it runs much less often
+   *  than tracking, but conceivably could overlap on slow days. */
+  isDigestRunning: boolean;
 }
 
 declare global {
@@ -19,7 +24,11 @@ declare global {
 
 const state: SchedulerState =
   globalThis.__geoRiseScheduler__ ??
-  (globalThis.__geoRiseScheduler__ = { registered: false, isRunning: false });
+  (globalThis.__geoRiseScheduler__ = {
+    registered: false,
+    isRunning: false,
+    isDigestRunning: false,
+  });
 
 // ─── Cron registration ────────────────────────────────────────────────────────
 
@@ -60,6 +69,37 @@ if (ENABLED && !state.registered) {
 
   console.log(
     "[scheduler] registered tracking-check cron (every 15 minutes)"
+  );
+
+  // Daily insight-digest tick at 09:00 UTC. The runner finds stores whose
+  // last digest was >6.5 days ago, so running this daily means each store's
+  // cycle slides between 6.5–7.5 days. Daily-ish cadence beats weekly-strict
+  // for missed-tick recovery.
+  cron.schedule("0 9 * * *", async () => {
+    if (state.isDigestRunning) {
+      console.log(
+        "[scheduler] previous insight-digest tick still running, skipping this one"
+      );
+      return;
+    }
+    state.isDigestRunning = true;
+    const startedAt = Date.now();
+    try {
+      const result = await runWeeklyInsightDigest();
+      if (result.considered > 0) {
+        console.log(
+          `[scheduler] insight-digest tick: considered=${result.considered} sent=${result.sent} skipped=${result.skippedNotEligible} failed=${result.failed} in ${Date.now() - startedAt}ms`
+        );
+      }
+    } catch (err) {
+      console.error("[scheduler] insight-digest tick failed:", err);
+    } finally {
+      state.isDigestRunning = false;
+    }
+  });
+
+  console.log(
+    "[scheduler] registered weekly insight-digest cron (daily @ 09:00 UTC)"
   );
 }
 

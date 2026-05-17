@@ -76,7 +76,9 @@ SHOPIFY_API_KEY=               # From shopify.app.toml client_id
 SHOPIFY_API_SECRET=            # From Shopify Partner Dashboard
 SHOPIFY_APP_URL=               # Public URL (set by CLI during dev)
 SCOPES=write_products
-SCHEDULER_ENABLED=             # Optional: "false" disables the tracking-check cron (default: enabled)
+SCHEDULER_ENABLED=             # Optional: "false" disables the tracking-check + insight-email crons (default: enabled)
+RESEND_API_KEY=                # Optional: Resend API key — enables weekly insight emails. Without it, the UI surface exists but sends are no-ops.
+INSIGHT_FROM_EMAIL=            # Optional: "Display Name <addr@domain>" sender. Default: "GEO Rise <onboarding@resend.dev>". Set to a verified-domain address for production.
 ```
 
 Multi-platform tracking is opt-in per platform. With only `ANTHROPIC_API_KEY` set, the AI Tracking feature runs Claude only (current behavior). Adding `OPENAI_API_KEY` and/or `PERPLEXITY_API_KEY` makes each tracking-check fan out to those platforms too — one `AiCitation` row per platform per check, displayed alongside Claude on each prompt card.

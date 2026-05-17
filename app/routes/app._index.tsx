@@ -33,12 +33,15 @@ interface StoreData {
   id: string;
   shopifyDomain: string;
   shopName: string;
+  email: string | null;
   plan: string;
   geoScore: number;
   totalProducts: number;
   auditedProducts: number;
   onboardingCompleted: boolean;
   installedAt: string;
+  weeklyInsightEnabled: boolean;
+  lastInsightSentAt: string | null;
 }
 
 interface ActivityItem {
@@ -136,7 +139,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   return {
-    store: { ...store, installedAt: store.installedAt.toISOString() },
+    store: {
+      ...store,
+      installedAt: store.installedAt.toISOString(),
+      lastInsightSentAt: store.lastInsightSentAt?.toISOString() ?? null,
+    },
     llmsFile: llmsFile
       ? {
           productCount: llmsFile.productCount,
@@ -204,6 +211,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { onboardingCompleted: true },
     });
     return { success: true, intent };
+  }
+
+  if (intent === "toggleWeeklyEmail") {
+    // Plan-tier guard: only paid plans get insight emails. Block the toggle
+    // from being enabled on FREE — the cron tick filters them out anyway,
+    // but failing fast surfaces "upgrade required" instead of silently
+    // toggling a flag that has no effect.
+    const planLimits =
+      PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+    const wantsEnable = formData.get("enabled") === "true";
+    if (wantsEnable && !planLimits.insightEmails) {
+      return {
+        error: "Weekly insight emails are a Growth/Pro/Enterprise feature.",
+      };
+    }
+    await prisma.store.update({
+      where: { id: store.id },
+      data: { weeklyInsightEnabled: wantsEnable },
+    });
+    return { success: true, intent, weeklyInsightEnabled: wantsEnable };
+  }
+
+  if (intent === "sendTestEmail") {
+    const planLimits =
+      PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+    if (!planLimits.insightEmails) {
+      return {
+        error: "Insight emails are a Growth/Pro/Enterprise feature.",
+      };
+    }
+    const { sendInsightEmail } = await import(
+      "~/services/insight-email.server"
+    );
+    const result = await sendInsightEmail(store.id);
+    if (result.sent) {
+      return { success: true, intent };
+    }
+    return {
+      error: result.reason ?? "Couldn't send the test email.",
+    };
   }
 
   return { error: "Unknown action." };
@@ -547,6 +594,14 @@ export default function Index() {
       shopify.toast.show(`llms.txt generated with ${data.productCount} products!`);
     } else if (data.intent === "runAudit") {
       shopify.toast.show(`Audit complete! GEO score: ${data.storeScore}/100`);
+    } else if (data.intent === "toggleWeeklyEmail") {
+      shopify.toast.show(
+        data.weeklyInsightEnabled
+          ? "Weekly insight emails on — you'll get the next one within ~7 days"
+          : "Weekly insight emails turned off"
+      );
+    } else if (data.intent === "sendTestEmail") {
+      shopify.toast.show("Test email sent — check your inbox");
     }
   }, [fetcher.data, fetcher.state, shopify]);
 
@@ -727,6 +782,79 @@ export default function Index() {
             )}
           </BlockStack>
         </Card>
+
+        {/* ── ROW 3.5: Weekly insight email preferences ── */}
+        {/* Paid plans only — Free plan hides the card. Lets merchant toggle
+            the weekly digest and send a one-off test to verify deliverability
+            before the next scheduled run. */}
+        {!isFreePlan && (
+          <Card>
+            <BlockStack gap="300">
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  Weekly insight email
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  We&apos;ll email a digest to{" "}
+                  <strong>{store.email ?? "your store contact"}</strong> every
+                  ~7 days with your GEO score, top action items, and recent AI
+                  tracking activity. Currently:{" "}
+                  <strong>
+                    {store.weeklyInsightEnabled ? "on" : "off"}
+                  </strong>
+                  .{" "}
+                  {store.lastInsightSentAt ? (
+                    <>
+                      Last sent {timeAgo(store.lastInsightSentAt)}.
+                    </>
+                  ) : (
+                    <>No emails sent yet.</>
+                  )}
+                </Text>
+              </BlockStack>
+              <InlineStack gap="300" blockAlign="center" wrap>
+                <fetcher.Form method="POST">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="toggleWeeklyEmail"
+                  />
+                  <input
+                    type="hidden"
+                    name="enabled"
+                    value={String(!store.weeklyInsightEnabled)}
+                  />
+                  <Button
+                    submit
+                    loading={
+                      isLoading && lastIntent === "toggleWeeklyEmail"
+                    }
+                    disabled={isLoading && lastIntent !== "toggleWeeklyEmail"}
+                  >
+                    {store.weeklyInsightEnabled
+                      ? "Turn off weekly emails"
+                      : "Turn on weekly emails"}
+                  </Button>
+                </fetcher.Form>
+                <Button
+                  onClick={() => submit("sendTestEmail")}
+                  loading={isLoading && lastIntent === "sendTestEmail"}
+                  disabled={
+                    !store.email ||
+                    (isLoading && lastIntent !== "sendTestEmail")
+                  }
+                >
+                  Send a test email now
+                </Button>
+                {!store.email && (
+                  <Text as="span" variant="bodySm" tone="critical">
+                    No email on file — set it in your Shopify store contact.
+                  </Text>
+                )}
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        )}
 
         {/* ── ROW 4: Plan upgrade ── */}
         {/* Pricing pulls from PLAN_DEFINITIONS so we don't drift again — this
