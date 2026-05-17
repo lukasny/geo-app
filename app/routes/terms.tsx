@@ -1,4 +1,6 @@
 // Public route — no Shopify auth required
+import { PLAN_DEFINITIONS } from "~/services/billing.shared";
+
 export default function TermsOfService() {
   return (
     <div
@@ -16,7 +18,7 @@ export default function TermsOfService() {
         GEO Rise — Terms of Service
       </h1>
       <p style={{ color: "#6D7175", marginBottom: 40 }}>
-        Last updated: April 3, 2025
+        Last updated: May 17, 2026
       </p>
 
       <Section title="1. Acceptance of terms">
@@ -42,8 +44,12 @@ export default function TermsOfService() {
       <Section title="3. Subscription and billing">
         <ul>
           <li>
-            GEO Rise is available on a Free plan and paid plans (Growth at
-            $39/month, Pro at $79/month, Enterprise at $199/month).
+            GEO Rise is available on a Free plan and paid plans (
+            {PLAN_DEFINITIONS.GROWTH.name} at $
+            {PLAN_DEFINITIONS.GROWTH.price}/month,{" "}
+            {PLAN_DEFINITIONS.PRO.name} at ${PLAN_DEFINITIONS.PRO.price}/month,{" "}
+            {PLAN_DEFINITIONS.ENTERPRISE.name} at $
+            {PLAN_DEFINITIONS.ENTERPRISE.price}/month).
           </li>
           <li>
             Paid plans are billed monthly through Shopify&apos;s standard app

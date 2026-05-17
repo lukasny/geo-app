@@ -16,7 +16,7 @@ export default function PrivacyPolicy() {
         GEO Rise — Privacy Policy
       </h1>
       <p style={{ color: "#6D7175", marginBottom: 40 }}>
-        Last updated: April 3, 2025
+        Last updated: May 17, 2026
       </p>
 
       <Section title="1. Who we are">
