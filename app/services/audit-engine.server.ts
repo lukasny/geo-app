@@ -74,6 +74,16 @@ export interface AuditSummary {
 export interface AutoFixSummary {
   fixed: number;
   failed: number;
+  /** Issues that turned out not to need fixing at fix-time — e.g. merchant
+   *  manually populated the field between audit and fix. Counted separately
+   *  from `fixed` so the UI can show "we resolved 12 and skipped 3 that were
+   *  already good." Optional for backward compat with older callers. */
+  skipped?: number;
+  /** Whether the loop short-circuited because too many consecutive Claude
+   *  calls failed (e.g. credit balance exhausted). When true, the caller
+   *  should surface "AI service temporarily unavailable" to the merchant
+   *  instead of "some fixes failed." */
+  aborted?: boolean;
 }
 
 // ─── HTML / Text Helpers ──────────────────────────────────────────────────────
@@ -810,10 +820,74 @@ const UPDATE_IMAGE_ALT_MUTATION = `#graphql
 
 // ─── Claude-Powered Content Generation (used by autoFixIssues) ─────────────────
 
+/** Discriminated union returned by every generator. Distinguishes:
+ *  - `ok + source: "claude"` — Claude produced valid output, use it
+ *  - `ok + source: "fallback"` — Claude responded but output was unusable;
+ *    use the deterministic template (acceptable quality, log as fallback)
+ *  - `!ok + claude_credits` — permanent failure (credits exhausted, auth)
+ *    that won't recover this session; caller should ABORT the whole loop
+ *  - `!ok + claude_other` — transient failure that didn't recover even
+ *    after retries; caller should SKIP this issue but keep going */
+type GenResult =
+  | { ok: true; value: string; source: "claude" | "fallback" }
+  | { ok: false; reason: "claude_credits" | "claude_other" };
+
+/** Anthropic returns these for permanent failures we should NOT retry: bad
+ *  API key, exhausted credits, banned content, request too large. Surfacing
+ *  these to the merchant requires they (or we) fix something external. */
+function isClaudeAuthOrCreditError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /credit balance.*too low|insufficient_quota|authentication_error|permission_error|billing/i.test(
+    msg
+  );
+}
+
+/** Transient errors worth retrying with backoff: 429s, 5xx, network drops. */
+function isTransientError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /rate.?limit|\b429\b|\b5\d\d\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|overloaded/i.test(
+    msg
+  );
+}
+
+/** Retry a Claude (or any) async call up to `maxAttempts` times with
+ *  exponential backoff. Bails immediately on permanent errors (credit/auth)
+ *  so we don't waste time retrying things that will never succeed. */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxAttempts = 3
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (isClaudeAuthOrCreditError(err)) {
+        // Permanent — give up immediately, surface upward
+        throw err;
+      }
+      if (attempt === maxAttempts || !isTransientError(err)) {
+        // Either out of retries or not a retryable error
+        throw err;
+      }
+      const backoffMs = 500 * 2 ** (attempt - 1); // 500ms, 1s, 2s
+      console.warn(
+        `[GEO Rise auto-fix] ${label} attempt ${attempt} failed (${
+          err instanceof Error ? err.message : String(err)
+        }), retrying in ${backoffMs}ms`
+      );
+      await new Promise<void>((r) => setTimeout(r, backoffMs));
+    }
+  }
+  throw lastErr;
+}
+
 async function generateMetaDescriptionWithClaude(
   product: { title: string; description: string | null; vendor: string | null; productType: string | null },
   storeName: string
-): Promise<string> {
+): Promise<GenResult> {
   const plainDesc = product.description ? stripHtml(product.description).slice(0, 500) : "";
   const fallback = `${product.title}${plainDesc ? ` — ${plainDesc.split(/[.!?]/)[0]?.trim() ?? ""}` : ""}. Shop ${product.vendor || ""} ${product.productType || ""} at ${storeName}.`
     .replace(/\s+/g, " ")
@@ -821,58 +895,66 @@ async function generateMetaDescriptionWithClaude(
     .trim();
 
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 256,
-      system:
-        "You are an expert e-commerce SEO copywriter. You write concise, compelling meta descriptions that get clicked. Output ONLY the meta description — no quotes, no preamble, no labels.",
-      messages: [
-        {
-          role: "user",
-          content: `Write a meta description (strictly between 120 and 158 characters — count carefully and stop at a complete sentence; do not end mid-word) for this product. It must include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis.
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 256,
+          system:
+            "You are an expert e-commerce SEO copywriter. You write concise, compelling meta descriptions that get clicked. Output ONLY the meta description — no quotes, no preamble, no labels. Avoid AI-cliché openers like 'Discover', 'Unlock', 'Dive into', 'Experience', 'Elevate'.",
+          messages: [
+            {
+              role: "user",
+              content: `Write a meta description (strictly between 120 and 158 characters — count carefully and stop at a complete sentence; do not end mid-word) for this product. Lead with the product itself, not a verb. Include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis, no "Discover/Unlock/Dive into".
 
 Product title: ${product.title}
 ${plainDesc ? `Product description: ${plainDesc}` : "Product description: (none provided)"}
 ${product.vendor ? `Brand: ${product.vendor}` : ""}
 ${product.productType ? `Category: ${product.productType}` : ""}
 Store: ${storeName}`,
-        },
-      ],
-    });
+            },
+          ],
+        }),
+      "generateMetaDescription"
+    );
 
     const block = message.content[0];
     if (block?.type === "text") {
       const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
       if (cleaned.length >= 50 && cleaned.length <= 200) {
-        // Trust Claude's output. Don't slice — slicing at 160 cuts mid-word
-        // (e.g. "...one standout boar" instead of "board"). Shopify accepts
-        // up to 320 chars in meta description and only truncates in display.
-        return cleaned;
+        return { ok: true, value: cleaned, source: "claude" };
       }
     }
+    // Claude returned but output was unusable — fall through to template
+    return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
-    console.error("[GEO Rise] Claude meta description failed, using fallback:", err);
+    console.error("[GEO Rise auto-fix] meta description generator failed:", err);
+    return {
+      ok: false,
+      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+    };
   }
-  return fallback;
 }
 
 async function generateSeoTitleWithClaude(
   product: { title: string; description: string | null; vendor: string | null; productType: string | null },
   storeName: string
-): Promise<string> {
+): Promise<GenResult> {
   const plainDesc = product.description ? stripHtml(product.description).slice(0, 300) : "";
   const fallback = `${product.title}${product.vendor ? ` | ${product.vendor}` : ""}`.slice(0, 60);
 
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 128,
-      system:
-        "You are an expert e-commerce SEO copywriter. You write concise, click-worthy SEO titles for product pages. Output ONLY the title — no quotes, no preamble, no labels.",
-      messages: [
-        {
-          role: "user",
-          content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. The title MUST be different from the product title. Lead with the product name, then add a short benefit, descriptor, or brand suffix to differentiate.
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 128,
+          system:
+            "You are an expert e-commerce SEO copywriter. You write concise, click-worthy SEO titles for product pages. Output ONLY the title — no quotes, no preamble, no labels.",
+          messages: [
+            {
+              role: "user",
+              content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. The title MUST be different from the product title. Lead with the product name, then add a short benefit, descriptor, or brand suffix to differentiate.
 
 Good formats (pick whatever fits best):
 - "Product Name — Key Benefit | Brand"
@@ -887,9 +969,11 @@ ${plainDesc ? `Description: ${plainDesc}` : ""}
 ${product.vendor ? `Brand: ${product.vendor}` : ""}
 ${product.productType ? `Category: ${product.productType}` : ""}
 Store: ${storeName}`,
-        },
-      ],
-    });
+            },
+          ],
+        }),
+      "generateSeoTitle"
+    );
 
     const block = message.content[0];
     if (block?.type === "text") {
@@ -900,13 +984,17 @@ Store: ${storeName}`,
         cleaned.length <= 80 &&
         cleaned.toLowerCase() !== product.title.toLowerCase()
       ) {
-        return cleaned;
+        return { ok: true, value: cleaned, source: "claude" };
       }
     }
+    return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
-    console.error("[GEO Rise] Claude SEO title failed, using fallback:", err);
+    console.error("[GEO Rise auto-fix] SEO title generator failed:", err);
+    return {
+      ok: false,
+      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+    };
   }
-  return fallback;
 }
 
 async function generateProductDescriptionWithClaude(
@@ -919,7 +1007,7 @@ async function generateProductDescriptionWithClaude(
   },
   imageUrl: string | null,
   storeName: string
-): Promise<string> {
+): Promise<GenResult> {
   const existing = product.description ? stripHtml(product.description).slice(0, 500).trim() : "";
   const fallback = `<p>${product.title}${product.vendor ? ` by ${product.vendor}` : ""}.${product.productType ? ` ${product.productType}.` : ""}${existing ? ` ${existing}` : ""}</p>`;
 
@@ -934,7 +1022,7 @@ async function generateProductDescriptionWithClaude(
 
 The first paragraph should describe what the product is and its main benefit. The second paragraph should cover features, materials, and what makes it distinctive. If applicable, a third paragraph can cover use cases or who the product is for.
 
-Write in natural, conversational prose. Mention specific details visible in the image — colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion"). Do NOT use all-caps or emojis.
+Write in natural, conversational prose. Mention specific details visible in the image — colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion", "elevate", "unlock", "dive into"). Do NOT use all-caps or emojis.
 
 Product title: ${product.title}
 ${product.vendor ? `Brand: ${product.vendor}` : ""}
@@ -946,65 +1034,507 @@ Store: ${storeName}
 Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around the output.`,
     });
 
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1024,
-      system:
-        "You are an expert e-commerce product copywriter. You write factual, specific, benefit-focused descriptions optimized for AI search engines (ChatGPT, Perplexity, Google AI Overview) and human shoppers. Output is valid HTML using <p> tags.",
-      messages: [{ role: "user", content: userContent }],
-    });
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1024,
+          system:
+            "You are an expert e-commerce product copywriter. You write factual, specific, benefit-focused descriptions optimized for AI search engines (ChatGPT, Perplexity, Google AI Overview) and human shoppers. Output is valid HTML using <p> tags.",
+          messages: [{ role: "user", content: userContent }],
+        }),
+      "generateProductDescription"
+    );
 
     const block = message.content[0];
     if (block?.type === "text") {
       const cleaned = block.text.trim();
       if (cleaned.length >= 100 && cleaned.length <= 3000 && cleaned.includes("<p>")) {
-        return cleaned;
+        return { ok: true, value: cleaned, source: "claude" };
       }
     }
+    return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
-    console.error("[GEO Rise] Claude description failed, using fallback:", err);
+    console.error("[GEO Rise auto-fix] description generator failed:", err);
+    return {
+      ok: false,
+      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+    };
   }
-  return fallback;
 }
 
 async function generateAltTextWithClaude(
   product: { title: string; vendor: string | null; productType: string | null },
   imageUrl: string
-): Promise<string> {
+): Promise<GenResult> {
   const fallback = `${product.title}${product.vendor ? ` by ${product.vendor}` : ""}${product.productType ? `. ${product.productType}` : ""}.`;
 
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 200,
-      system:
-        "You are an accessibility expert writing image alt text for e-commerce product photos. Describe the SPECIFIC visual contents of the image — colors, materials, angle, context, what's visible — not just the product name. Output ONLY the alt text. No quotes, no preamble.",
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "url", url: imageUrl } },
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 200,
+          system:
+            "You are an accessibility expert writing image alt text for e-commerce product photos. Describe the SPECIFIC visual contents of the image — colors, materials, angle, context, what's visible — not just the product name. Output ONLY the alt text. No quotes, no preamble.",
+          messages: [
             {
-              type: "text",
-              text: `Write descriptive alt text (under 125 characters) for this product image. The product is "${product.title}"${product.vendor ? ` by ${product.vendor}` : ""}. Focus on what is visible in the image, not the product name.`,
+              role: "user",
+              content: [
+                { type: "image", source: { type: "url", url: imageUrl } },
+                {
+                  type: "text",
+                  text: `Write descriptive alt text (under 125 characters) for this product image. The product is "${product.title}"${product.vendor ? ` by ${product.vendor}` : ""}. Focus on what is visible in the image, not the product name.`,
+                },
+              ],
             },
           ],
-        },
-      ],
-    });
+        }),
+      "generateAltText"
+    );
 
     const block = message.content[0];
     if (block?.type === "text") {
       const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
       if (cleaned.length >= 10 && cleaned.length <= 200) {
-        return cleaned.slice(0, 125);
+        return { ok: true, value: cleaned.slice(0, 125), source: "claude" };
       }
     }
+    return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
-    console.error("[GEO Rise] Claude alt text failed, using fallback:", err);
+    console.error("[GEO Rise auto-fix] alt text generator failed:", err);
+    return {
+      ok: false,
+      reason: isClaudeAuthOrCreditError(err) ? "claude_credits" : "claude_other",
+    };
   }
-  return fallback;
 }
+
+// ─── Per-Category Fix Helpers ─────────────────────────────────────────────────
+
+/** Discriminated outcome from each per-category helper. The orchestrator
+ *  translates this into counters + the circuit-breaker decision. */
+type FixOutcome =
+  | { result: "fixed"; usedFallback: boolean }
+  | { result: "skipped" }
+  | { result: "failed"; reason: string }
+  | { result: "aborted"; reason: string };
+
+async function fixContentIssue(
+  issue: { id: string; productId: string },
+  admin: AdminApiContext,
+  shopName: string
+): Promise<FixOutcome> {
+  const product = await prisma.product.findUnique({
+    where: { id: issue.productId },
+  });
+  if (!product) return { result: "failed", reason: "product_not_found" };
+
+  // Fetch current Shopify state. Used both for the skip-if-already-good check
+  // (don't overwrite a description the merchant fixed manually between audit
+  // and fix) and for the image context Claude needs to write a good blurb.
+  let imageUrl: string | null = null;
+  let tags: string[] = [];
+  let currentHtml = "";
+  try {
+    const ctx = await admin.graphql(
+      `#graphql
+       query GetProductContext($id: ID!) {
+         product(id: $id) { descriptionHtml featuredImage { url } tags }
+       }`,
+      { variables: { id: product.shopifyProductId } }
+    );
+    const ctxJson = (await ctx.json()) as {
+      data: {
+        product: {
+          descriptionHtml: string;
+          featuredImage: { url: string } | null;
+          tags: string[];
+        } | null;
+      };
+    };
+    if (ctxJson.data.product) {
+      imageUrl = ctxJson.data.product.featuredImage?.url ?? null;
+      tags = ctxJson.data.product.tags ?? [];
+      currentHtml = ctxJson.data.product.descriptionHtml ?? "";
+    }
+  } catch {
+    // Continue without context — the generator can work without an image
+  }
+
+  const currentWords = wordCount(stripHtml(currentHtml));
+  if (currentWords >= 120) {
+    console.log(
+      `[GEO Rise auto-fix] CONTENT skipped for ${product.shopifyProductId}: already has ${currentWords} words`
+    );
+    await prisma.auditResult.update({
+      where: { id: issue.id },
+      data: { fixed: true, fixedAt: new Date() },
+    });
+    await prisma.product.update({
+      where: { id: issue.productId },
+      data: {
+        description: currentHtml,
+        descriptionWordCount: currentWords,
+        hasRichDescription: true,
+      },
+    });
+    return { result: "skipped" };
+  }
+
+  const gen = await generateProductDescriptionWithClaude(
+    {
+      title: product.title,
+      description: currentHtml || product.description,
+      vendor: product.vendor,
+      productType: product.productType,
+      tags,
+    },
+    imageUrl,
+    shopName
+  );
+  if (!gen.ok) {
+    return gen.reason === "claude_credits"
+      ? { result: "aborted", reason: "claude_credits" }
+      : { result: "failed", reason: gen.reason };
+  }
+
+  const descriptionHtml = gen.value;
+  const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
+    variables: { input: { id: product.shopifyProductId, descriptionHtml } },
+  });
+  const json = (await response.json()) as {
+    data: {
+      productUpdate: {
+        product?: { descriptionHtml?: string };
+        userErrors: { field: string; message: string }[];
+      };
+    };
+  };
+  if (json.data.productUpdate.userErrors.length > 0) {
+    console.error(
+      `[GEO Rise auto-fix] CONTENT userErrors for ${product.shopifyProductId}:`,
+      json.data.productUpdate.userErrors
+    );
+    return { result: "failed", reason: "shopify_user_errors" };
+  }
+
+  // Persistence check — Shopify has been known to silently no-op (see
+  // project_known_fixes.md for the seo: precedent). Verify the saved
+  // description is at least the size of what we wrote (allowing some
+  // whitespace normalization, but not a silent revert).
+  const wroteWords = wordCount(stripHtml(descriptionHtml));
+  const returnedHtml = json.data.productUpdate.product?.descriptionHtml ?? "";
+  const returnedWords = wordCount(stripHtml(returnedHtml));
+  if (returnedWords < Math.min(wroteWords, 80)) {
+    console.error(
+      `[GEO Rise auto-fix] CONTENT persistence verify failed for ${product.shopifyProductId}: wrote ${wroteWords} words, got back ${returnedWords}`
+    );
+    return { result: "failed", reason: "persistence_verify_failed" };
+  }
+
+  await prisma.auditResult.update({
+    where: { id: issue.id },
+    data: { fixed: true, fixedAt: new Date() },
+  });
+  await prisma.product.update({
+    where: { id: issue.productId },
+    data: {
+      description: descriptionHtml,
+      descriptionWordCount: wroteWords,
+      hasRichDescription: wroteWords >= 100,
+    },
+  });
+  if (gen.source === "fallback") {
+    console.warn(
+      `[GEO Rise auto-fix] CONTENT used fallback template for ${product.shopifyProductId}`
+    );
+  }
+  return { result: "fixed", usedFallback: gen.source === "fallback" };
+}
+
+async function fixMetaIssue(
+  issue: { id: string; productId: string; title: string },
+  admin: AdminApiContext,
+  shopName: string
+): Promise<FixOutcome> {
+  const product = await prisma.product.findUnique({
+    where: { id: issue.productId },
+  });
+  if (!product) return { result: "failed", reason: "product_not_found" };
+
+  const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
+
+  // Fetch current seo for both (a) skip-if-good check and (b) the
+  // productUpdate seo:-wholesale-replacement workaround — always send BOTH.
+  const currentResponse = await admin.graphql(
+    `#graphql
+     query GetCurrentSeo($id: ID!) {
+       product(id: $id) { seo { title description } }
+     }`,
+    { variables: { id: product.shopifyProductId } }
+  );
+  const currentJson = (await currentResponse.json()) as {
+    data: { product: { seo: { title: string | null; description: string | null } } | null };
+  };
+  const currentSeo = currentJson.data.product?.seo ?? { title: null, description: null };
+
+  if (isSeoTitleIssue) {
+    const t = currentSeo.title?.trim() ?? "";
+    if (
+      t.length >= 20 &&
+      t.length <= 80 &&
+      t.toLowerCase() !== product.title.toLowerCase()
+    ) {
+      console.log(
+        `[GEO Rise auto-fix] META SEO-title skipped for ${product.shopifyProductId}: already populated (${t.length} chars)`
+      );
+      await prisma.auditResult.update({
+        where: { id: issue.id },
+        data: { fixed: true, fixedAt: new Date() },
+      });
+      await prisma.product.update({
+        where: { id: issue.productId },
+        data: { hasMetaTitle: true },
+      });
+      return { result: "skipped" };
+    }
+  } else {
+    const d = currentSeo.description?.trim() ?? "";
+    if (d.length >= 50 && d.length <= 320) {
+      console.log(
+        `[GEO Rise auto-fix] META meta-description skipped for ${product.shopifyProductId}: already populated (${d.length} chars)`
+      );
+      await prisma.auditResult.update({
+        where: { id: issue.id },
+        data: { fixed: true, fixedAt: new Date() },
+      });
+      await prisma.product.update({
+        where: { id: issue.productId },
+        data: { hasMetaDescription: true },
+      });
+      return { result: "skipped" };
+    }
+  }
+
+  const gen = isSeoTitleIssue
+    ? await generateSeoTitleWithClaude(
+        {
+          title: product.title,
+          description: product.description,
+          vendor: product.vendor,
+          productType: product.productType,
+        },
+        shopName
+      )
+    : await generateMetaDescriptionWithClaude(
+        {
+          title: product.title,
+          description: product.description,
+          vendor: product.vendor,
+          productType: product.productType,
+        },
+        shopName
+      );
+  if (!gen.ok) {
+    return gen.reason === "claude_credits"
+      ? { result: "aborted", reason: "claude_credits" }
+      : { result: "failed", reason: gen.reason };
+  }
+
+  const seoUpdate: { title: string | null; description: string | null } = {
+    title: currentSeo.title,
+    description: currentSeo.description,
+  };
+  if (isSeoTitleIssue) seoUpdate.title = gen.value;
+  else seoUpdate.description = gen.value;
+
+  const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
+    variables: { input: { id: product.shopifyProductId, seo: seoUpdate } },
+  });
+  const json = (await response.json()) as {
+    data: {
+      productUpdate: {
+        product?: { seo?: { title?: string | null; description?: string | null } };
+        userErrors: { field: string; message: string }[];
+      };
+    };
+  };
+  if (json.data.productUpdate.userErrors.length > 0) {
+    console.error(
+      `[GEO Rise auto-fix] META userErrors for ${product.shopifyProductId}:`,
+      json.data.productUpdate.userErrors
+    );
+    return { result: "failed", reason: "shopify_user_errors" };
+  }
+
+  const updatedSeo = json.data.productUpdate.product?.seo;
+  const persisted = isSeoTitleIssue
+    ? updatedSeo?.title === seoUpdate.title
+    : updatedSeo?.description === seoUpdate.description;
+  if (!persisted) {
+    console.error(
+      `[GEO Rise auto-fix] META persistence verify failed for ${product.shopifyProductId} (${
+        isSeoTitleIssue ? "title" : "description"
+      })`
+    );
+    return { result: "failed", reason: "persistence_verify_failed" };
+  }
+
+  await prisma.auditResult.update({
+    where: { id: issue.id },
+    data: { fixed: true, fixedAt: new Date() },
+  });
+  await prisma.product.update({
+    where: { id: issue.productId },
+    data: isSeoTitleIssue ? { hasMetaTitle: true } : { hasMetaDescription: true },
+  });
+  if (gen.source === "fallback") {
+    console.warn(
+      `[GEO Rise auto-fix] META used fallback template for ${product.shopifyProductId} (${
+        isSeoTitleIssue ? "title" : "description"
+      })`
+    );
+  }
+  return { result: "fixed", usedFallback: gen.source === "fallback" };
+}
+
+async function fixImagesIssue(
+  issue: { id: string; productId: string },
+  admin: AdminApiContext
+): Promise<FixOutcome> {
+  const product = await prisma.product.findUnique({
+    where: { id: issue.productId },
+  });
+  if (!product) return { result: "failed", reason: "product_not_found" };
+
+  const imgResponse = await admin.graphql(
+    `#graphql
+     query GetProductImages($id: ID!) {
+       product(id: $id) {
+         media(first: 20) {
+           edges {
+             node {
+               ... on MediaImage {
+                 id
+                 alt
+                 image { url }
+               }
+             }
+           }
+         }
+       }
+     }`,
+    { variables: { id: product.shopifyProductId } }
+  );
+  const imgJson = (await imgResponse.json()) as {
+    data: {
+      product: {
+        media: {
+          edges: {
+            node: { id: string; alt: string | null; image?: { url: string } | null };
+          }[];
+        };
+      };
+    };
+  };
+  const missingAlt = imgJson.data.product.media.edges.filter(
+    (e) => !e.node.alt || e.node.alt.trim() === ""
+  );
+
+  if (missingAlt.length === 0) {
+    console.log(
+      `[GEO Rise auto-fix] IMAGES skipped for ${product.shopifyProductId}: all images already have alt text`
+    );
+    await prisma.auditResult.update({
+      where: { id: issue.id },
+      data: { fixed: true, fixedAt: new Date() },
+    });
+    await prisma.product.update({
+      where: { id: issue.productId },
+      data: { hasAltText: true, altTextQuality: 80 },
+    });
+    return { result: "skipped" };
+  }
+
+  const mediaWithoutAlt: { id: string; alt: string }[] = [];
+  let usedAnyFallback = false;
+  for (const edge of missingAlt) {
+    const imageUrl = edge.node.image?.url;
+    if (!imageUrl) continue;
+    const gen = await generateAltTextWithClaude(
+      { title: product.title, vendor: product.vendor, productType: product.productType },
+      imageUrl
+    );
+    if (gen.ok) {
+      mediaWithoutAlt.push({ id: edge.node.id, alt: gen.value });
+      if (gen.source === "fallback") usedAnyFallback = true;
+    } else if (gen.reason === "claude_credits") {
+      return { result: "aborted", reason: "claude_credits" };
+    } else {
+      // Transient on this image — skip just this image, keep going with others
+      console.warn(
+        `[GEO Rise auto-fix] IMAGES alt-text generator failed for one image of ${product.shopifyProductId}; continuing`
+      );
+    }
+  }
+
+  if (mediaWithoutAlt.length === 0) {
+    return { result: "failed", reason: "all_alt_generators_failed" };
+  }
+
+  const updateResponse = await admin.graphql(UPDATE_IMAGE_ALT_MUTATION, {
+    variables: {
+      productId: product.shopifyProductId,
+      media: mediaWithoutAlt,
+    },
+  });
+  const updateJson = (await updateResponse.json()) as {
+    data: {
+      productUpdateMedia: {
+        media?: { id: string; alt: string }[];
+        mediaUserErrors: { field: string; message: string }[];
+      };
+    };
+  };
+  if (updateJson.data.productUpdateMedia.mediaUserErrors.length > 0) {
+    console.error(
+      `[GEO Rise auto-fix] IMAGES mediaUserErrors for ${product.shopifyProductId}:`,
+      updateJson.data.productUpdateMedia.mediaUserErrors
+    );
+    return { result: "failed", reason: "shopify_media_errors" };
+  }
+
+  // Persistence check: every alt we asked to set should come back exactly.
+  const returned = updateJson.data.productUpdateMedia.media ?? [];
+  const allPersisted = mediaWithoutAlt.every((wanted) => {
+    const got = returned.find((m) => m.id === wanted.id);
+    return got && got.alt === wanted.alt;
+  });
+  if (!allPersisted) {
+    console.error(
+      `[GEO Rise auto-fix] IMAGES persistence verify failed for ${product.shopifyProductId}`
+    );
+    return { result: "failed", reason: "persistence_verify_failed" };
+  }
+
+  await prisma.auditResult.update({
+    where: { id: issue.id },
+    data: { fixed: true, fixedAt: new Date() },
+  });
+  await prisma.product.update({
+    where: { id: issue.productId },
+    data: { hasAltText: true, altTextQuality: 70 },
+  });
+  if (usedAnyFallback) {
+    console.warn(
+      `[GEO Rise auto-fix] IMAGES used fallback template for at least one image of ${product.shopifyProductId}`
+    );
+  }
+  return { result: "fixed", usedFallback: usedAnyFallback };
+}
+
+// ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 export async function autoFixIssues(
   storeId: string,
@@ -1014,279 +1544,89 @@ export async function autoFixIssues(
     where: { storeId, autoFixable: true, fixed: false },
   });
 
+  const store = await prisma.store.findUnique({ where: { id: storeId } });
+  const shopName = store?.shopName ?? "our store";
+
   let fixed = 0;
   let failed = 0;
+  let skipped = 0;
+  let consecutiveFailures = 0;
+  let aborted = false;
+  const MAX_CONSECUTIVE_FAILURES = 3;
 
-  for (const issue of fixableIssues) {
+  console.log(
+    `[GEO Rise auto-fix] starting: ${fixableIssues.length} issues for store ${storeId}`
+  );
+
+  outer: for (const issue of fixableIssues) {
+    let outcome: FixOutcome;
     try {
       if (issue.category === "CONTENT" && issue.productId) {
-        const product = await prisma.product.findUnique({
-          where: { id: issue.productId },
-        });
-        if (!product) { failed++; continue; }
-
-        const store = await prisma.store.findUnique({ where: { id: storeId } });
-
-        // Fetch the featured image URL + tags for the vision input
-        let imageUrl: string | null = null;
-        let tags: string[] = [];
-        try {
-          const ctxResponse = await admin.graphql(
-            `#graphql
-            query GetProductContext($id: ID!) {
-              product(id: $id) {
-                featuredImage { url }
-                tags
-              }
-            }`,
-            { variables: { id: product.shopifyProductId } }
-          );
-          const ctxJson = (await ctxResponse.json()) as {
-            data: { product: { featuredImage: { url: string } | null; tags: string[] } };
-          };
-          imageUrl = ctxJson.data.product.featuredImage?.url ?? null;
-          tags = ctxJson.data.product.tags ?? [];
-        } catch {
-          // Continue without image/tags
-        }
-
-        const descriptionHtml = await generateProductDescriptionWithClaude(
-          {
-            title: product.title,
-            description: product.description,
-            vendor: product.vendor,
-            productType: product.productType,
-            tags,
-          },
-          imageUrl,
-          store?.shopName ?? "our store"
+        outcome = await fixContentIssue(
+          { id: issue.id, productId: issue.productId },
+          admin,
+          shopName
         );
-
-        const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
-          variables: {
-            input: {
-              id: product.shopifyProductId,
-              descriptionHtml,
-            },
-          },
-        });
-
-        const json = (await response.json()) as {
-          data: {
-            productUpdate: {
-              userErrors: { field: string; message: string }[];
-            };
-          };
-        };
-
-        if (json.data.productUpdate.userErrors.length === 0) {
-          const wc = stripHtml(descriptionHtml).split(/\s+/).filter((w) => w.length > 0).length;
-          await prisma.auditResult.update({
-            where: { id: issue.id },
-            data: { fixed: true, fixedAt: new Date() },
-          });
-          await prisma.product.update({
-            where: { id: issue.productId },
-            data: {
-              description: descriptionHtml,
-              descriptionWordCount: wc,
-              hasRichDescription: wc >= 100,
-            },
-          });
-          fixed++;
-        } else {
-          failed++;
-        }
       } else if (issue.category === "META" && issue.productId) {
-        const product = await prisma.product.findUnique({
-          where: { id: issue.productId },
-        });
-        if (!product) { failed++; continue; }
-
-        const store = await prisma.store.findUnique({ where: { id: storeId } });
-        const shopName = store?.shopName ?? "our store";
-
-        // Decide whether this issue is about the SEO title or the meta description.
-        const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
-
-        // CRITICAL: Shopify's productUpdate replaces the seo object wholesale —
-        // sending `seo: { title }` nulls description and vice versa. We must
-        // always send BOTH fields. Fetch current values first, then update only
-        // the one this issue covers.
-        const currentResponse = await admin.graphql(
-          `#graphql
-          query GetCurrentSeo($id: ID!) {
-            product(id: $id) {
-              seo { title description }
-            }
-          }`,
-          { variables: { id: product.shopifyProductId } }
+        outcome = await fixMetaIssue(
+          { id: issue.id, productId: issue.productId, title: issue.title },
+          admin,
+          shopName
         );
-        const currentJson = (await currentResponse.json()) as {
-          data: { product: { seo: { title: string | null; description: string | null } } | null };
-        };
-        const currentSeo = currentJson.data.product?.seo ?? { title: null, description: null };
-
-        const seoUpdate: { title: string | null; description: string | null } = {
-          title: currentSeo.title,
-          description: currentSeo.description,
-        };
-
-        if (isSeoTitleIssue) {
-          seoUpdate.title = await generateSeoTitleWithClaude(
-            {
-              title: product.title,
-              description: product.description,
-              vendor: product.vendor,
-              productType: product.productType,
-            },
-            shopName
-          );
-        } else {
-          seoUpdate.description = await generateMetaDescriptionWithClaude(
-            {
-              title: product.title,
-              description: product.description,
-              vendor: product.vendor,
-              productType: product.productType,
-            },
-            shopName
-          );
-        }
-
-        const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
-          variables: {
-            input: {
-              id: product.shopifyProductId,
-              seo: seoUpdate,
-            },
-          },
-        });
-
-        const json = (await response.json()) as {
-          data: {
-            productUpdate: {
-              product?: { seo?: { title?: string | null; description?: string | null } };
-              userErrors: { field: string; message: string }[];
-            };
-          };
-        };
-
-        // Verify the field we asked to set actually persisted — userErrors=[]
-        // alone is not enough; Shopify has silently returned success on no-ops.
-        const updatedSeo = json.data.productUpdate.product?.seo;
-        const persisted = isSeoTitleIssue
-          ? updatedSeo?.title === seoUpdate.title
-          : updatedSeo?.description === seoUpdate.description;
-
-        if (json.data.productUpdate.userErrors.length === 0 && persisted) {
-          await prisma.auditResult.update({
-            where: { id: issue.id },
-            data: { fixed: true, fixedAt: new Date() },
-          });
-          await prisma.product.update({
-            where: { id: issue.productId },
-            data: isSeoTitleIssue
-              ? { hasMetaTitle: true }
-              : { hasMetaDescription: true },
-          });
-          fixed++;
-        } else {
-          failed++;
-        }
       } else if (issue.category === "IMAGES" && issue.productId) {
-        const product = await prisma.product.findUnique({
-          where: { id: issue.productId },
-        });
-        if (!product) { failed++; continue; }
-
-        // Fetch images for this product
-        const imgResponse = await admin.graphql(
-          `#graphql
-          query GetProductImages($id: ID!) {
-            product(id: $id) {
-              media(first: 20) {
-                edges {
-                  node {
-                    ... on MediaImage {
-                      id
-                      alt
-                      image { url }
-                    }
-                  }
-                }
-              }
-            }
-          }`,
-          { variables: { id: product.shopifyProductId } }
+        outcome = await fixImagesIssue(
+          { id: issue.id, productId: issue.productId },
+          admin
         );
-
-        const imgJson = (await imgResponse.json()) as {
-          data: {
-            product: {
-              media: {
-                edges: {
-                  node: { id: string; alt: string | null; image?: { url: string } | null };
-                }[];
-              };
-            };
-          };
-        };
-
-        const missingAlt = imgJson.data.product.media.edges
-          .filter((e) => !e.node.alt || e.node.alt.trim() === "");
-
-        if (missingAlt.length === 0) { fixed++; continue; }
-
-        // Generate descriptive alt text per image via Claude vision
-        const mediaWithoutAlt: { id: string; alt: string }[] = [];
-        for (const edge of missingAlt) {
-          const imageUrl = edge.node.image?.url;
-          const alt = imageUrl
-            ? await generateAltTextWithClaude(
-                { title: product.title, vendor: product.vendor, productType: product.productType },
-                imageUrl
-              )
-            : `${product.title}${product.vendor ? ` by ${product.vendor}` : ""}.`;
-          mediaWithoutAlt.push({ id: edge.node.id, alt });
-        }
-
-        const updateResponse = await admin.graphql(UPDATE_IMAGE_ALT_MUTATION, {
-          variables: {
-            productId: product.shopifyProductId,
-            media: mediaWithoutAlt,
-          },
-        });
-
-        const updateJson = (await updateResponse.json()) as {
-          data: {
-            productUpdateMedia: {
-              mediaUserErrors: { field: string; message: string }[];
-            };
-          };
-        };
-
-        if (updateJson.data.productUpdateMedia.mediaUserErrors.length === 0) {
-          await prisma.auditResult.update({
-            where: { id: issue.id },
-            data: { fixed: true, fixedAt: new Date() },
-          });
-          await prisma.product.update({
-            where: { id: issue.productId },
-            data: { hasAltText: true, altTextQuality: 50 },
-          });
-          fixed++;
-        } else {
-          failed++;
-        }
+      } else {
+        console.warn(
+          `[GEO Rise auto-fix] no handler for issue ${issue.id} (category=${issue.category})`
+        );
+        outcome = { result: "failed", reason: "no_handler" };
       }
-
-      // Respect rate limits between fixes
-      await new Promise<void>((r) => setTimeout(r, 300));
-    } catch {
-      failed++;
+    } catch (err) {
+      console.error(
+        `[GEO Rise auto-fix] unexpected error on issue ${issue.id}:`,
+        err
+      );
+      outcome = { result: "failed", reason: "unexpected_error" };
     }
+
+    switch (outcome.result) {
+      case "fixed":
+        fixed++;
+        consecutiveFailures = 0;
+        break;
+      case "skipped":
+        skipped++;
+        consecutiveFailures = 0;
+        break;
+      case "failed":
+        failed++;
+        consecutiveFailures++;
+        break;
+      case "aborted":
+        aborted = true;
+        console.error(
+          `[GEO Rise auto-fix] aborting loop: ${outcome.reason}`
+        );
+        break outer;
+    }
+
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      console.error(
+        `[GEO Rise auto-fix] ${MAX_CONSECUTIVE_FAILURES} consecutive failures, aborting`
+      );
+      aborted = true;
+      break;
+    }
+
+    // Pace between fixes — Shopify GraphQL rate-limit headroom.
+    await new Promise<void>((r) => setTimeout(r, 300));
   }
 
-  return { fixed, failed };
+  console.log(
+    `[GEO Rise auto-fix] done: fixed=${fixed} skipped=${skipped} failed=${failed} aborted=${aborted}`
+  );
+  return { fixed, failed, skipped, aborted };
 }

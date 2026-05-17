@@ -284,10 +284,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "autoFix") {
     try {
       const result = await autoFixIssues(store.id, admin);
-      return { success: true, fixed: result.fixed, failed: result.failed };
+      return {
+        success: true,
+        fixed: result.fixed,
+        failed: result.failed,
+        skipped: result.skipped ?? 0,
+        aborted: result.aborted ?? false,
+      };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      return { error: `Auto-fix failed: ${msg}` };
+      // The auto-fix loop catches its own per-issue errors. Reaching here
+      // means something unexpected (DB outage, etc.) — log raw for debugging
+      // and show a sanitized message to the merchant.
+      console.error("[GEO Rise auto-fix] orchestrator threw:", err);
+      return {
+        error:
+          "Auto-fix couldn't start. Please refresh and try again; if it keeps failing, contact support.",
+      };
     }
   }
 
@@ -440,9 +452,23 @@ export default function AuditPage() {
         `Audit complete! Your GEO score is ${s.storeScore}/100`
       );
     } else if ("fixed" in data) {
-      shopify.toast.show(
-        `Auto-fixed ${data.fixed as number} issue${(data.fixed as number) !== 1 ? "s" : ""}!`
-      );
+      const f = data.fixed as number;
+      const s = (data.skipped as number) ?? 0;
+      const fl = (data.failed as number) ?? 0;
+      const aborted = (data.aborted as boolean) ?? false;
+      if (aborted) {
+        const fixedPart = `Auto-fixed ${f} issue${f !== 1 ? "s" : ""}`;
+        shopify.toast.show(
+          `${fixedPart} — then the AI service hit a limit. Try again in a few minutes to pick up the rest.`,
+          { isError: true }
+        );
+      } else {
+        const parts: string[] = [];
+        parts.push(`Auto-fixed ${f} issue${f !== 1 ? "s" : ""}`);
+        if (s > 0) parts.push(`skipped ${s} already good`);
+        if (fl > 0) parts.push(`${fl} failed`);
+        shopify.toast.show(`${parts.join(", ")}.`);
+      }
     }
   }, [fetcher.data, fetcher.state, shopify]);
 
