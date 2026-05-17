@@ -32,6 +32,13 @@ import type { PlanKey } from "~/services/billing.shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface HistoryPoint {
+  id: string;
+  cited: boolean;
+  sentiment: "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+  checkedAt: string;
+}
+
 interface LoaderPrompt {
   id: string;
   prompt: string;
@@ -43,6 +50,7 @@ interface LoaderPrompt {
   nextRunAt: string | null;
   totalChecks: number;
   citedCount: number;
+  history: HistoryPoint[];
   latestCitation: {
     id: string;
     cited: boolean;
@@ -119,6 +127,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       createdAt: p.createdAt.toISOString(),
       schedule: p.schedule as TrackingSchedule,
       nextRunAt: p.nextRunAt?.toISOString() ?? null,
+      // cs is desc (newest first). Reverse to chronological, then take the
+      // last 20 most-recent points for the trend timeline — capping the
+      // payload so prompts with hundreds of checks don't bloat the loader.
+      history: cs
+        .slice()
+        .reverse()
+        .slice(-20)
+        .map((c) => ({
+          id: c.id,
+          cited: c.cited,
+          sentiment: c.sentiment as "POSITIVE" | "NEUTRAL" | "NEGATIVE",
+          checkedAt: c.checkedAt.toISOString(),
+        })),
       totalChecks: cs.length,
       citedCount: cs.filter((c) => c.cited).length,
       latestCitation: latest
@@ -298,6 +319,86 @@ const SCHEDULE_OPTIONS = [
   { label: "Daily", value: "DAILY" },
   { label: "Weekly", value: "WEEKLY" },
 ];
+
+// ─── TrendTimeline ────────────────────────────────────────────────────────────
+
+// Color tokens for the per-check dots. Hardcoded hex so they look right
+// regardless of Polaris theme — these are deliberately close to
+// success/caution semantics but tuned so a "cited but neutral" reading is
+// visually distinct from "cited and positive."
+const TIMELINE_FILLS = {
+  POSITIVE_CITED: "#108043", // success-green — best signal
+  NEUTRAL_CITED: "#6a9a7a",  // muted green — cited but flat
+  NEGATIVE_CITED: "#b98900", // amber — cited but cautionary
+  NOT_CITED_FILL: "transparent",
+  NOT_CITED_STROKE: "#9ea3a8", // gray outline
+} as const;
+
+function formatTooltipDate(iso: string): string {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+function TrendTimeline({ history }: { history: HistoryPoint[] }) {
+  if (history.length === 0) return null;
+  const DOT = 10;
+  const GAP = 4;
+  const PAD = 2;
+  const width = history.length * DOT + Math.max(0, history.length - 1) * GAP;
+  const height = DOT + PAD * 2;
+  return (
+    <InlineStack gap="200" blockAlign="center" wrap>
+      <Text as="span" variant="bodySm" tone="subdued">
+        Trend:
+      </Text>
+      <svg
+        width={width}
+        height={height}
+        role="img"
+        aria-label={`Trend of last ${history.length} checks, oldest to newest`}
+      >
+        {history.map((p, i) => {
+          const cx = i * (DOT + GAP) + DOT / 2;
+          const cy = height / 2;
+          let fill: string = TIMELINE_FILLS.NOT_CITED_FILL;
+          let stroke = "transparent";
+          let label: string;
+          if (p.cited) {
+            fill =
+              p.sentiment === "POSITIVE"
+                ? TIMELINE_FILLS.POSITIVE_CITED
+                : p.sentiment === "NEGATIVE"
+                ? TIMELINE_FILLS.NEGATIVE_CITED
+                : TIMELINE_FILLS.NEUTRAL_CITED;
+            label = `Cited (${p.sentiment.toLowerCase()})`;
+          } else {
+            stroke = TIMELINE_FILLS.NOT_CITED_STROKE;
+            label = "Not cited";
+          }
+          return (
+            <circle
+              key={p.id}
+              cx={cx}
+              cy={cy}
+              r={DOT / 2}
+              fill={fill}
+              stroke={stroke}
+              strokeWidth={1}
+            >
+              <title>{`${formatTooltipDate(p.checkedAt)} — ${label}`}</title>
+            </circle>
+          );
+        })}
+      </svg>
+      <Text as="span" variant="bodySm" tone="subdued">
+        {history.length === 1 ? "1 check" : `last ${history.length} checks`}
+      </Text>
+    </InlineStack>
+  );
+}
 
 /** Map raw service errors to user-safe messages. Anthropic returns the raw
  *  "credit balance is too low" / "rate limit" / "invalid_request_error" strings
@@ -688,6 +789,7 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                 </Text>
               )}
             </InlineStack>
+            <TrendTimeline history={prompt.history} />
             <InlineStack gap="200" blockAlign="center" wrap>
               <div style={{ minWidth: 160 }}>
                 <Select
