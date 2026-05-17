@@ -65,21 +65,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ─── Action ───────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session, redirect: shopifyRedirect } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
+  console.log("[GEO Rise] Pricing action called", { intent });
 
   if (intent === "subscribe") {
     const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
       const confirmationUrl = await createSubscription(admin, planKey, session.shop);
-      // Use shopify-app-remix's redirect with target=_top — it sends the
-      // response over App Bridge's iframe-escape protocol so the parent admin
-      // window navigates to Shopify's billing confirmation page. Also return
-      // the URL as data so the client useEffect can fall back to open(_top)
-      // if App Bridge somehow doesn't intercept.
-      return shopifyRedirect(confirmationUrl, { target: "_top" });
+      console.log("[GEO Rise] Got confirmationUrl", { confirmationUrl });
+      // Return the URL as data — the client navigates via window.top.location.
+      // shopify-app-remix's redirect helper has been unreliable in this iframe
+      // context (POST never observable in network tab). Returning data and
+      // letting the client navigate is more deterministic.
+      return { confirmationUrl };
     } catch (err) {
+      console.error("[GEO Rise] createSubscription failed", err);
       return { error: err instanceof Error ? err.message : "Subscription creation failed." };
     }
   }
@@ -195,13 +197,35 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
   const def = PLAN_DEFINITIONS[planKey];
   const limits = PLAN_LIMITS[planKey];
 
+  // Trace every fetcher state change so we can see in dev tools console
+  // whether the POST round-trip is happening at all.
+  useEffect(() => {
+    console.log("[GEO Rise] fetcher state", {
+      state: fetcher.state,
+      data: fetcher.data,
+      planKey,
+    });
+  }, [fetcher.state, fetcher.data, planKey]);
+
   // When the action returns a Shopify billing confirmationUrl, escape the
-  // embedded-app iframe by navigating the top window. A server-side redirect
-  // from the action is silently aborted by the iframe (InvalidStateError).
+  // embedded-app iframe by navigating the top window directly. Setting
+  // window.top.location.href is allowed by Shopify's iframe sandbox under
+  // allow-top-navigation-by-user-activation as long as the user clicked
+  // recently.
   useEffect(() => {
     const data = fetcher.data as { confirmationUrl?: string } | undefined;
     if (data?.confirmationUrl && fetcher.state === "idle") {
-      open(data.confirmationUrl, "_top");
+      console.log("[GEO Rise] Navigating top to", data.confirmationUrl);
+      try {
+        if (window.top) {
+          window.top.location.href = data.confirmationUrl;
+        } else {
+          window.location.href = data.confirmationUrl;
+        }
+      } catch (err) {
+        console.error("[GEO Rise] Top navigation blocked, falling back to open()", err);
+        open(data.confirmationUrl, "_top");
+      }
     }
   }, [fetcher.data, fetcher.state]);
 
