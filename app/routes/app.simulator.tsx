@@ -575,6 +575,81 @@ export default function SimulatorPage() {
                 </InlineStack>
               </Banner>
 
+              {/* Cross-AI platform breakdown — only when 2+ platforms ran.
+                  Shows merchant which models see their product differently.
+                  Hidden in single-platform setups so the UI stays uncluttered. */}
+              {result.platforms && result.platforms.length > 1 && (
+                <Card>
+                  <BlockStack gap="300">
+                    <BlockStack gap="100">
+                      <Text as="h3" variant="headingMd">
+                        Cross-AI comparison
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Each model extracted from the same page independently.
+                        A gap between platforms means one of them is missing
+                        something the other found — usually a sign your
+                        structured data could be clearer.
+                      </Text>
+                    </BlockStack>
+                    <InlineStack gap="300" wrap>
+                      {result.platforms.map((p) => {
+                        const label =
+                          p.platform === "CLAUDE" ? "Claude" : "ChatGPT";
+                        return (
+                          <Box
+                            key={p.platform}
+                            padding="300"
+                            background="bg-surface-secondary"
+                            borderRadius="200"
+                            minWidth="160px"
+                          >
+                            <BlockStack gap="100">
+                              <Text
+                                as="span"
+                                variant="bodyMd"
+                                fontWeight="semibold"
+                              >
+                                {label}
+                              </Text>
+                              {p.errorReason ? (
+                                <Text
+                                  as="span"
+                                  variant="bodySm"
+                                  tone="critical"
+                                >
+                                  Couldn't extract
+                                </Text>
+                              ) : (
+                                <>
+                                  <span
+                                    style={{
+                                      fontSize: "24px",
+                                      fontWeight: 700,
+                                      color: scoreColor(p.visibilityScore),
+                                      lineHeight: 1,
+                                    }}
+                                  >
+                                    {p.visibilityScore}%
+                                  </span>
+                                  <Text
+                                    as="span"
+                                    variant="bodySm"
+                                    tone="subdued"
+                                  >
+                                    {p.foundFields} of {p.totalFields} fields
+                                  </Text>
+                                </>
+                              )}
+                            </BlockStack>
+                          </Box>
+                        );
+                      })}
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+              )}
+
               {/* Two-column layout */}
               <Layout>
                 {/* Left — what humans see */}

@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,15 +40,43 @@ export interface FieldComparison {
   importance: FieldImportance;
 }
 
-export interface SimulationResult {
+export type SimulatorPlatform = "CLAUDE" | "CHATGPT";
+
+export interface PlatformSimulationResult {
+  platform: SimulatorPlatform;
   visibilityScore: number;
   comparison: FieldComparison[];
   aiRawResponse: string;
   totalFields: number;
   foundFields: number;
   missingFields: number;
+  /** Set when this platform's extraction itself failed (API error, JSON parse).
+   *  Other platforms' results may still be valid. */
+  errorReason?: string;
+}
+
+export interface SimulationResult {
+  // ── Aggregate across all platforms that ran ──
+  /** Per-platform breakdowns. Always at least one entry (the orchestrator
+   *  throws if every platform failed). */
+  platforms: PlatformSimulationResult[];
+  /** Mean visibility score across platforms — quick "is my page AI-readable?"
+   *  number for the headline pill. */
+  averageVisibilityScore: number;
+
+  // ── Legacy fields kept for back-compat with the existing UI ──
+  // Populated from the "primary" platform (Claude if it ran, else the first
+  // successful one). Older callers reading `visibilityScore` etc. keep working.
+  visibilityScore: number;
+  comparison: FieldComparison[];
+  aiRawResponse: string;
+  totalFields: number;
+  foundFields: number;
+  missingFields: number;
+
   /** True when the live page couldn't be read (password-protected, 4xx, blocked, etc.)
-   *  and we fell back to simulating against Shopify product data instead. */
+   *  and we fell back to simulating against Shopify product data instead.
+   *  Fallback decision is platform-independent (HTML is shared). */
   usedFallback: boolean;
   /** Human-readable reason for the fallback, when one was used. */
   fallbackReason: string | null;
@@ -95,11 +124,27 @@ function cleanHtml(html: string): string {
   return (jsonLdSection + cleaned).slice(0, 8000);
 }
 
-// ─── Anthropic Client ─────────────────────────────────────────────────────────
+// ─── AI Clients ───────────────────────────────────────────────────────────────
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+// OpenAI is optional — without OPENAI_API_KEY, the simulator silently runs
+// Claude-only (current behavior). When the key is set, ChatGPT runs alongside
+// Claude on every simulation and the UI gets a side-by-side platform breakdown.
+// Perplexity intentionally excluded: their `sonar` models are tuned for web
+// search across many sources, not single-page HTML extraction — wrong tool.
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+
+function enabledSimulatorPlatforms(): SimulatorPlatform[] {
+  const out: SimulatorPlatform[] = [];
+  if (process.env.ANTHROPIC_API_KEY) out.push("CLAUDE");
+  if (openai) out.push("CHATGPT");
+  return out;
+}
 
 const SYSTEM_PROMPT = `You are an AI shopping agent evaluating a product page. Extract ALL product information you can reliably find from this HTML. Return ONLY a JSON object with these fields. For any field you cannot confidently find in the HTML, set the value to null. Be strict — only extract what is clearly and unambiguously present.`;
 
@@ -401,6 +446,69 @@ ${d.hasReviews && d.reviewCount > 0 ? `<div class="reviews">Rating: ${d.rating ?
 </body></html>`;
 }
 
+// ─── Per-Platform Extractors ──────────────────────────────────────────────────
+
+interface ExtractResult {
+  data: Partial<AiExtractedData>;
+  rawResponse: string;
+}
+
+/** Strip markdown code fences from a JSON-ish string and parse. Claude
+ *  sometimes wraps its JSON output in ```json … ```; OpenAI with
+ *  json_object mode doesn't, but we run the same cleaner defensively. */
+function parseExtractedJson(raw: string): Partial<AiExtractedData> {
+  const cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned) as Partial<AiExtractedData>;
+}
+
+async function extractWithClaude(cleanedHtml: string): Promise<ExtractResult> {
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
+      },
+    ],
+  });
+
+  const content = message.content[0];
+  const rawResponse = content.type === "text" ? content.text : "";
+  const data = parseExtractedJson(rawResponse);
+  return { data, rawResponse };
+}
+
+async function extractWithOpenAI(cleanedHtml: string): Promise<ExtractResult> {
+  if (!openai) throw new Error("OPENAI_API_KEY not configured");
+
+  const completion = await openai.chat.completions.create({
+    // gpt-4o-mini is the cost-sweet-spot — pure HTML extraction doesn't need
+    // search (so no `-search-preview` variant) and doesn't need the full 4o.
+    model: "gpt-4o-mini",
+    max_tokens: 1024,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
+      },
+    ],
+  });
+
+  const rawResponse = completion.choices[0]?.message?.content ?? "";
+  const data = parseExtractedJson(rawResponse);
+  return { data, rawResponse };
+}
+
+// ─── Main Simulation Orchestrator ─────────────────────────────────────────────
+
 export async function simulateAiView(
   productUrl: string,
   shopifyProductData: ShopifyProductInput
@@ -447,58 +555,101 @@ export async function simulateAiView(
   // 2. Clean HTML
   const cleanedHtml = cleanHtml(rawHtml);
 
-  // 3. Call Claude
-  let aiRawResponse = "";
-  let aiData: Partial<AiExtractedData> = {};
-
-  try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Extract product information from this page and return ONLY a JSON object matching this schema:\n${JSON_SCHEMA}\n\nPage content:\n\n${cleanedHtml}`,
-        },
-      ],
-    });
-
-    const content = message.content[0];
-    aiRawResponse = content.type === "text" ? content.text : "";
-
-    // Parse JSON — strip markdown code fences if present
-    const jsonStr = aiRawResponse
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```\s*$/i, "")
-      .trim();
-
-    aiData = JSON.parse(jsonStr) as Partial<AiExtractedData>;
-  } catch {
-    // If parsing fails, we still return a comparison with all fields missing
-    aiData = { structuredDataFound: false };
+  // 3. Fan out the extraction across every configured platform. HTML is
+  //    shared (we only paid one fetch); each platform extracts independently.
+  const platforms = enabledSimulatorPlatforms();
+  if (platforms.length === 0) {
+    throw new Error(
+      "No AI simulator platforms configured — set ANTHROPIC_API_KEY (and optionally OPENAI_API_KEY for ChatGPT)"
+    );
   }
 
-  // 4. Build comparison
-  const comparison = buildComparison(shopifyProductData, aiData);
+  const extractFn = {
+    CLAUDE: extractWithClaude,
+    CHATGPT: extractWithOpenAI,
+  } as const;
 
-  // 5. Calculate visibility score
-  const foundFields = comparison.filter(
-    (f) => f.status === "found" || f.status === "partial"
-  ).length;
-  const totalFields = comparison.length;
-  const missingFields = comparison.filter((f) => f.status === "missing").length;
-  const visibilityScore = Math.round((foundFields / totalFields) * 100);
+  const settled = await Promise.allSettled(
+    platforms.map(async (p) => {
+      const { data, rawResponse } = await extractFn[p](cleanedHtml);
+      return { platform: p, data, rawResponse };
+    })
+  );
+
+  // Build a per-platform result for each attempted platform — including a
+  // placeholder for the ones that failed so the UI shows "ChatGPT couldn't
+  // extract" rather than silently dropping it.
+  const platformResults: PlatformSimulationResult[] = settled.map((r, i) => {
+    const platform = platforms[i];
+    if (r.status === "fulfilled") {
+      const comparison = buildComparison(shopifyProductData, r.value.data);
+      const totalFields = comparison.length;
+      const foundFields = comparison.filter(
+        (f) => f.status === "found" || f.status === "partial"
+      ).length;
+      const missingFields = comparison.filter(
+        (f) => f.status === "missing"
+      ).length;
+      const visibilityScore = Math.round((foundFields / totalFields) * 100);
+      return {
+        platform,
+        visibilityScore,
+        comparison,
+        aiRawResponse: r.value.rawResponse,
+        totalFields,
+        foundFields,
+        missingFields,
+      };
+    }
+    const errorReason =
+      r.reason instanceof Error ? r.reason.message : String(r.reason);
+    console.error(`[ai-simulator] ${platform} extraction failed:`, errorReason);
+    const fallbackComparison = buildComparison(shopifyProductData, {
+      structuredDataFound: false,
+    });
+    return {
+      platform,
+      visibilityScore: 0,
+      comparison: fallbackComparison,
+      aiRawResponse: "",
+      totalFields: fallbackComparison.length,
+      foundFields: 0,
+      missingFields: fallbackComparison.length,
+      errorReason,
+    };
+  });
+
+  // If EVERY platform failed, throw — there's nothing useful to render.
+  const successful = platformResults.filter((p) => !p.errorReason);
+  if (successful.length === 0) {
+    throw new Error(
+      `All ${platformResults.length} simulator platform${
+        platformResults.length === 1 ? "" : "s"
+      } failed: ${platformResults
+        .map((p) => `${p.platform}: ${p.errorReason}`)
+        .join("; ")}`
+    );
+  }
+
+  // Aggregate: average score across SUCCESSFUL platforms (failed ones at 0
+  // would bias the mean unfairly). Primary platform for legacy fields is
+  // Claude when available, else the first success.
+  const averageVisibilityScore = Math.round(
+    successful.reduce((sum, p) => sum + p.visibilityScore, 0) / successful.length
+  );
+  const primary =
+    successful.find((p) => p.platform === "CLAUDE") ?? successful[0];
 
   return {
-    visibilityScore,
-    comparison,
-    aiRawResponse,
-    totalFields,
-    foundFields,
+    platforms: platformResults,
+    averageVisibilityScore,
+    visibilityScore: primary.visibilityScore,
+    comparison: primary.comparison,
+    aiRawResponse: primary.aiRawResponse,
+    totalFields: primary.totalFields,
+    foundFields: primary.foundFields,
+    missingFields: primary.missingFields,
     usedFallback,
     fallbackReason,
-    missingFields,
   };
 }
