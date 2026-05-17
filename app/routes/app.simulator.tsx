@@ -155,8 +155,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  const dbProduct = await prisma.product.findUnique({
-    where: { id: productDbId },
+  // P1-11 fix: scope the product lookup to this store. CUIDs are hard to
+  // guess but tenant isolation should never rely on opaque-ID secrecy.
+  const dbProduct = await prisma.product.findFirst({
+    where: { id: productDbId, storeId: store.id },
     select: {
       shopifyProductId: true,
       handle: true,

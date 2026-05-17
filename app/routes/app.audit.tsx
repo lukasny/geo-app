@@ -3,32 +3,25 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
-  Layout,
   Card,
   Text,
   Button,
-  ButtonGroup,
   BlockStack,
   InlineStack,
   Badge,
-  ProgressBar,
   IndexTable,
   Modal,
   EmptyState,
   Banner,
   Spinner,
   Box,
-  Divider,
-  TextField,
   ChoiceList,
   Filters,
-  Thumbnail,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
-import { runFullAudit } from "~/services/audit-engine.server";
-import { autoFixIssues } from "~/services/audit-engine.server";
+import { runFullAudit, autoFixIssues } from "~/services/audit-engine.server";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,12 +90,6 @@ function scoreColor(score: number): string {
   return "#1D9E75";
 }
 
-function scoreTone(score: number): "critical" | "primary" | "success" {
-  if (score < 40) return "critical";
-  if (score < 70) return "primary";
-  return "success";
-}
-
 function severityTone(
   severity: Severity
 ): "critical" | "warning" | "attention" | "info" {
@@ -154,44 +141,70 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     } satisfies LoaderData;
   }
 
-  const [dbProducts, auditResultsRaw] = await Promise.all([
-    prisma.product.findMany({
-      where: { storeId: store.id },
-      orderBy: { aiReadinessScore: "asc" },
-      select: {
-        id: true,
-        shopifyProductId: true,
-        title: true,
-        aiReadinessScore: true,
-        descriptionWordCount: true,
-        imageCount: true,
-        hasAltText: true,
-        hasMetaTitle: true,
-        hasMetaDescription: true,
-        lastAuditedAt: true,
-        auditResults: {
-          orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
-          take: 1,
-          select: { id: true, title: true, severity: true },
-        },
+  // P0-4 fix: for plans with an audit cap (Free), restrict what the loader
+  // sends to the client to the audited subset. Previously the loader
+  // returned every product + every audit result and the UI just visually
+  // locked the locked rows — but a savvy merchant could inspect the network
+  // payload and see all of it. Server-side filtering plugs that gap.
+  const { PLAN_LIMITS } = await import("~/services/billing.shared");
+  const planLimits =
+    PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+  const productLimit = Number.isFinite(planLimits.maxAuditProducts)
+    ? planLimits.maxAuditProducts
+    : undefined;
+
+  const dbProducts = await prisma.product.findMany({
+    where: {
+      storeId: store.id,
+      // On capped plans, only return products that have actually been
+      // audited. Hides any pre-downgrade audit history a merchant shouldn't
+      // see, and stops empty-cache products from polluting the worst-score
+      // ordering.
+      ...(productLimit !== undefined ? { lastAuditedAt: { not: null } } : {}),
+    },
+    orderBy: { aiReadinessScore: "asc" },
+    take: productLimit,
+    select: {
+      id: true,
+      shopifyProductId: true,
+      title: true,
+      aiReadinessScore: true,
+      descriptionWordCount: true,
+      imageCount: true,
+      hasAltText: true,
+      hasMetaTitle: true,
+      hasMetaDescription: true,
+      lastAuditedAt: true,
+      auditResults: {
+        orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
+        take: 1,
+        select: { id: true, title: true, severity: true },
       },
-    }),
-    prisma.auditResult.findMany({
-      where: { storeId: store.id },
-      select: {
-        id: true,
-        productId: true,
-        category: true,
-        severity: true,
-        title: true,
-        description: true,
-        recommendation: true,
-        autoFixable: true,
-        fixed: true,
-        fixedAt: true,
-      },
-    }),
-  ]);
+    },
+  });
+
+  // Restrict audit results to the allowed product set.
+  const allowedProductIds = dbProducts.map((p) => p.id);
+  const auditResultsRaw = await prisma.auditResult.findMany({
+    where: {
+      storeId: store.id,
+      ...(productLimit !== undefined
+        ? { productId: { in: allowedProductIds } }
+        : {}),
+    },
+    select: {
+      id: true,
+      productId: true,
+      category: true,
+      severity: true,
+      title: true,
+      description: true,
+      recommendation: true,
+      autoFixable: true,
+      fixed: true,
+      fixedAt: true,
+    },
+  });
 
   const products: ProductRow[] = dbProducts.map((p) => ({
     id: p.id,
@@ -252,28 +265,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "runAudit") {
     try {
+      // Plumb the plan's audit cap into the service. The cap is enforced
+      // inside `runFullAudit` -> `fetchAllProductsForAudit` so it can't be
+      // bypassed by any route. For Free (cap=3 on 2026-05-17), this means a
+      // store with 20 products gets the first 3 audited rather than the
+      // whole audit blocked; the UI surfaces "audited X of Y" + upgrade CTA.
       const { PLAN_LIMITS } = await import("~/services/billing.shared");
-      const planLimits = PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
-      const maxProducts = planLimits.maxAuditProducts;
-      if (maxProducts !== Infinity) {
-        // Query Shopify directly for the actual catalog count. Counting the
-        // local Product cache lets first-time users bypass the limit because
-        // the cache is empty until after an audit has run.
-        const countResponse = await admin.graphql(
-          `#graphql
-          query AuditProductCount {
-            productsCount(query: "status:active") { count }
-          }`
-        );
-        const countJson = (await countResponse.json()) as {
-          data?: { productsCount?: { count: number } };
-        };
-        const actualCount = countJson.data?.productsCount?.count ?? 0;
-        if (actualCount > maxProducts) {
-          return { error: `Your plan allows auditing up to ${maxProducts} products. Upgrade to audit all ${actualCount} products.` };
-        }
-      }
-      const summary = await runFullAudit(store.id, admin);
+      const planLimits =
+        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+      const summary = await runFullAudit(store.id, admin, {
+        maxProducts: planLimits.maxAuditProducts,
+      });
       return { success: true, summary };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";

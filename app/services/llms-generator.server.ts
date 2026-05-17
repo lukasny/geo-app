@@ -198,13 +198,18 @@ const PRODUCTS_QUERY = `
 
 async function fetchAllProducts(
   domain: string,
-  accessToken: string
+  accessToken: string,
+  maxProducts: number = Infinity
 ): Promise<ShopifyProduct[]> {
   const products: ShopifyProduct[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
+  const pageSize = Math.min(
+    250,
+    Math.max(1, Number.isFinite(maxProducts) ? maxProducts : 250)
+  );
 
-  while (hasNextPage) {
+  while (hasNextPage && products.length < maxProducts) {
     const data = await withRetry(() =>
       shopifyGraphql<{
         products: {
@@ -212,12 +217,13 @@ async function fetchAllProducts(
           edges: { node: ShopifyProduct }[];
         };
       }>(domain, accessToken, PRODUCTS_QUERY, {
-        first: 250,
+        first: pageSize,
         after: cursor,
       })
     );
 
     for (const edge of data.products.edges) {
+      if (products.length >= maxProducts) break;
       if (edge.node.status === "ACTIVE") {
         products.push(edge.node);
       }
@@ -456,8 +462,18 @@ export async function getOrCreateLlmsFile(storeId: string) {
   });
 }
 
+export interface GenerateLlmsTxtOptions {
+  /** Cap on how many products to include in the generated file. Plumbed
+   *  through to `fetchAllProducts` so we stop paginating once the cap is
+   *  hit — both an API-cost and a plan-enforcement measure. Callers MUST
+   *  pass `PLAN_LIMITS[plan].maxProductsInLlmsTxt`; otherwise Free-plan
+   *  stores end up with their entire catalog in the public llms.txt file. */
+  maxProducts?: number;
+}
+
 export async function generateLlmsTxt(
-  storeId: string
+  storeId: string,
+  options: GenerateLlmsTxtOptions = {}
 ): Promise<GenerateResult> {
   // 1. Load store + settings
   const store = await prisma.store.findUniqueOrThrow({
@@ -466,11 +482,12 @@ export async function generateLlmsTxt(
 
   const llmsFile = await getOrCreateLlmsFile(storeId);
   const { shopifyDomain: domain, shopifyAccessToken: token } = store;
+  const maxProducts = options.maxProducts ?? Infinity;
 
   // 2. Fetch data from Shopify
   const [shopInfo, products, collections, articles] = await Promise.all([
     fetchShopInfo(domain, token),
-    llmsFile.includeProducts ? fetchAllProducts(domain, token) : [],
+    llmsFile.includeProducts ? fetchAllProducts(domain, token, maxProducts) : [],
     llmsFile.includeCollections ? fetchAllCollections(domain, token) : [],
     llmsFile.includeBlogPosts ? fetchAllArticles(domain, token) : [],
   ]);

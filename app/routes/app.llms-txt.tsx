@@ -25,6 +25,7 @@ import {
   generateLlmsTxt,
   getOrCreateLlmsFile,
 } from "~/services/llms-generator.server";
+import { PLAN_LIMITS } from "~/services/billing.shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "generate" || intent === "regenerate") {
     try {
-      const result = await generateLlmsTxt(store.id);
+      const planLimits =
+        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+      const result = await generateLlmsTxt(store.id, {
+        maxProducts: planLimits.maxProductsInLlmsTxt,
+      });
       return {
         success: true,
         message: `llms.txt generated with ${result.productCount} products, ${result.collectionCount} collections, and ${result.blogPostCount} blog posts.`,

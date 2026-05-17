@@ -167,7 +167,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "generateLlms") {
     try {
-      const result = await generateLlmsTxt(store.id);
+      // Pass the plan's product cap into the service so Free-plan stores
+      // don't accidentally publish their entire catalog in the public
+      // llms.txt file.
+      const planLimits =
+        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+      const result = await generateLlmsTxt(store.id, {
+        maxProducts: planLimits.maxProductsInLlmsTxt,
+      });
       return { success: true, intent, productCount: result.productCount };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "Generation failed." };
@@ -176,7 +183,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "runAudit") {
     try {
-      const summary = await runFullAudit(store.id, admin);
+      // Plan limit MUST flow through the service layer — calling
+      // runFullAudit without `maxProducts` previously let a Free merchant
+      // audit their entire catalog by triggering the audit from the
+      // dashboard instead of the audit page.
+      const planLimits =
+        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+      const summary = await runFullAudit(store.id, admin, {
+        maxProducts: planLimits.maxAuditProducts,
+      });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "Audit failed." };

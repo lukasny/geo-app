@@ -33,6 +33,10 @@ api_version = "2025-01"
   uri = "/webhooks/products/update"
 
   [[webhooks.subscriptions]]
+  topics = [ "products/delete" ]
+  uri = "/webhooks/products/delete"
+
+  [[webhooks.subscriptions]]
   compliance_topics = [ "customers/data_request" ]
   uri = "/webhooks/customers/data_request"
 

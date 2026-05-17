@@ -293,6 +293,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "runCheck") {
+    // P1-15 fix: re-enforce plan tier here. A merchant who downgrades to
+    // FREE keeps their existing TrackingPrompt rows; without this guard
+    // they could still trigger paid AI calls by clicking Run check on
+    // those orphaned rows.
+    if (planKey === "FREE" || limits.maxTrackingPrompts === 0) {
+      return {
+        error:
+          "AI tracking is a Growth/Pro/Enterprise feature. Please upgrade to run checks.",
+      };
+    }
     const promptId = formData.get("promptId") as string;
     if (!promptId) return { error: "Missing prompt ID." };
     // Verify it belongs to this store before running
@@ -319,6 +329,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "suggestPrompts") {
+    // P1-14 fix: entitlement guard. Without this a FREE merchant could
+    // call the action directly (curl, devtools) and burn our Claude API
+    // budget generating suggestions they can't even save.
+    if (planKey === "FREE" || limits.maxTrackingPrompts === 0) {
+      return {
+        error:
+          "Prompt suggestions are a Growth/Pro/Enterprise feature. Please upgrade.",
+      };
+    }
     try {
       const suggestions = await suggestTrackingPrompts(store.id);
       return { success: true, intent, suggestions };

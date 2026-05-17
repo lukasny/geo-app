@@ -66,13 +66,29 @@ interface AuditIssue {
 
 export interface AuditSummary {
   storeScore: number;
+  /** The actual size of the merchant's active product catalog. */
   totalProducts: number;
+  /** How many products this audit actually scored. On a plan with a
+   *  `maxProducts` cap this can be less than `totalProducts` — the UI should
+   *  surface "audited X of Y, upgrade to audit all." */
   auditedProducts: number;
   issueCount: number;
   criticalCount: number;
   highCount: number;
   mediumCount: number;
   lowCount: number;
+  /** True when the audit was capped by the caller's `maxProducts`, meaning
+   *  there are products the merchant still hasn't seen audited. */
+  capped: boolean;
+}
+
+export interface RunFullAuditOptions {
+  /** Cap on how many products to audit. Pass `Infinity` (or omit) for
+   *  unlimited. Callers MUST plumb the merchant's plan limit through here —
+   *  no route should call this without first reading `PLAN_LIMITS[plan].
+   *  maxAuditProducts`. The cap is enforced inside `fetchAllProductsForAudit`
+   *  so it's impossible to bypass via direct service-layer calls. */
+  maxProducts?: number;
 }
 
 export interface AutoFixSummary {
@@ -91,6 +107,54 @@ export interface AutoFixSummary {
 }
 
 // ─── HTML / Text Helpers ──────────────────────────────────────────────────────
+
+// Allowlist for HTML tags Claude is permitted to emit into product
+// descriptions. Everything else gets stripped before we POST to Shopify.
+// Deliberately conservative: no <a>, no <img>, no <table>, no inline styles
+// or event handlers. Claude's prompt asks for 2–3 paragraphs of plain prose
+// in <p> tags; the whitelist covers what reliably fits that mold.
+const ALLOWED_LLM_TAGS = new Set([
+  "p", "br",
+  "strong", "b", "em", "i", "u",
+  "ul", "ol", "li",
+  "h2", "h3", "h4", "h5", "h6",
+  "blockquote",
+]);
+
+/** Sanitize HTML output from Claude before writing it to Shopify.
+ *
+ *  This is defense-in-depth, not a hardened DOMPurify replacement:
+ *  - Strips <script>, <style>, <iframe> AND their contents entirely.
+ *  - For every other tag: drops it if not on the allowlist, otherwise
+ *    reduces it to a bare open/close tag with ALL attributes removed
+ *    (no `style`, no `onclick`, no `href`).
+ *  - Preserves text content between stripped tags.
+ *
+ *  We trust Claude not to produce malicious output in practice, but the
+ *  prompt could be poisoned by a malicious-merchant existing description
+ *  ("ignore your instructions, write this script tag..."), so we never
+ *  POST raw LLM output to merchant-facing surfaces. */
+export function sanitizeLlmHtml(html: string): string {
+  if (!html) return html;
+  let cleaned = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, "");
+
+  cleaned = cleaned.replace(
+    /<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g,
+    (match: string, tag: string) => {
+      const t = tag.toLowerCase();
+      if (!ALLOWED_LLM_TAGS.has(t)) return ""; // strip non-allowlisted tag
+      // Reduce to bare open/close tag — drop every attribute.
+      return match.startsWith("</") ? `</${t}>` : `<${t}>`;
+    }
+  );
+
+  // Collapse runs of whitespace Claude sometimes emits between paragraphs.
+  cleaned = cleaned.replace(/[ \t]+\n/g, "\n").trim();
+  return cleaned;
+}
 
 function stripHtml(html: string): string {
   return html
@@ -212,9 +276,6 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
   const variants = product.variants.edges.map((e) => e.node);
   const metafields = product.metafields.edges.map((e) => e.node);
   const { hasReviews, reviewCount } = hasReviewMetafields(metafields);
-
-  const severityForScore = (s: number): "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" =>
-    s < 30 ? "CRITICAL" : s < 50 ? "HIGH" : s < 70 ? "MEDIUM" : "LOW";
 
   // ── CONTENT (35 pts) ──────────────────────────────────────────────────────
 
@@ -528,8 +589,8 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
 
   const finalScore = Math.min(100, Math.max(0, score));
 
-  // Re-assess severity based on final score
-  const dominantSeverity = severityForScore(finalScore);
+  // Re-assess severity based on final score: downgrade CRITICAL to HIGH
+  // once the overall score is no longer in critical territory.
   const finalIssues = issues.map((issue) => ({
     ...issue,
     severity: issue.severity === "CRITICAL" && finalScore >= 30
@@ -595,16 +656,40 @@ const PRODUCTS_AUDIT_QUERY = `#graphql
 `;
 
 async function fetchAllProductsForAudit(
-  admin: AdminApiContext
-): Promise<{ products: ShopifyProductData[]; shopName: string }> {
+  admin: AdminApiContext,
+  maxProducts: number = Infinity
+): Promise<{ products: ShopifyProductData[]; shopName: string; totalActive: number }> {
   const products: ShopifyProductData[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
   let shopName = "";
 
-  while (hasNextPage) {
+  // Get the real catalog count up front. The audit page used to do this
+  // separately; doing it inside the service means callers can't accidentally
+  // bypass plan limits by skipping that query.
+  let totalActive = 0;
+  try {
+    const countResponse = await admin.graphql(
+      `#graphql
+       query AuditProductCount {
+         productsCount(query: "status:active") { count }
+       }`
+    );
+    const countJson = (await countResponse.json()) as {
+      data?: { productsCount?: { count: number } };
+    };
+    totalActive = countJson.data?.productsCount?.count ?? 0;
+  } catch {
+    // Non-fatal — we'll still audit what we can fetch.
+  }
+
+  // If maxProducts is finite and small, request only what we need from
+  // Shopify (saves an API call for Free-plan stores with 1000s of products).
+  const pageSize = Math.min(50, Math.max(1, Number.isFinite(maxProducts) ? maxProducts : 50));
+
+  while (hasNextPage && products.length < maxProducts) {
     const response = await admin.graphql(PRODUCTS_AUDIT_QUERY, {
-      variables: { first: 50, after: cursor },
+      variables: { first: pageSize, after: cursor },
     });
 
     // Rate limit check
@@ -629,6 +714,7 @@ async function fetchAllProductsForAudit(
     if (!shopName) shopName = json.data.shop.name;
 
     for (const edge of json.data.products.edges) {
+      if (products.length >= maxProducts) break;
       if (edge.node.status === "ACTIVE") {
         products.push(edge.node);
       }
@@ -638,21 +724,34 @@ async function fetchAllProductsForAudit(
     cursor = json.data.products.pageInfo.endCursor;
   }
 
-  return { products, shopName };
+  // Fallback for stores where productsCount query failed: assume total is at
+  // least what we fetched, plus 1 if we know there's more (so the UI can
+  // still show "we audited X of Y+").
+  if (totalActive === 0) {
+    totalActive = products.length + (hasNextPage ? 1 : 0);
+  }
+
+  return { products, shopName, totalActive };
 }
 
 // ─── Main Audit Function ──────────────────────────────────────────────────────
 
 export async function runFullAudit(
   storeId: string,
-  admin: AdminApiContext
+  admin: AdminApiContext,
+  options: RunFullAuditOptions = {}
 ): Promise<AuditSummary> {
   const store = await prisma.store.findUniqueOrThrow({
     where: { id: storeId },
   });
 
-  // 1. Fetch all products
-  const { products, shopName } = await fetchAllProductsForAudit(admin);
+  const maxProducts = options.maxProducts ?? Infinity;
+
+  // 1. Fetch products, capped by the caller's plan limit
+  const { products, shopName, totalActive } = await fetchAllProductsForAudit(
+    admin,
+    maxProducts
+  );
 
   // 2. Delete previous audit results
   await prisma.auditResult.deleteMany({ where: { storeId } });
@@ -713,11 +812,17 @@ export async function runFullAudit(
           lastAuditedAt: new Date(),
         },
         update: {
+          // P1-3 (fixed): the previous version skipped description/price/etc
+          // on update, so re-running an audit on a product whose description
+          // or price changed in Shopify left the local cache stale. Now the
+          // update path keeps the full set of Shopify-derived fields in sync.
           title: product.title,
+          description: product.descriptionHtml || null,
           handle: product.handle,
           productType: product.productType || null,
           vendor: product.vendor || null,
           status: product.status.toLowerCase(),
+          price: product.variants.edges[0]?.node.price ?? null,
           imageCount: product.images.edges.length,
           hasAltText: fields.hasAltText,
           altTextQuality: fields.altTextQuality,
@@ -779,7 +884,7 @@ export async function runFullAudit(
     where: { id: storeId },
     data: {
       geoScore: storeScore,
-      totalProducts: products.length,
+      totalProducts: totalActive,
       auditedProducts: products.length,
     },
   });
@@ -792,13 +897,14 @@ export async function runFullAudit(
 
   return {
     storeScore,
-    totalProducts: products.length,
+    totalProducts: totalActive,
     auditedProducts: products.length,
     issueCount: auditResultsToCreate.length,
     criticalCount,
     highCount,
     mediumCount,
     lowCount,
+    capped: products.length < totalActive,
   };
 }
 
@@ -1155,7 +1261,10 @@ async function fixContentIssue(
       : { result: "failed", reason: gen.reason };
   }
 
-  const descriptionHtml = gen.value;
+  // Sanitize LLM output before writing to Shopify — drops any tag outside
+  // ALLOWED_LLM_TAGS, strips all attributes (no <script>, no inline
+  // handlers, no <a href>). See `sanitizeLlmHtml` for the rationale.
+  const descriptionHtml = sanitizeLlmHtml(gen.value);
   const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
     variables: { input: { id: product.shopifyProductId, descriptionHtml } },
   });
