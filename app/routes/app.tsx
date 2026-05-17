@@ -26,6 +26,7 @@ export default function App() {
         </Link>
         <Link to="/app/audit">AI Audit</Link>
         <Link to="/app/simulator">AI Simulator</Link>
+        <Link to="/app/tracking">AI Tracking</Link>
         <Link to="/app/llms-txt">llms.txt Manager</Link>
         <Link to="/app/pricing">Pricing</Link>
       </NavMenu>
