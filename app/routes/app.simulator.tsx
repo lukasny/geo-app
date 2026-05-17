@@ -141,10 +141,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { PLAN_LIMITS } = await import("~/services/billing.shared");
     const limit = PLAN_LIMITS.FREE.maxSimulations;
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    const usedThisMonth = await prisma.aiCitation.count({
+    // Count actual simulator runs — the previous code counted AiCitation
+    // records, which are never created by the simulator, so the limit never
+    // tripped and free users could run unlimited simulations.
+    const usedThisMonth = await prisma.simulationUsage.count({
       where: {
         storeId: store.id,
-        checkedAt: { gte: startOfMonth },
+        createdAt: { gte: startOfMonth },
       },
     });
     if (usedThisMonth >= limit) {
@@ -245,6 +248,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const result = await simulateAiView(productUrl, shopifyInput);
+    // Record one usage row per successful run so the monthly limit check
+    // actually has data to count.
+    await prisma.simulationUsage.create({
+      data: { storeId: store.id, productId: productDbId },
+    });
     return {
       result,
       productTitle: sp.title,

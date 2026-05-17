@@ -28,7 +28,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     images: { src: string; alt: string | null }[];
   };
 
-  const shopifyProductId = String(product.id);
+  // Audit engine stores product IDs as Shopify GraphQL GIDs
+  // (e.g. "gid://shopify/Product/12345"). Product webhooks send the bare
+  // numeric ID. Normalize to GID form here so findUnique actually matches.
+  const shopifyProductId = `gid://shopify/Product/${product.id}`;
 
   // Update our Product record if it exists (don't create — audit engine handles that)
   const existing = await db.product.findUnique({

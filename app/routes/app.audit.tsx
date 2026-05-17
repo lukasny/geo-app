@@ -256,9 +256,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const planLimits = PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
       const maxProducts = planLimits.maxAuditProducts;
       if (maxProducts !== Infinity) {
-        const totalProducts = await prisma.product.count({ where: { storeId: store.id } });
-        if (totalProducts > maxProducts) {
-          return { error: `Your plan allows auditing up to ${maxProducts} products. Upgrade to audit all ${totalProducts} products.` };
+        // Query Shopify directly for the actual catalog count. Counting the
+        // local Product cache lets first-time users bypass the limit because
+        // the cache is empty until after an audit has run.
+        const countResponse = await admin.graphql(
+          `#graphql
+          query AuditProductCount {
+            productsCount(query: "status:active") { count }
+          }`
+        );
+        const countJson = (await countResponse.json()) as {
+          data?: { productsCount?: { count: number } };
+        };
+        const actualCount = countJson.data?.productsCount?.count ?? 0;
+        if (actualCount > maxProducts) {
+          return { error: `Your plan allows auditing up to ${maxProducts} products. Upgrade to audit all ${actualCount} products.` };
         }
       }
       const summary = await runFullAudit(store.id, admin);

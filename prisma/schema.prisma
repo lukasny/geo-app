@@ -93,14 +93,15 @@ model Store {
   installedAt             DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
-  products        Product[]
-  auditResults    AuditResult[]
-  llmsFiles       LlmsFile[]
-  aiCitations     AiCitation[]
-  trackingPrompts TrackingPrompt[]
-  competitors     Competitor[]
-  aiTrafficEvents AiTrafficEvent[]
-  subscription    Subscription?
+  products         Product[]
+  auditResults     AuditResult[]
+  llmsFiles        LlmsFile[]
+  aiCitations      AiCitation[]
+  trackingPrompts  TrackingPrompt[]
+  competitors      Competitor[]
+  aiTrafficEvents  AiTrafficEvent[]
+  simulationUsages SimulationUsage[]
+  subscription     Subscription?
 }
 
 model Product {
@@ -274,4 +275,18 @@ model Subscription {
   updatedAt              DateTime           @updatedAt
 
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+}
+
+// One row per successful AI Simulator run. Used to enforce plan limits on
+// monthly simulator usage (FREE: 3/mo, GROWTH+: unlimited).
+model SimulationUsage {
+  id        String   @id @default(cuid())
+  storeId   String
+  productId String?
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, createdAt])
 }

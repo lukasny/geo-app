@@ -519,18 +519,9 @@ export default function Index() {
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
 
-  if (!store || !store.onboardingCompleted) {
-    return (
-      <OnboardingWizard
-        shopName={store?.shopName ?? "your store"}
-        shopifyDomain={store?.shopifyDomain ?? ""}
-      />
-    );
-  }
-
-  const isLoading = fetcher.state !== "idle";
-  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
-
+  // All hooks must be called unconditionally on every render, before any
+  // early return — otherwise the order changes between renders and React
+  // throws "rendered fewer hooks than expected" once onboarding completes.
   useEffect(() => {
     const data = fetcher.data as Record<string, unknown> | undefined;
     if (!data || fetcher.state !== "idle") return;
@@ -547,6 +538,18 @@ export default function Index() {
     (intent: string) => fetcher.submit({ intent }, { method: "POST" }),
     [fetcher]
   );
+
+  if (!store || !store.onboardingCompleted) {
+    return (
+      <OnboardingWizard
+        shopName={store?.shopName ?? "your store"}
+        shopifyDomain={store?.shopifyDomain ?? ""}
+      />
+    );
+  }
+
+  const isLoading = fetcher.state !== "idle";
+  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
 
   const hasLlms = llmsFile?.hasContent ?? false;
   const hasAudit = store.auditedProducts > 0;
