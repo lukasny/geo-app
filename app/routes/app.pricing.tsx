@@ -73,7 +73,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
       const confirmationUrl = await createSubscription(admin, planKey, session.shop);
-      return redirect(confirmationUrl);
+      // Return the URL as data — the client escapes the embedded-app iframe
+      // by navigating window.top. A server-side redirect to Shopify's billing
+      // page is silently aborted by the iframe (InvalidStateError).
+      return { confirmationUrl };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "Subscription creation failed." };
     }
@@ -189,6 +192,16 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
   const isLoading = fetcher.state !== "idle";
   const def = PLAN_DEFINITIONS[planKey];
   const limits = PLAN_LIMITS[planKey];
+
+  // When the action returns a Shopify billing confirmationUrl, escape the
+  // embedded-app iframe by navigating the top window. A server-side redirect
+  // from the action is silently aborted by the iframe (InvalidStateError).
+  useEffect(() => {
+    const data = fetcher.data as { confirmationUrl?: string } | undefined;
+    if (data?.confirmationUrl && fetcher.state === "idle") {
+      open(data.confirmationUrl, "_top");
+    }
+  }, [fetcher.data, fetcher.state]);
 
   const isCurrent = planKey === currentPlan;
   const currentRank = PLAN_ORDER.indexOf(currentPlan);
