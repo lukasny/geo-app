@@ -209,6 +209,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!["MANUAL", "DAILY", "WEEKLY"].includes(scheduleRaw)) {
       return { error: "Invalid schedule." };
     }
+    // FREE plan can't schedule. The scheduler tick already filters by plan,
+    // but block at the action so the merchant gets immediate feedback (and so
+    // we don't write a misleading `nextRunAt` they'll see in the UI as a
+    // scheduled run that will never actually fire).
+    if (scheduleRaw !== "MANUAL" && planKey === "FREE") {
+      return {
+        error: "Scheduled tracking is a Growth/Pro/Enterprise feature.",
+      };
+    }
     const owns = await prisma.trackingPrompt.findFirst({
       where: { id: promptId, storeId: store.id },
       select: { id: true },
@@ -572,6 +581,7 @@ export default function TrackingPage() {
             <PromptCard
               key={p.id}
               prompt={p}
+              plan={plan}
               isWorking={isWorking}
               currentIntent={
                 isWorking
@@ -594,12 +604,14 @@ export default function TrackingPage() {
 
 interface PromptCardProps {
   prompt: LoaderPrompt;
+  plan: PlanKey;
   isWorking: boolean;
   currentIntent: { intent: string; promptId: string } | null;
   fetcher: ReturnType<typeof useFetcher>;
 }
 
-function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardProps) {
+function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptCardProps) {
+  const canSchedule = plan !== "FREE";
   const [expanded, setExpanded] = useState(false);
   const isRunningThis =
     isWorking &&
@@ -660,18 +672,26 @@ function PromptCard({ prompt, isWorking, currentIntent, fetcher }: PromptCardPro
                   options={SCHEDULE_OPTIONS}
                   value={prompt.schedule}
                   onChange={handleScheduleChange}
-                  disabled={isWorking && !isSchedulingThis}
+                  disabled={!canSchedule || (isWorking && !isSchedulingThis)}
                 />
               </div>
-              {prompt.schedule !== "MANUAL" && (
+              {!canSchedule ? (
                 <Text as="span" variant="bodySm" tone="subdued">
-                  Next auto-run: {relativeFuture(prompt.nextRunAt)}
+                  Upgrade to Growth or higher to schedule recurring checks.
                 </Text>
-              )}
-              {isSchedulingThis && (
-                <Text as="span" variant="bodySm" tone="subdued">
-                  Saving…
-                </Text>
+              ) : (
+                <>
+                  {prompt.schedule !== "MANUAL" && (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Next auto-run: {relativeFuture(prompt.nextRunAt)}
+                    </Text>
+                  )}
+                  {isSchedulingThis && (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Saving…
+                    </Text>
+                  )}
+                </>
               )}
             </InlineStack>
           </BlockStack>

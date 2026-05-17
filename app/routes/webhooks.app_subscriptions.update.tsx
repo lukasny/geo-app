@@ -64,6 +64,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { plan: "FREE" },
     });
 
+    // Convert any scheduled tracking prompts back to MANUAL — FREE doesn't
+    // include automatic scheduling. Without this, the scheduler tick would
+    // keep firing the merchant's old prompts and we'd pay Claude API for it
+    // indefinitely. The scheduler tick also filters `store.plan != "FREE"`
+    // as belt-and-suspenders in case this webhook is ever missed.
+    await prisma.trackingPrompt.updateMany({
+      where: { storeId: store.id, schedule: { not: "MANUAL" } },
+      data: { schedule: "MANUAL", nextRunAt: null },
+    });
+
     await prisma.subscription.upsert({
       where: { storeId: store.id },
       update: { plan: "FREE", status: "CANCELLED" },
