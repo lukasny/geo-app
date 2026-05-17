@@ -35,7 +35,10 @@ export const PLAN_LIMITS = {
     maxTrackingPrompts:     10,
     maxCompetitors:          3,
     aiTracking:              true,
-    competitorMonitoring:    false,
+    // Growth gets competitor monitoring with the 3-competitor cap above.
+    // (Previously this was `false` while maxCompetitors was already 3 —
+    //  a self-contradictory plan limit.)
+    competitorMonitoring:    true,
     revenueAttribution:      false,
     contentEngine:           false,
     euComplianceModule:      false,

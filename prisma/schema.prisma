@@ -249,6 +249,10 @@ model Competitor {
 
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
+  // Prevent the same merchant from tracking the same domain twice. Domain
+  // is stored already-normalized (hostname, lowercase, no protocol/path/www
+  // prefix) so dupes can be enforced at the DB layer.
+  @@unique([storeId, domain])
   @@index([storeId])
 }
 
