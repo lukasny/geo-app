@@ -21,7 +21,8 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
-import { runTrackingCheck } from "~/services/tracking.server";
+import { runTrackingCheck, suggestTrackingPrompts } from "~/services/tracking.server";
+import type { SuggestedPrompt } from "~/services/tracking.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 
@@ -182,7 +183,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         isActive: true,
       },
     });
-    return { success: true, intent, promptId: created.id };
+    return { success: true, intent, promptId: created.id, addedPrompt: promptText };
   }
 
   if (intent === "runCheck") {
@@ -210,6 +211,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: promptId, storeId: store.id },
     });
     return { success: true, intent };
+  }
+
+  if (intent === "suggestPrompts") {
+    try {
+      const suggestions = await suggestTrackingPrompts(store.id);
+      return { success: true, intent, suggestions };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      return { error: `Couldn't generate suggestions: ${msg}` };
+    }
   }
 
   return { error: "Unknown action." };
@@ -249,16 +260,31 @@ export default function TrackingPage() {
 
   const [promptDraft, setPromptDraft] = useState("");
   const [categoryDraft, setCategoryDraft] = useState("");
+  // Suggestions returned by the suggest action live in client state so the
+  // user can dismiss them individually as they get added (without re-running
+  // the (expensive) suggest call).
+  const [suggestions, setSuggestions] = useState<SuggestedPrompt[]>([]);
+  // Track which suggestion text is being added so we can show per-card spinners
+  // when multiple add submits happen in quick succession.
+  const [addingSuggestion, setAddingSuggestion] = useState<string | null>(null);
 
   useEffect(() => {
     const data = fetcher.data as Record<string, unknown> | undefined;
     if (!data || fetcher.state !== "idle") return;
     if ("error" in data) {
       shopify.toast.show(data.error as string, { isError: true });
+      setAddingSuggestion(null);
     } else if (data.success && data.intent === "addPrompt") {
-      shopify.toast.show("Tracking prompt added");
-      setPromptDraft("");
-      setCategoryDraft("");
+      const addedText = ((data.addedPrompt as string) ?? "").trim();
+      if (addedText && addingSuggestion && addingSuggestion === addedText) {
+        // The add originated from a suggestion card — drop that card.
+        setSuggestions((s) => s.filter((sp) => sp.prompt.trim() !== addedText));
+      } else {
+        shopify.toast.show("Tracking prompt added");
+        setPromptDraft("");
+        setCategoryDraft("");
+      }
+      setAddingSuggestion(null);
     } else if (data.success && data.intent === "runCheck") {
       const cited = (data.result as { cited?: boolean })?.cited;
       shopify.toast.show(
@@ -268,8 +294,16 @@ export default function TrackingPage() {
       );
     } else if (data.success && data.intent === "deletePrompt") {
       shopify.toast.show("Tracking prompt deleted");
+    } else if (data.success && data.intent === "suggestPrompts") {
+      const list = (data.suggestions as SuggestedPrompt[] | undefined) ?? [];
+      setSuggestions(list);
+      if (list.length === 0) {
+        shopify.toast.show("No new suggestions — you already cover the main angles", { isError: true });
+      } else {
+        shopify.toast.show(`Generated ${list.length} prompt suggestions`);
+      }
     }
-  }, [fetcher.data, fetcher.state, shopify]);
+  }, [fetcher.data, fetcher.state, addingSuggestion, shopify]);
 
   const planDef = PLAN_DEFINITIONS[plan];
   const planLimits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.FREE;
@@ -279,7 +313,19 @@ export default function TrackingPage() {
     prompts.length >= planLimits.maxTrackingPrompts;
 
   const isAddingPrompt =
-    isWorking && fetcher.formData?.get("intent") === "addPrompt";
+    isWorking &&
+    fetcher.formData?.get("intent") === "addPrompt" &&
+    !addingSuggestion;
+  const isSuggesting =
+    isWorking && fetcher.formData?.get("intent") === "suggestPrompts";
+
+  const handleAddSuggestion = (sp: SuggestedPrompt) => {
+    setAddingSuggestion(sp.prompt.trim());
+    fetcher.submit(
+      { intent: "addPrompt", prompt: sp.prompt, category: sp.category },
+      { method: "POST" }
+    );
+  };
 
   return (
     <Page>
@@ -314,16 +360,28 @@ export default function TrackingPage() {
         {canAddPrompts && (
           <Card>
             <BlockStack gap="400">
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">
-                  Add tracking prompt
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {promptsRemaining === null
-                    ? "Unlimited prompts on your plan."
-                    : `${promptsRemaining} of ${planLimits.maxTrackingPrompts} prompts remaining on your ${planDef.name} plan.`}
-                </Text>
-              </BlockStack>
+              <InlineStack align="space-between" blockAlign="start" wrap={false}>
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Add tracking prompt
+                  </Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {promptsRemaining === null
+                      ? "Unlimited prompts on your plan."
+                      : `${promptsRemaining} of ${planLimits.maxTrackingPrompts} prompts remaining on your ${planDef.name} plan.`}
+                  </Text>
+                </BlockStack>
+                <fetcher.Form method="POST">
+                  <input type="hidden" name="intent" value="suggestPrompts" />
+                  <Button
+                    submit
+                    loading={isSuggesting}
+                    disabled={isWorking && !isSuggesting}
+                  >
+                    {isSuggesting ? "Generating…" : "Suggest prompts for me"}
+                  </Button>
+                </fetcher.Form>
+              </InlineStack>
 
               <fetcher.Form method="POST">
                 <input type="hidden" name="intent" value="addPrompt" />
@@ -359,6 +417,69 @@ export default function TrackingPage() {
                   </InlineStack>
                 </BlockStack>
               </fetcher.Form>
+            </BlockStack>
+          </Card>
+        )}
+
+        {/* ── Suggestions (from suggestPrompts action) ── */}
+        {canAddPrompts && suggestions.length > 0 && (
+          <Card>
+            <BlockStack gap="400">
+              <InlineStack align="space-between" blockAlign="center">
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Suggested prompts ({suggestions.length})
+                  </Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Generated from your product catalog. Click Add on the ones
+                    that match how your customers actually search.
+                  </Text>
+                </BlockStack>
+                <Button
+                  variant="plain"
+                  onClick={() => setSuggestions([])}
+                  disabled={isWorking}
+                >
+                  Dismiss all
+                </Button>
+              </InlineStack>
+
+              <BlockStack gap="300">
+                {suggestions.map((sp) => {
+                  const isAddingThis = addingSuggestion === sp.prompt.trim();
+                  return (
+                    <Box
+                      key={sp.prompt}
+                      padding="300"
+                      background="bg-surface-secondary"
+                      borderRadius="200"
+                    >
+                      <InlineStack align="space-between" blockAlign="start" gap="300" wrap={false}>
+                        <BlockStack gap="200">
+                          <Text as="p" variant="bodyMd" fontWeight="semibold">
+                            {sp.prompt}
+                          </Text>
+                          {sp.rationale && (
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              {sp.rationale}
+                            </Text>
+                          )}
+                          <InlineStack gap="200">
+                            <Badge tone="info">{sp.category.replace("_", " ")}</Badge>
+                          </InlineStack>
+                        </BlockStack>
+                        <Button
+                          onClick={() => handleAddSuggestion(sp)}
+                          loading={isAddingThis}
+                          disabled={(isWorking && !isAddingThis) || atCap}
+                        >
+                          {atCap ? "At limit" : "Add"}
+                        </Button>
+                      </InlineStack>
+                    </Box>
+                  );
+                })}
+              </BlockStack>
             </BlockStack>
           </Card>
         )}

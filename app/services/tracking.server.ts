@@ -16,6 +16,12 @@ export interface TrackingCheckResult {
   competitorsDetected: string[];
 }
 
+export interface SuggestedPrompt {
+  prompt: string;
+  category: "comparison" | "recommendation" | "use_case" | "price" | "brand";
+  rationale: string;
+}
+
 // ─── Mention Detection Helpers ────────────────────────────────────────────────
 
 /** Strip the `.myshopify.com` suffix and lowercase, so we can match the store
@@ -231,4 +237,107 @@ export async function runTrackingCheck(
     vendorsCited: mentionedVendors,
     competitorsDetected,
   };
+}
+
+// ─── Suggest Tracking Prompts ─────────────────────────────────────────────────
+
+const SUGGEST_SYSTEM_PROMPT = `You are an AEO (Answer Engine Optimization) strategist. Your job is to generate the kinds of questions a real shopper would ask an AI assistant (ChatGPT, Perplexity, Claude, Gemini) when researching products in a specific store's category.
+
+You will be given a store's product catalog. Generate 8 tracking prompts that:
+1. Sound like natural, conversational questions a human would type into an AI
+2. Cover a mix of intents: product comparisons, "best of" recommendations, use-case scenarios, price/value, and brand questions
+3. Are specific enough to be answerable but broad enough that the store could realistically be cited
+
+Do NOT include the store's brand name in the prompts — these are questions OTHER people would ask, not the store owner. The whole point is to find prompts where AI might mention the store organically.
+
+Output strictly as JSON: { "suggestions": [{ "prompt": "...", "category": "comparison|recommendation|use_case|price|brand", "rationale": "one sentence on why this prompt matters for this store" }] }`;
+
+export async function suggestTrackingPrompts(storeId: string): Promise<SuggestedPrompt[]> {
+  const store = await prisma.store.findUnique({ where: { id: storeId } });
+  if (!store) throw new Error("Store not found");
+
+  // Pull up to 25 representative products to give Claude enough context
+  // without spending too many tokens. Active products only.
+  const products = await prisma.product.findMany({
+    where: { storeId, status: "active" },
+    select: { title: true, vendor: true, productType: true },
+    take: 25,
+  });
+
+  if (products.length === 0) {
+    throw new Error("Run an audit first — we need product data to generate relevant prompts.");
+  }
+
+  const productLines = products
+    .map(
+      (p) =>
+        `- ${p.title}${p.vendor ? ` (brand: ${p.vendor})` : ""}${p.productType ? ` [${p.productType}]` : ""}`
+    )
+    .join("\n");
+
+  const vendorSet = new Set<string>();
+  for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
+  const vendors = [...vendorSet];
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1500,
+    system: SUGGEST_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: `Store name: ${store.shopName}
+${vendors.length > 0 ? `Brands sold: ${vendors.join(", ")}` : ""}
+
+Products (up to 25):
+${productLines}
+
+Generate 8 tracking prompts for this store.`,
+      },
+    ],
+  });
+
+  const block = message.content[0];
+  if (block?.type !== "text") {
+    throw new Error("Claude returned no text response");
+  }
+
+  // Strip code fences if Claude wrapped the JSON in ```json … ```
+  const raw = block.text
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  let parsed: { suggestions?: SuggestedPrompt[] };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Couldn't parse Claude's suggestions — please try again.");
+  }
+
+  const suggestions = parsed.suggestions ?? [];
+
+  // Filter against prompts the merchant already has so we don't suggest dupes.
+  const existing = await prisma.trackingPrompt.findMany({
+    where: { storeId },
+    select: { prompt: true },
+  });
+  const existingLower = new Set(existing.map((p) => p.prompt.toLowerCase().trim()));
+
+  const valid = suggestions
+    .filter(
+      (s): s is SuggestedPrompt =>
+        typeof s?.prompt === "string" &&
+        s.prompt.trim().length > 0 &&
+        s.prompt.length <= 500 &&
+        !existingLower.has(s.prompt.toLowerCase().trim()) &&
+        ["comparison", "recommendation", "use_case", "price", "brand"].includes(
+          s.category as string
+        )
+    )
+    .slice(0, 10);
+
+  return valid;
 }
