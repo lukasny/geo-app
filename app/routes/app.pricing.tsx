@@ -68,20 +68,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
-  console.log("[GEO Rise] Pricing action called", { intent });
 
   if (intent === "subscribe") {
     const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
       const confirmationUrl = await createSubscription(admin, planKey, session.shop);
-      console.log("[GEO Rise] Got confirmationUrl", { confirmationUrl });
       // Return the URL as data — the client navigates via window.top.location.
-      // shopify-app-remix's redirect helper has been unreliable in this iframe
-      // context (POST never observable in network tab). Returning data and
-      // letting the client navigate is more deterministic.
+      // shopify-app-remix's redirect helper is unreliable in this iframe context;
+      // returning data and letting the client escape the iframe is deterministic.
       return { confirmationUrl };
     } catch (err) {
-      console.error("[GEO Rise] createSubscription failed", err);
       return { error: err instanceof Error ? err.message : "Subscription creation failed." };
     }
   }
@@ -197,16 +193,6 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
   const def = PLAN_DEFINITIONS[planKey];
   const limits = PLAN_LIMITS[planKey];
 
-  // Trace every fetcher state change so we can see in dev tools console
-  // whether the POST round-trip is happening at all.
-  useEffect(() => {
-    console.log("[GEO Rise] fetcher state", {
-      state: fetcher.state,
-      data: fetcher.data,
-      planKey,
-    });
-  }, [fetcher.state, fetcher.data, planKey]);
-
   // When the action returns a Shopify billing confirmationUrl, escape the
   // embedded-app iframe by navigating the top window directly. Setting
   // window.top.location.href is allowed by Shopify's iframe sandbox under
@@ -215,15 +201,13 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
   useEffect(() => {
     const data = fetcher.data as { confirmationUrl?: string } | undefined;
     if (data?.confirmationUrl && fetcher.state === "idle") {
-      console.log("[GEO Rise] Navigating top to", data.confirmationUrl);
       try {
         if (window.top) {
           window.top.location.href = data.confirmationUrl;
         } else {
           window.location.href = data.confirmationUrl;
         }
-      } catch (err) {
-        console.error("[GEO Rise] Top navigation blocked, falling back to open()", err);
+      } catch {
         open(data.confirmationUrl, "_top");
       }
     }
@@ -328,7 +312,6 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
                   loading={isLoading}
                   fullWidth
                   onClick={() => {
-                    console.log("[GEO Rise] Cancel clicked", { planKey });
                     fetcher.submit(
                       { intent: "cancel", subscriptionId: shopifySubId },
                       { method: "POST" }
@@ -347,7 +330,6 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
               loading={isLoading}
               fullWidth
               onClick={() => {
-                console.log("[GEO Rise] Subscribe clicked", { planKey });
                 fetcher.submit(
                   { intent: "subscribe", plan: planKey },
                   { method: "POST" }
