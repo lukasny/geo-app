@@ -829,7 +829,7 @@ async function generateMetaDescriptionWithClaude(
       messages: [
         {
           role: "user",
-          content: `Write a meta description (120–160 characters) for this product. It must include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis.
+          content: `Write a meta description (strictly between 120 and 158 characters — count carefully and stop at a complete sentence; do not end mid-word) for this product. It must include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis.
 
 Product title: ${product.title}
 ${plainDesc ? `Product description: ${plainDesc}` : "Product description: (none provided)"}
@@ -844,7 +844,10 @@ Store: ${storeName}`,
     if (block?.type === "text") {
       const cleaned = block.text.trim().replace(/^["']|["']$/g, "").trim();
       if (cleaned.length >= 50 && cleaned.length <= 200) {
-        return cleaned.slice(0, 160);
+        // Trust Claude's output. Don't slice — slicing at 160 cuts mid-word
+        // (e.g. "...one standout boar" instead of "board"). Shopify accepts
+        // up to 320 chars in meta description and only truncates in display.
+        return cleaned;
       }
     }
   } catch (err) {
