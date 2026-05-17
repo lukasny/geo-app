@@ -2,10 +2,10 @@
 // Do NOT add server-only imports (prisma, shopify SDK, etc.) here.
 
 export const PLAN_DEFINITIONS = {
-  FREE:       { name: "Free",       price: 0,   trialDays: 0 },
-  GROWTH:     { name: "Growth",     price: 39,  trialDays: 7 },
-  PRO:        { name: "Pro",        price: 79,  trialDays: 7 },
-  ENTERPRISE: { name: "Enterprise", price: 199, trialDays: 7 },
+  FREE:       { name: "Free",       price: 0,  trialDays: 0 },
+  GROWTH:     { name: "Growth",     price: 19, trialDays: 7 },
+  PRO:        { name: "Pro",        price: 49, trialDays: 7 },
+  ENTERPRISE: { name: "Enterprise", price: 99, trialDays: 7 },
 } as const;
 
 export type PlanKey = keyof typeof PLAN_DEFINITIONS;
