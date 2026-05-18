@@ -218,7 +218,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ─── Action ───────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: session.shop },
     select: { id: true, plan: true },
@@ -340,7 +340,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
     try {
-      const suggestions = await suggestTrackingPrompts(store.id);
+      const suggestions = await suggestTrackingPrompts(store.id, admin);
       return { success: true, intent, suggestions };
     } catch (err) {
       return { error: sanitizeTrackingError(err) };
