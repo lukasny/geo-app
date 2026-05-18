@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import prisma from "~/db.server";
 import { withRetry } from "./ai-retry.server";
 
@@ -50,10 +51,22 @@ export interface TrackingCheckResult {
   sentiment: CitationSentiment;
 }
 
+export type SuggestionSource = "shopify_search" | "reddit" | "ai_brainstorm";
+
 export interface SuggestedPrompt {
   prompt: string;
   category: "comparison" | "recommendation" | "use_case" | "price" | "brand";
   rationale: string;
+  /** Where this suggestion came from. shopify_search means the prompt was
+   *  derived from one of the merchant's own storefront search queries.
+   *  reddit means it was derived from a post title in a relevant
+   *  community. ai_brainstorm is the fallback when both data sources
+   *  returned nothing - Claude generated the prompt from the catalog alone. */
+  source: SuggestionSource;
+  /** Human-readable context surfaced under the suggestion in the UI. For
+   *  shopify_search: e.g. "search query: 'best beginner snowboard' (37 searches)".
+   *  For reddit: e.g. "from r/snowboarding". Undefined for ai_brainstorm. */
+  sourceDetail?: string;
 }
 
 // ─── Mention Detection Helpers ────────────────────────────────────────────────
