@@ -22,6 +22,7 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { runFullAudit, autoFixIssues } from "~/services/audit-engine.server";
+import { timeAgo as timeAgoUtil } from "~/utils/time";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -101,14 +102,19 @@ function severityTone(
   }
 }
 
+// Local wrapper keeps the "N minute(s) / hour(s) / day(s) ago" word form
+// this page used (the shared util uses "Nm / Nh / Nd" compact form).
+// Delegates to the shared util for the actual edge-case handling (clock
+// skew, < 60s, null input).
 function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins} minute${mins !== 1 ? "s" : ""} ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hour${hrs !== 1 ? "s" : ""} ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days} day${days !== 1 ? "s" : ""} ago`;
+  const compact = timeAgoUtil(dateStr);
+  if (compact === "just now" || compact === "Never") return compact;
+  const match = compact.match(/^(\d+)([mhd])\sago$/);
+  if (!match) return compact;
+  const n = parseInt(match[1], 10);
+  const unit = match[2];
+  const word = unit === "m" ? "minute" : unit === "h" ? "hour" : "day";
+  return `${n} ${word}${n !== 1 ? "s" : ""} ago`;
 }
 
 const FREE_PLAN_LIMIT = 3;

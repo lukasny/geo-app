@@ -26,6 +26,7 @@ import prisma from "~/db.server";
 import { generateLlmsTxt } from "~/services/llms-generator.server";
 import { runFullAudit } from "~/services/audit-engine.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
+import { timeAgo } from "~/utils/time";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -305,13 +306,22 @@ function scoreLabel(score: number) {
   return "Great! Your store is well-optimized for AI discovery. Keep it up.";
 }
 
-function timeAgo(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+// `timeAgo` is now imported from ~/utils/time. The previous local
+// implementation produced "-1m ago" for timestamps newer than 60s
+// (Math.floor of a negative diff). The shared helper clamps to
+// "just now" instead.
+
+/** Estimate when the next weekly digest will fire given the last-sent
+ *  timestamp. Matches the runWeeklyInsightDigest cutoff (6.5 days). */
+function nextSendHint(lastSentIso: string): string {
+  const lastSent = new Date(lastSentIso).getTime();
+  const nextEligible = lastSent + 6.5 * 24 * 60 * 60 * 1000;
+  const diffMs = nextEligible - Date.now();
+  if (diffMs <= 0) return "scheduled for the next daily cron tick";
+  const hrs = Math.round(diffMs / 3600000);
+  if (hrs < 24) return `scheduled in ~${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `scheduled in ~${days}d`;
 }
 
 // ─── Circular Progress Ring ───────────────────────────────────────────────────
@@ -839,6 +849,14 @@ export default function Index() {
                   {store.lastInsightSentAt ? (
                     <>
                       Last sent {timeAgo(store.lastInsightSentAt)}.
+                      {store.weeklyInsightEnabled
+                        ? ` Next ${nextSendHint(store.lastInsightSentAt)}.`
+                        : ""}
+                    </>
+                  ) : store.weeklyInsightEnabled ? (
+                    <>
+                      Nothing sent yet, but the next scheduled cron tick will
+                      pick this store up.
                     </>
                   ) : (
                     <>No emails sent yet.</>

@@ -90,16 +90,16 @@ export async function composeInsightEmail(
   const dashboardUrl = `${appBaseUrl}/app`;
 
   // ── Build subject ──
-  // Earlier draft used `${count} ${title.toLowerCase()} to fix`, which
-  // produced broken English on audit titles starting with "No"
-  // ("15 no customer reviews to fix"). The current form sidesteps
-  // pluralization / preposition concerns by treating the title as the
-  // standalone label of the top action.
+  // Three cases: has actions (top item leads), audit ran with no
+  // unfixed issues left (all clear), or no audit ever ran (welcome
+  // framing instead of misleading "all clear" / "0/100").
   const top = actionPlan.actions[0];
   const subject =
     top !== undefined
-      ? `Your GEO Score ${store.geoScore}/100 - top action: ${top.title}`
-      : `Your GEO Score ${store.geoScore}/100 - all clear`;
+      ? `Your GEO Score ${store.geoScore}/100, top action: ${top.title}`
+      : actionPlan.hasAudit
+      ? `Your GEO Score ${store.geoScore}/100, no unfixed issues`
+      : `Welcome to GEO Rise: run your first audit`;
 
   // ── Build plain text (for accessibility / non-HTML clients) ──
   const textLines: string[] = [];
@@ -134,8 +134,11 @@ export async function composeInsightEmail(
     }
     textLines.push("");
     textLines.push(`Open your action plan: ${actionPlanUrl}`);
+  } else if (actionPlan.hasAudit) {
+    textLines.push(`No unfixed issues right now, your store is in good shape.`);
+    textLines.push(`Open dashboard: ${dashboardUrl}`);
   } else {
-    textLines.push(`No unfixed issues right now - your store is in good shape.`);
+    textLines.push(`You haven't run an audit yet. Open the dashboard and click "Run AI Audit" to see how AI search engines see your products.`);
     textLines.push(`Open dashboard: ${dashboardUrl}`);
   }
   textLines.push("");
@@ -245,7 +248,8 @@ export async function composeInsightEmail(
             Open my action plan →
           </a>
         </div>`
-            : `
+            : actionPlan.hasAudit
+            ? `
         <h2 style="font-size: 16px; color: #202223; margin: 28px 0 12px;">
           ✅ No unfixed issues right now
         </h2>
@@ -257,6 +261,21 @@ export async function composeInsightEmail(
           <a href="${dashboardUrl}"
              style="display: inline-block; background: #008060; color: #ffffff; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">
             Open dashboard →
+          </a>
+        </div>`
+            : `
+        <h2 style="font-size: 16px; color: #202223; margin: 28px 0 12px;">
+          👋 Welcome to GEO Rise
+        </h2>
+        <p style="font-size: 14px; color: #6D7175; margin: 0 0 24px;">
+          You haven't run an audit yet. The audit scores every product across
+          5 categories and tells you exactly what's blocking AI search engines
+          from understanding your store. It usually takes under a minute.
+        </p>
+        <div style="margin: 24px 0;">
+          <a href="${dashboardUrl}"
+             style="display: inline-block; background: #008060; color: #ffffff; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">
+            Run my first audit →
           </a>
         </div>`
         }
