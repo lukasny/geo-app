@@ -25,6 +25,8 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { generateLlmsTxt } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
+import { getRevenueAttribution } from "~/services/revenue-attribution.server";
+import type { RevenueSummary } from "~/services/revenue-attribution.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
 
@@ -77,6 +79,9 @@ interface LoaderData {
    *  so once the merchant tries a feature its card auto-dismisses on the
    *  next loader pass. */
   discoveryCards: DiscoveryCard[];
+  /** Per-currency / per-platform AI revenue aggregates for the last 30
+   *  days. Null when the merchant's plan doesn't include the feature. */
+  revenueSummary: RevenueSummary | null;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -218,6 +223,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     limits.insightEmails && !store.weeklyInsightEnabled ? "weeklyEmail" : null,
   ].filter((c): c is DiscoveryCard => c !== null);
 
+  // Revenue attribution is plan-gated; we still query for paid plans so the
+  // dashboard card has data. Free/Growth get an upgrade banner card, not
+  // real data, so we skip the query for them.
+  const revenueSummary: RevenueSummary | null = limits.revenueAttribution
+    ? await getRevenueAttribution(store.id, { rangeDays: 30, orderLimit: 0 })
+    : null;
+
   return {
     store: {
       ...store,
@@ -238,6 +250,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     ),
     discoveryCards,
+    revenueSummary,
   } satisfies LoaderData;
 };
 
@@ -1069,10 +1082,139 @@ function DiscoveryCardWeeklyEmail({
   );
 }
 
+// ─── AI Revenue Card ──────────────────────────────────────────────────────────
+
+function AiRevenueCard({
+  summary,
+  planAllowsFeature,
+}: {
+  summary: RevenueSummary | null;
+  planAllowsFeature: boolean;
+}) {
+  if (!planAllowsFeature) {
+    return (
+      <Card>
+        <BlockStack gap="200">
+          <Text as="h2" variant="headingMd">
+            Track which AI search engines actually drive your sales
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            See real revenue attributed to ChatGPT, Perplexity, Claude, and
+            Gemini referrals. Available on Pro and Enterprise.
+          </Text>
+          <div>
+            <Button variant="primary" url="/app/pricing">
+              Upgrade to Pro
+            </Button>
+          </div>
+        </BlockStack>
+      </Card>
+    );
+  }
+
+  const hasData =
+    summary !== null &&
+    summary.allTimeTotal !== null &&
+    summary.byCurrency.length > 0;
+
+  if (!hasData) {
+    return (
+      <Card>
+        <BlockStack gap="200">
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="h2" variant="headingMd">
+              AI Revenue
+            </Text>
+            <Button url="/app/revenue" variant="plain">
+              View full report
+            </Button>
+          </InlineStack>
+          <Text as="p" variant="bodySm" tone="subdued">
+            No AI-attributed revenue yet. Make sure the AI Schema Injection
+            theme app embed is enabled, then any shopper who reaches you via
+            ChatGPT, Perplexity, Claude, or Gemini will show up here.
+          </Text>
+        </BlockStack>
+      </Card>
+    );
+  }
+
+  const dominant = summary!.byCurrency[0];
+  const otherCurrencies = summary!.byCurrency.slice(1);
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="h2" variant="headingMd">
+            AI Revenue
+          </Text>
+          <Button url="/app/revenue" variant="plain">
+            View full report
+          </Button>
+        </InlineStack>
+        <BlockStack gap="100">
+          <Text as="p" variant="heading2xl">
+            {formatRevenueMoney(dominant.amount, dominant.currency)}
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            AI-attributed revenue, last 30 days, {dominant.orderCount}{" "}
+            {dominant.orderCount === 1 ? "order" : "orders"}
+            {otherCurrencies.length > 0 && (
+              <> + other currencies, see full report</>
+            )}
+          </Text>
+        </BlockStack>
+        {summary!.byPlatform.length > 0 && (
+          <InlineStack gap="200" wrap>
+            {summary!.byPlatform.map((p) => (
+              <Text as="span" variant="bodySm" tone="subdued" key={p.platform}>
+                {platformDisplayName(p.platform)}{" "}
+                <strong>{formatRevenueMoney(p.amount, p.currency)}</strong>
+              </Text>
+            ))}
+          </InlineStack>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
+function formatRevenueMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
+function platformDisplayName(platform: string): string {
+  switch (platform) {
+    case "CHATGPT":
+      return "ChatGPT";
+    case "PERPLEXITY":
+      return "Perplexity";
+    case "CLAUDE":
+      return "Claude";
+    case "GEMINI":
+      return "Gemini";
+    case "GROK":
+      return "Grok";
+    case "GOOGLE_AI_OVERVIEW":
+      return "Google AI Overview";
+    default:
+      return platform;
+  }
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Index() {
-  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards } =
+  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards, revenueSummary } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -1235,6 +1377,15 @@ export default function Index() {
             </BlockStack>
           </Card>
         </div>
+
+        {/* ── ROW 2.5: AI Revenue card ── */}
+        <AiRevenueCard
+          summary={revenueSummary}
+          planAllowsFeature={
+            (PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ??
+              PLAN_LIMITS.FREE).revenueAttribution
+          }
+        />
 
         {/* ── ROW 3: Quick actions ── */}
         <Card>
