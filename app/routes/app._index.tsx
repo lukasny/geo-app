@@ -854,10 +854,218 @@ function Step3({
   );
 }
 
+// ─── Discovery Cards ──────────────────────────────────────────────────────────
+
+function DiscoveryCards({
+  cards,
+  shopifyDomain,
+  fetcher,
+}: {
+  cards: DiscoveryCard[];
+  shopifyDomain: string;
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+}) {
+  const themeEditorUrl = `https://${shopifyDomain}/admin/themes/current/editor?context=apps`;
+  const isWorking = fetcher.state !== "idle";
+  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Get more from GEO Rise
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Features that take a few minutes to set up and pay off every week
+            after.
+          </Text>
+        </BlockStack>
+        <Divider />
+        <BlockStack gap="400">
+          {cards.map((card) => {
+            if (card === "schema") {
+              return (
+                <DiscoveryCardSchema
+                  key={card}
+                  themeEditorUrl={themeEditorUrl}
+                  fetcher={fetcher}
+                  isWorking={isWorking && lastIntent === "markSchemaEnabled"}
+                />
+              );
+            }
+            if (card === "tracking") {
+              return <DiscoveryCardTracking key={card} />;
+            }
+            if (card === "competitors") {
+              return <DiscoveryCardCompetitors key={card} />;
+            }
+            if (card === "blog") {
+              return <DiscoveryCardBlog key={card} />;
+            }
+            if (card === "simulator") {
+              return <DiscoveryCardSimulator key={card} />;
+            }
+            if (card === "weeklyEmail") {
+              return (
+                <DiscoveryCardWeeklyEmail
+                  key={card}
+                  fetcher={fetcher}
+                  isWorking={isWorking && lastIntent === "toggleWeeklyEmail"}
+                />
+              );
+            }
+            return null;
+          })}
+        </BlockStack>
+      </BlockStack>
+    </Card>
+  );
+}
+
+function DiscoveryCardSchema({
+  themeEditorUrl,
+  fetcher,
+  isWorking,
+}: {
+  themeEditorUrl: string;
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  isWorking: boolean;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Enable AI Schema Injection
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        Add structured data to your product pages so ChatGPT, Gemini, and
+        Perplexity can fully understand what you sell. Takes 30 seconds in
+        your Shopify theme editor.
+      </Text>
+      <InlineStack gap="200">
+        <Button variant="primary" url={themeEditorUrl} target="_blank">
+          Open Theme Editor
+        </Button>
+        <Button
+          variant="plain"
+          loading={isWorking}
+          onClick={() => {
+            fetcher.submit(
+              { intent: "markSchemaEnabled" },
+              { method: "POST" }
+            );
+          }}
+        >
+          I&apos;ve enabled it
+        </Button>
+      </InlineStack>
+    </BlockStack>
+  );
+}
+
+function DiscoveryCardTracking() {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Set up AI Tracking
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        See when ChatGPT, Claude, and Perplexity mention your products. We can
+        suggest prompts based on your catalog.
+      </Text>
+      <Button variant="primary" url="/app/tracking">
+        Go to AI Tracking
+      </Button>
+    </BlockStack>
+  );
+}
+
+function DiscoveryCardCompetitors() {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Add a competitor to monitor
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        Compare your AI visibility head-to-head with rivals in your niche.
+      </Text>
+      <Button variant="primary" url="/app/competitors">
+        Go to Competitors
+      </Button>
+    </BlockStack>
+  );
+}
+
+function DiscoveryCardBlog() {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Generate your first blog post
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        AI-written posts grounded in your real catalog, structured for ChatGPT
+        to cite. Publish to your Shopify blog with one click.
+      </Text>
+      <Button variant="primary" url="/app/blog-generator">
+        Go to Blog Generator
+      </Button>
+    </BlockStack>
+  );
+}
+
+function DiscoveryCardSimulator() {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Run AI Simulator
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        See exactly what ChatGPT and Claude extract from any product page on
+        your store.
+      </Text>
+      <Button variant="primary" url="/app/simulator">
+        Go to AI Simulator
+      </Button>
+    </BlockStack>
+  );
+}
+
+function DiscoveryCardWeeklyEmail({
+  fetcher,
+  isWorking,
+}: {
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  isWorking: boolean;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        Turn on weekly insight emails
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        A weekly digest of your GEO score, top actions, competitor citation
+        rates, and AI mentions. Lands in your inbox every Monday.
+      </Text>
+      <Button
+        variant="primary"
+        loading={isWorking}
+        onClick={() => {
+          const formData = new FormData();
+          formData.append("intent", "toggleWeeklyEmail");
+          formData.append("enabled", "true");
+          fetcher.submit(formData, { method: "POST" });
+        }}
+      >
+        Turn on weekly emails
+      </Button>
+    </BlockStack>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Index() {
-  const { store, llmsFile, citationCount, issueCounts, recentActivity } =
+  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -1065,6 +1273,18 @@ export default function Index() {
             )}
           </BlockStack>
         </Card>
+
+        {/* ── ROW 3.25: Discovery cards ── */}
+        {/* Persistent "Get more from GEO Rise" section. Cards auto-dismiss
+            once the merchant has used the feature; the whole section
+            hides when all eligible cards are dismissed (computed loader-side). */}
+        {discoveryCards.length > 0 && (
+          <DiscoveryCards
+            cards={discoveryCards}
+            shopifyDomain={store.shopifyDomain}
+            fetcher={fetcher}
+          />
+        )}
 
         {/* ── ROW 3.5: Weekly insight email preferences ── */}
         {/* Paid plans only - Free plan hides the card. Lets merchant toggle
