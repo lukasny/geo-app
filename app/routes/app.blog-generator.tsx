@@ -22,12 +22,14 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import {
+  BlogPostCapReachedError,
   generateBlogPostDraft,
   publishBlogPostToShopify,
   countBlogPostsThisMonth,
   type BlogPostTone,
   type BlogPostLength,
 } from "~/services/blog-generation.server";
+import { sanitizeAiVendorError } from "~/services/ai-retry.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
@@ -53,8 +55,10 @@ interface LoaderData {
   plan: PlanKey;
   posts: LoaderPost[];
   postsThisMonth: number;
-  monthlyCap: number; // Infinity is serialized as a sentinel by the loader
-  capRemaining: number | null; // null = unlimited
+  /** null = unlimited posts on this plan. */
+  monthlyCap: number | null;
+  /** null = unlimited posts; otherwise remaining posts this month. */
+  capRemaining: number | null;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -80,9 +84,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const limits = PLAN_LIMITS[planKey] ?? PLAN_LIMITS.FREE;
   const monthlyCap = limits.maxBlogPostsPerMonth;
 
+  // Loader only surfaces finished states. In-flight ("generating") and
+  // errored ("failed") rows still count toward the monthly cap (we paid
+  // Anthropic for the call either way) but don't render in the UI.
   const [posts, postsThisMonth] = await Promise.all([
     prisma.blogPost.findMany({
-      where: { storeId: store.id, status: { not: "deleted" } },
+      where: { storeId: store.id, status: { in: ["draft", "published"] } },
       orderBy: { createdAt: "desc" },
       take: 25,
     }),
@@ -111,7 +118,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     plan: planKey,
     posts: loaderPosts,
     postsThisMonth,
-    monthlyCap: monthlyCap === Infinity ? Number.MAX_SAFE_INTEGER : monthlyCap,
+    monthlyCap: monthlyCap === Infinity ? null : monthlyCap,
     capRemaining,
   } satisfies LoaderData;
 };
@@ -137,13 +144,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (monthlyCap === 0) {
       return {
         error: "Blog post generation is a Growth/Pro/Enterprise feature.",
-      };
-    }
-
-    const usedThisMonth = await countBlogPostsThisMonth(store.id);
-    if (monthlyCap !== Infinity && usedThisMonth >= monthlyCap) {
-      return {
-        error: `You've used all ${monthlyCap} blog posts on your plan this month. Upgrade for more, or try again next month.`,
       };
     }
 
@@ -174,20 +174,66 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ["short", "medium", "long"].includes(lengthRaw) ? lengthRaw : "medium"
     ) as BlogPostLength;
 
+    // Race-condition mitigation (audit I3): insert a placeholder row inside a
+    // transaction that also re-checks the cap. Two concurrent generate clicks
+    // can't both pass the cap check because the count read sees the other
+    // request's placeholder row. The placeholder is updated to a real draft
+    // on success, or marked "failed" on error. Either way it counts toward
+    // the monthly quota (Anthropic was billed for the call regardless).
+    let placeholderId: string;
+    try {
+      placeholderId = await prisma.$transaction(async (tx) => {
+        if (monthlyCap !== Infinity) {
+          const startOfMonth = new Date();
+          startOfMonth.setUTCDate(1);
+          startOfMonth.setUTCHours(0, 0, 0, 0);
+          const used = await tx.blogPost.count({
+            where: {
+              storeId: store.id,
+              createdAt: { gte: startOfMonth },
+            },
+          });
+          if (used >= monthlyCap) {
+            throw new BlogPostCapReachedError(monthlyCap);
+          }
+        }
+        const placeholder = await tx.blogPost.create({
+          data: {
+            storeId: store.id,
+            topic,
+            tone,
+            targetKeywords: targetKeywords ?? undefined,
+            title: "(generating...)",
+            excerpt: "",
+            bodyHtml: "",
+            wordCount: 0,
+            status: "generating",
+          },
+        });
+        return placeholder.id;
+      });
+    } catch (err) {
+      if (err instanceof BlogPostCapReachedError) {
+        return {
+          error: `You've used all ${err.cap} blog posts on your plan this month. Upgrade for more, or try again next month.`,
+        };
+      }
+      console.error("[GEO Rise blog] placeholder transaction failed:", err);
+      return { error: "Couldn't start a new blog post. Please try again." };
+    }
+
     try {
       const draft = await generateBlogPostDraft(store.id, {
         topic,
         targetKeywords,
         tone,
         length,
+        maxPostsPerMonth: monthlyCap,
       });
 
-      const post = await prisma.blogPost.create({
+      const post = await prisma.blogPost.update({
+        where: { id: placeholderId },
         data: {
-          storeId: store.id,
-          topic,
-          targetKeywords: targetKeywords ?? undefined,
-          tone,
           title: draft.title,
           excerpt: draft.excerpt,
           bodyHtml: draft.bodyHtml,
@@ -201,16 +247,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       return { success: true, intent, postId: post.id, title: draft.title };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      // Sanitize Anthropic credit / quota errors so the raw vendor message
-      // doesn't leak to merchants. Same pattern as tracking sanitizer.
-      const safeMessage = /credit balance|insufficient_quota|billing/i.test(
-        message
-      )
-        ? "Our AI service is temporarily unavailable. Please try again in a few minutes."
-        : message;
-      console.error("[GEO Rise blog] generatePost failed:", err);
-      return { error: safeMessage };
+      // Mark the placeholder failed so it stops appearing as "generating"
+      // anywhere and stays counted toward the monthly cap.
+      await prisma.blogPost
+        .update({ where: { id: placeholderId }, data: { status: "failed" } })
+        .catch(() => {});
+
+      if (err instanceof BlogPostCapReachedError) {
+        // Should be unreachable because we just checked, but mirrors the
+        // service-layer guarantee.
+        return {
+          error: `You've used all ${err.cap} blog posts on your plan this month.`,
+        };
+      }
+      return {
+        error: sanitizeAiVendorError(err, {
+          context: "Blog post generation",
+          logTag: "blog generatePost",
+        }),
+      };
     }
   }
 
@@ -224,14 +279,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const postId = (formData.get("postId") as string) ?? "";
     if (!postId) return { error: "Missing post ID." };
 
-    // Verify ownership before letting the publish endpoint accept this ID.
-    const owns = await prisma.blogPost.findFirst({
-      where: { id: postId, storeId: store.id },
-      select: { id: true },
-    });
-    if (!owns) return { error: "Post not found." };
-
-    const result = await publishBlogPostToShopify(postId, admin);
+    // Ownership is enforced inside the service via findFirst on
+    // { id, storeId }, so no separate check is needed here.
+    const result = await publishBlogPostToShopify(postId, store.id, admin);
     if (!result.ok) {
       return { error: result.error ?? "Couldn't publish the post." };
     }
@@ -318,7 +368,9 @@ export default function BlogGeneratorPage() {
   }, [fetcher.data, fetcher.state, shopify]);
 
   const planDef = PLAN_DEFINITIONS[plan];
-  const canGenerate = monthlyCap > 0;
+  // monthlyCap === null means unlimited (Pro/Enterprise unlimited tiers in
+  // theory; today all tiers are capped). monthlyCap === 0 means Free.
+  const canGenerate = monthlyCap === null || monthlyCap > 0;
   const atCap = capRemaining !== null && capRemaining === 0;
 
   if (!canGenerate) {

@@ -29,6 +29,7 @@ import {
 } from "~/services/tracking-scheduler.shared";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
+import { sanitizeAiVendorError } from "~/services/ai-retry.server";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -459,30 +460,17 @@ function TrendTimeline({ history }: { history: HistoryPoint[] }) {
   );
 }
 
-/** Map raw service errors to user-safe messages. Anthropic returns the raw
- *  "credit balance is too low" / "rate limit" / "invalid_request_error" strings
- *  which mention "Anthropic" and "Plans & Billing" - a merchant would think
- *  that refers to their Shopify billing and panic. Always log the raw error
- *  server-side, return a clean message to the UI. */
+/** Wrap the shared `sanitizeAiVendorError` with tracking-specific pass-throughs
+ *  for known service-layer error messages we WANT the merchant to see. The
+ *  shared helper handles the generic vendor failure modes (credit / rate-limit
+ *  / timeout / overloaded). */
 function sanitizeTrackingError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  console.error("[tracking] action error:", raw);
-  // Known user-friendly errors from our service layer - pass through verbatim
   if (/run an audit first/i.test(raw)) return raw;
   if (/couldn't parse claude/i.test(raw)) {
     return "We had trouble understanding the AI response. Please try again.";
   }
-  // Vendor failure modes - show a clean message without leaking Anthropic/etc.
-  if (/credit balance.*too low|insufficient_quota|billing/i.test(raw)) {
-    return "Tracking is temporarily unavailable. Please try again in a few minutes.";
-  }
-  if (/rate.?limit|\b429\b/i.test(raw)) {
-    return "AI service is busy - please try again in a moment.";
-  }
-  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
-    return "AI service didn't respond in time. Please try again.";
-  }
-  return "Tracking check failed. Please try again in a moment.";
+  return sanitizeAiVendorError(err, { context: "Tracking", logTag: "tracking" });
 }
 
 function relativeFuture(iso: string | null): string {

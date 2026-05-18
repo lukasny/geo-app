@@ -30,6 +30,38 @@ export function isTransientApiError(err: unknown): boolean {
   );
 }
 
+/** Map a raw AI-vendor error to a user-safe message. Anthropic/OpenAI return
+ *  strings like "Your credit balance is too low" and "Plans & Billing" which
+ *  mention vendor billing - a merchant would think these refer to their
+ *  Shopify billing and panic. Always log the raw error server-side, return
+ *  a clean message to the UI.
+ *
+ *  `context` is the user-facing label that appears in the fallback message,
+ *  e.g. "Tracking", "Blog post generation". Keep it title-cased and short. */
+export function sanitizeAiVendorError(
+  err: unknown,
+  opts: { context: string; logTag?: string }
+): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  console.error(`[ai-error] ${opts.logTag ?? opts.context}:`, raw);
+  if (/credit balance.*too low|insufficient_quota|billing/i.test(raw)) {
+    return `${opts.context} is temporarily unavailable. Please try again in a few minutes.`;
+  }
+  if (/rate.?limit|\b429\b/i.test(raw)) {
+    return "AI service is busy, please try again in a moment.";
+  }
+  if (/timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED/i.test(raw)) {
+    return "AI service didn't respond in time. Please try again.";
+  }
+  if (/overloaded|service_unavailable/i.test(raw)) {
+    return "AI service is overloaded right now. Please try again in a moment.";
+  }
+  if (/authentication_error|invalid.api.key|incorrect.api.key/i.test(raw)) {
+    return `${opts.context} is temporarily misconfigured. We've been notified.`;
+  }
+  return `${opts.context} failed. Please try again in a moment.`;
+}
+
 /** Retry an async AI call up to `maxAttempts` times with exponential backoff.
  *  Bails immediately on permanent errors (credit/auth/bad model) so we don't
  *  waste time retrying things that will never succeed.
