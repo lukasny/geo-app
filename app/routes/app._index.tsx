@@ -691,8 +691,15 @@ function Step2({
           <Text as="p" variant="headingMd" alignment="center">
             Your starting GEO Score: {score} of 100
           </Text>
+          {/* Wizard-specific message that primes the next step (auto-fix).
+              The generic scoreLabel() copy used elsewhere ends with "Run an
+              audit to find gaps", which is wrong here, the audit just ran. */}
           <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-            {scoreLabel(score)}
+            {score >= 80
+              ? "Looking strong. Let's see if we can push it higher in the next step."
+              : score >= 60
+                ? "Solid start. Next we'll auto-fix the biggest gaps we found."
+                : "Lots of room to grow. Next we'll auto-fix the biggest issues we found."}
           </Text>
         </BlockStack>
       </Box>
