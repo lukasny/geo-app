@@ -283,6 +283,102 @@
 </script>
 {%- endif -%}
 
+{%- comment -%}
+  GEO Rise - AI Referral Tracker
+  Detects when shoppers arrive from AI search engines (ChatGPT, Perplexity,
+  Claude, Gemini, Grok) and tags their cart with the referring platform.
+  The tag flows through to the order's note_attributes, which the
+  orders/paid webhook reads to compute attributed revenue.
+
+  Cookie + cart-attribute prefix: __geo_rise_ai_ref
+  Attribution window: 30 days (cookie max-age)
+  Model: last-AI-touch (most recent AI referrer overwrites the cookie)
+  PII: none stored. Just the platform name and a unix timestamp.
+{%- endcomment -%}
+<script type="text/javascript">
+(function () {
+  var COOKIE_NAME = "__geo_rise_ai_ref";
+  var COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
+  var AI_DOMAINS = [
+    { pattern: /(?:^|\.)chatgpt\.com$/i, platform: "CHATGPT" },
+    { pattern: /(?:^|\.)chat\.openai\.com$/i, platform: "CHATGPT" },
+    { pattern: /(?:^|\.)openai\.com$/i, platform: "CHATGPT" },
+    { pattern: /(?:^|\.)perplexity\.ai$/i, platform: "PERPLEXITY" },
+    { pattern: /(?:^|\.)claude\.ai$/i, platform: "CLAUDE" },
+    { pattern: /(?:^|\.)gemini\.google\.com$/i, platform: "GEMINI" },
+    { pattern: /(?:^|\.)bard\.google\.com$/i, platform: "GEMINI" },
+    { pattern: /(?:^|\.)grok\.com$/i, platform: "GROK" },
+    { pattern: /(?:^|\.)x\.ai$/i, platform: "GROK" }
+  ];
+  var UTM_MAP = {
+    "chatgpt": "CHATGPT",
+    "perplexity": "PERPLEXITY",
+    "claude": "CLAUDE",
+    "gemini": "GEMINI",
+    "grok": "GROK"
+  };
+
+  function readCookie(name) {
+    var match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/[.$?*|{}()[\]\\\/+^]/g, "\\$&") + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function writeCookie(name, value) {
+    document.cookie =
+      name + "=" + encodeURIComponent(value) +
+      "; Max-Age=" + COOKIE_MAX_AGE_SECONDS +
+      "; Path=/; SameSite=Lax";
+  }
+
+  function platformFromReferrer() {
+    if (!document.referrer) return null;
+    try {
+      var host = new URL(document.referrer).hostname;
+      for (var i = 0; i < AI_DOMAINS.length; i++) {
+        if (AI_DOMAINS[i].pattern.test(host)) return AI_DOMAINS[i].platform;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  function platformFromUtm() {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var src = (params.get("utm_source") || "").toLowerCase().trim();
+      if (UTM_MAP[src]) return UTM_MAP[src];
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  function platformFromCookie() {
+    var raw = readCookie(COOKIE_NAME);
+    if (!raw) return null;
+    var parts = raw.split(":");
+    return parts[0] || null;
+  }
+
+  var platform = platformFromReferrer() || platformFromUtm() || platformFromCookie();
+  if (!platform) return;
+
+  writeCookie(COOKIE_NAME, platform + ":" + Math.floor(Date.now() / 1000));
+
+  fetch("/cart/update.js", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      attributes: { "__geo_rise_ai_ref": platform }
+    }),
+    credentials: "same-origin"
+  }).catch(function () {
+    // Silent: tracking failure must never break the storefront page.
+  });
+})();
+</script>
+
 {% schema %}
 {
   "name": "GEO Rise Schema",
