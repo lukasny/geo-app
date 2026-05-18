@@ -36,9 +36,18 @@ api_version = "2025-01"
   topics = [ "products/delete" ]
   uri = "/webhooks/products/delete"
 
-  [[webhooks.subscriptions]]
-  topics = [ "orders/paid" ]
-  uri = "/webhooks/orders/paid"
+  # orders/paid subscription is intentionally OMITTED here. Shopify requires
+  # apps to be approved for "Protected Customer Data" access before they
+  # can subscribe to any order/customer webhook. Apply at:
+  #   Partner Dashboard > Apps > GEO Rise > Configuration > Protected customer data access
+  # After approval, restore the block:
+  #   [[webhooks.subscriptions]]
+  #   topics = [ "orders/paid" ]
+  #   uri = "/webhooks/orders/paid"
+  # Until then, the handler at app/routes/webhooks.orders.paid.tsx exists
+  # but is never invoked, and the revenue-attribution feature shows empty
+  # state (cart attributes are still written by the theme extension; we
+  # just can't read them into AiTrafficEvent rows yet).
 
   [[webhooks.subscriptions]]
   compliance_topics = [ "customers/data_request" ]
