@@ -334,6 +334,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  if (intent === "markSchemaEnabled") {
+    // Self-reported confirmation from the merchant's "I've enabled it"
+    // click on the Discovery Card. We have no reliable server-side way
+    // to detect the theme-extension toggle change inside Shopify's theme
+    // editor, so this is a one-click "yes, I did it" handshake.
+    await prisma.store.update({
+      where: { id: store.id },
+      data: { schemaInjectionEnabled: true },
+    });
+    return { success: true, intent };
+  }
+
   return { error: "Unknown action." };
 };
 
