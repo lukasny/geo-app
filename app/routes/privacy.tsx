@@ -1,4 +1,4 @@
-// Public route — no Shopify auth required
+// Public route - no Shopify auth required
 export default function PrivacyPolicy() {
   return (
     <div
@@ -13,7 +13,7 @@ export default function PrivacyPolicy() {
       }}
     >
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>
-        GEO Rise — Privacy Policy
+        GEO Rise - Privacy Policy
       </h1>
       <p style={{ color: "#6D7175", marginBottom: 40 }}>
         Last updated: May 17, 2026
@@ -38,12 +38,12 @@ export default function PrivacyPolicy() {
           </li>
           <li>
             <strong>Product data:</strong> product titles, descriptions, prices,
-            images, and metadata — used to generate your llms.txt file and run
+            images, and metadata - used to generate your llms.txt file and run
             AI readiness audits.
           </li>
           <li>
             <strong>Collection and blog data:</strong> collection names and blog
-            post titles — included in llms.txt generation.
+            post titles - included in llms.txt generation.
           </li>
           <li>
             <strong>Shopify access token:</strong> stored securely to make
@@ -51,7 +51,7 @@ export default function PrivacyPolicy() {
           </li>
           <li>
             <strong>Usage and analytics:</strong> audit scores, issue counts,
-            and app activity — used to show you your GEO score and progress
+            and app activity - used to show you your GEO score and progress
             over time.
           </li>
         </ul>
@@ -65,7 +65,7 @@ export default function PrivacyPolicy() {
         <p>Your data is used exclusively to provide the GEO Rise service:</p>
         <ul>
           <li>
-            Generating your <code>llms.txt</code> file — a sitemap for AI
+            Generating your <code>llms.txt</code> file - a sitemap for AI
             engines.
           </li>
           <li>

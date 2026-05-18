@@ -7,7 +7,7 @@ import db from "../db.server";
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop } = await authenticate.webhook(request);
 
-  console.log(`[GEO Rise] ${topic} for ${shop} — final data redaction`);
+  console.log(`[GEO Rise] ${topic} for ${shop} - final data redaction`);
 
   // Belt-and-suspenders: ensure store data is fully deleted
   const store = await db.store.findUnique({

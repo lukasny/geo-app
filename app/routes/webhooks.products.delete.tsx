@@ -4,7 +4,7 @@ import { generateLlmsTxt } from "../services/llms-generator.server";
 import { PLAN_LIMITS } from "../services/billing.shared";
 import db from "../db.server";
 
-// Handles products/delete — keeps our local Product cache in sync when a
+// Handles products/delete - keeps our local Product cache in sync when a
 // merchant deletes a product in Shopify. Cascade deletes any related
 // AuditResult rows automatically (onDelete: Cascade in schema).
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -20,7 +20,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Shopify product/delete payload sends `id` as a bare numeric. The
   // audit engine stores Shopify product IDs as GraphQL GIDs, so we have
-  // to normalize before looking up — same trick as in products.update.
+  // to normalize before looking up - same trick as in products.update.
   const product = payload as { id: number };
   const shopifyProductId = `gid://shopify/Product/${product.id}`;
 
@@ -28,7 +28,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { storeId: store.id, shopifyProductId },
   });
 
-  // Refresh llms.txt if auto-refresh is on — the deleted product
+  // Refresh llms.txt if auto-refresh is on - the deleted product
   // shouldn't keep appearing in the public file.
   const llmsFile = await db.llmsFile.findFirst({
     where: { storeId: store.id, marketCode: "default" },

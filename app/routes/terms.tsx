@@ -1,4 +1,4 @@
-// Public route — no Shopify auth required
+// Public route - no Shopify auth required
 import { PLAN_DEFINITIONS } from "~/services/billing.shared";
 
 export default function TermsOfService() {
@@ -15,7 +15,7 @@ export default function TermsOfService() {
       }}
     >
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>
-        GEO Rise — Terms of Service
+        GEO Rise - Terms of Service
       </h1>
       <p style={{ color: "#6D7175", marginBottom: 40 }}>
         Last updated: May 17, 2026

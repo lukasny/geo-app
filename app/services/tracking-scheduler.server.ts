@@ -27,13 +27,13 @@ const SCHEDULED_CHECK_LIMIT_PER_TICK = 25;
 
 /** Find all tracking prompts whose `nextRunAt` is due and run them. Called by
  *  the in-process cron in `scheduler.server.ts` every 15 minutes. Safe to call
- *  manually too — e.g. from a "Run all due now" admin button.
+ *  manually too - e.g. from a "Run all due now" admin button.
  *
  *  Filters:
  *  - schedule != MANUAL
  *  - nextRunAt <= now
  *  - isActive
- *  - store.plan != FREE — FREE stores cannot schedule (maxTrackingPrompts is
+ *  - store.plan != FREE - FREE stores cannot schedule (maxTrackingPrompts is
  *    0 on FREE). Without this filter, a merchant who scheduled prompts on a
  *    paid plan and then downgraded would keep consuming Claude API credits
  *    indefinitely. */
@@ -58,7 +58,7 @@ export async function runDueTrackingChecks(): Promise<DueChecksResult> {
     // Claim the work BEFORE running: push `nextRunAt` forward immediately so
     // an overlapping tick won't re-pick it up while the check is in flight.
     // We accept the trade-off that a server crash mid-check means losing one
-    // cycle for that prompt — for DAILY/WEEKLY that's acceptable.
+    // cycle for that prompt - for DAILY/WEEKLY that's acceptable.
     //
     // Anchor the next-run computation to the ORIGINAL `nextRunAt` (not to
     // `now`), so a daily prompt scheduled for 11:00 keeps running at 11:00

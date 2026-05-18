@@ -82,7 +82,7 @@ interface LoaderPrompt {
     checkedAt: string;
   } | null;
   /** Per-platform "cited / not cited" summary across the most recent
-   *  AiCitation rows for this prompt — one entry per distinct platform
+   *  AiCitation rows for this prompt - one entry per distinct platform
    *  that's actually run a check. */
   platformBreakdown: { platform: AiPlatform; cited: boolean }[];
 }
@@ -165,7 +165,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       schedule: p.schedule as TrackingSchedule,
       nextRunAt: p.nextRunAt?.toISOString() ?? null,
       // cs is desc (newest first). Reverse to chronological, then take the
-      // last 20 most-recent points for the trend timeline — capping the
+      // last 20 most-recent points for the trend timeline - capping the
       // payload so prompts with hundreds of checks don't bloat the loader.
       history: cs
         .slice()
@@ -382,13 +382,13 @@ const SCHEDULE_OPTIONS = [
 // ─── TrendTimeline ────────────────────────────────────────────────────────────
 
 // Color tokens for the per-check dots. Hardcoded hex so they look right
-// regardless of Polaris theme — these are deliberately close to
+// regardless of Polaris theme - these are deliberately close to
 // success/caution semantics but tuned so a "cited but neutral" reading is
 // visually distinct from "cited and positive."
 const TIMELINE_FILLS = {
-  POSITIVE_CITED: "#108043", // success-green — best signal
-  NEUTRAL_CITED: "#6a9a7a",  // muted green — cited but flat
-  NEGATIVE_CITED: "#b98900", // amber — cited but cautionary
+  POSITIVE_CITED: "#108043", // success-green - best signal
+  NEUTRAL_CITED: "#6a9a7a",  // muted green - cited but flat
+  NEGATIVE_CITED: "#b98900", // amber - cited but cautionary
   NOT_CITED_FILL: "transparent",
   NOT_CITED_STROKE: "#9ea3a8", // gray outline
 } as const;
@@ -461,23 +461,23 @@ function TrendTimeline({ history }: { history: HistoryPoint[] }) {
 
 /** Map raw service errors to user-safe messages. Anthropic returns the raw
  *  "credit balance is too low" / "rate limit" / "invalid_request_error" strings
- *  which mention "Anthropic" and "Plans & Billing" — a merchant would think
+ *  which mention "Anthropic" and "Plans & Billing" - a merchant would think
  *  that refers to their Shopify billing and panic. Always log the raw error
  *  server-side, return a clean message to the UI. */
 function sanitizeTrackingError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   console.error("[tracking] action error:", raw);
-  // Known user-friendly errors from our service layer — pass through verbatim
+  // Known user-friendly errors from our service layer - pass through verbatim
   if (/run an audit first/i.test(raw)) return raw;
   if (/couldn't parse claude/i.test(raw)) {
     return "We had trouble understanding the AI response. Please try again.";
   }
-  // Vendor failure modes — show a clean message without leaking Anthropic/etc.
+  // Vendor failure modes - show a clean message without leaking Anthropic/etc.
   if (/credit balance.*too low|insufficient_quota|billing/i.test(raw)) {
     return "Tracking is temporarily unavailable. Please try again in a few minutes.";
   }
   if (/rate.?limit|\b429\b/i.test(raw)) {
-    return "AI service is busy — please try again in a moment.";
+    return "AI service is busy - please try again in a moment.";
   }
   if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
     return "AI service didn't respond in time. Please try again.";
@@ -486,7 +486,7 @@ function sanitizeTrackingError(err: unknown): string {
 }
 
 function relativeFuture(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const then = new Date(iso).getTime();
   const diff = then - Date.now();
   if (diff <= 0) return "any moment now";
@@ -527,7 +527,7 @@ export default function TrackingPage() {
     } else if (data.success && data.intent === "addPrompt") {
       const addedText = ((data.addedPrompt as string) ?? "").trim();
       if (addedText && addingSuggestion && addingSuggestion === addedText) {
-        // The add originated from a suggestion card — drop that card.
+        // The add originated from a suggestion card - drop that card.
         setSuggestions((s) => s.filter((sp) => sp.prompt.trim() !== addedText));
       } else {
         shopify.toast.show("Tracking prompt added");
@@ -541,7 +541,7 @@ export default function TrackingPage() {
       shopify.toast.show(
         cited
           ? "✓ Your store was cited"
-          : "Check complete — not cited this run"
+          : "Check complete - not cited this run"
       );
     } else if (data.success && data.intent === "deletePrompt") {
       shopify.toast.show("Tracking prompt deleted");
@@ -551,7 +551,7 @@ export default function TrackingPage() {
       const list = (data.suggestions as SuggestedPrompt[] | undefined) ?? [];
       setSuggestions(list);
       if (list.length === 0) {
-        shopify.toast.show("No new suggestions — you already cover the main angles", { isError: true });
+        shopify.toast.show("No new suggestions - you already cover the main angles", { isError: true });
       } else {
         shopify.toast.show(`Generated ${list.length} prompt suggestions`);
       }
@@ -590,7 +590,7 @@ export default function TrackingPage() {
             Track how AI assistants (ChatGPT, Perplexity, Claude, Gemini) answer
             shopper questions about products in your category. Add the prompts
             your customers might ask, and we'll check whether your store gets
-            cited — and where.
+            cited - and where.
           </Text>
         </Banner>
 

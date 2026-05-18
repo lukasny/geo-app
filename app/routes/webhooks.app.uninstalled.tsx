@@ -7,7 +7,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   console.log(`[GEO Rise] ${topic} webhook for ${shop}`);
 
-  // Delete all store data — Prisma cascade deletes handle related records
+  // Delete all store data - Prisma cascade deletes handle related records
   const store = await db.store.findUnique({
     where: { shopifyDomain: shop },
     select: { id: true },

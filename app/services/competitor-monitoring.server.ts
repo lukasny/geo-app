@@ -4,7 +4,7 @@ import type { AiCitation, Competitor } from "@prisma/client";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CompetitorStats {
-  // createdAt is dropped — Date doesn't serialize cleanly through the Remix
+  // createdAt is dropped - Date doesn't serialize cleanly through the Remix
   // loader (becomes string on the client) and we don't display it anyway.
   competitor: Pick<Competitor, "id" | "name" | "domain" | "notes">;
   /** Number of recent AiCitation rows whose `competitorsCited` list mentions
@@ -15,7 +15,7 @@ export interface CompetitorStats {
   /** Breakdown of mentions by platform: { CLAUDE: 5, CHATGPT: 2, ... } */
   byPlatform: Record<string, number>;
   /** Of the citations that mentioned this competitor, how many also cited
-   *  the merchant's own store? Lets the UI show "head-to-head" framing —
+   *  the merchant's own store? Lets the UI show "head-to-head" framing -
    *  "When AI talks about Burton, it also mentions you 3 of 12 times." */
   storeCitedSameQueries: number;
 }
@@ -127,7 +127,7 @@ export async function getCompetitorOverview(
 
 // ─── Auto-suggestion from existing AI Tracking data ───────────────────────────
 
-// Domains that are almost certainly NOT competitors — generic marketplaces,
+// Domains that are almost certainly NOT competitors - generic marketplaces,
 // social networks, review aggregators, gov/edu. Filtered out of suggestions
 // so the merchant doesn't see "track amazon.com?" cluttering the list.
 const GENERIC_NON_COMPETITOR_PATTERNS: RegExp[] = [

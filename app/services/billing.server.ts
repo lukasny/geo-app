@@ -30,7 +30,7 @@ export async function createSubscription(
 
   // Detect dev stores via shop.plan.partnerDevelopment. Dev stores must use
   // Shopify test billing (test: true) so no real payment method is required and
-  // no real charge is made — even when the app itself is running on production
+  // no real charge is made - even when the app itself is running on production
   // hosting (Render). Falling back to NODE_ENV is unreliable: NODE_ENV is
   // "production" on Render even for a dev-store merchant.
   const shopPlanResponse = await admin.graphql(
@@ -335,7 +335,7 @@ export async function checkAndEnforceLimits(
     });
     current = llms?.productCount ?? 0;
   }
-  // maxSimulations — not tracked in DB yet; allow and return 0
+  // maxSimulations - not tracked in DB yet; allow and return 0
 
   const allowed = current < limit;
 

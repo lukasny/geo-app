@@ -32,7 +32,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
 
-  // Returning from Shopify billing approval — sync subscription
+  // Returning from Shopify billing approval - sync subscription
   const chargeId = url.searchParams.get("charge_id");
   if (chargeId) {
     await syncSubscriptionFromShopify(admin, session.shop);
@@ -73,7 +73,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
       const confirmationUrl = await createSubscription(admin, planKey, session.shop);
-      // Return the URL as data — the client navigates via window.top.location.
+      // Return the URL as data - the client navigates via window.top.location.
       // shopify-app-remix's redirect helper is unreliable in this iframe context;
       // returning data and letting the client escape the iframe is deterministic.
       return { confirmationUrl };
@@ -85,7 +85,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "cancel") {
     const subscriptionId = formData.get("subscriptionId") as string;
     if (!subscriptionId) {
-      // No active Shopify subscription to cancel — just ensure DB is on FREE
+      // No active Shopify subscription to cancel - just ensure DB is on FREE
       const store = await prisma.store.findUnique({
         where: { shopifyDomain: session.shop },
         select: { id: true },
@@ -392,7 +392,7 @@ const FAQ = [
   },
   {
     q: "Is this billed through Shopify?",
-    a: "Yes — billing goes through Shopify's standard app billing and appears on your existing Shopify invoice. No separate payment method needed.",
+    a: "Yes - billing goes through Shopify's standard app billing and appears on your existing Shopify invoice. No separate payment method needed.",
   },
 ];
 

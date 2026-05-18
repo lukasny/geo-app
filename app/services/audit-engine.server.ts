@@ -69,7 +69,7 @@ export interface AuditSummary {
   /** The actual size of the merchant's active product catalog. */
   totalProducts: number;
   /** How many products this audit actually scored. On a plan with a
-   *  `maxProducts` cap this can be less than `totalProducts` — the UI should
+   *  `maxProducts` cap this can be less than `totalProducts` - the UI should
    *  surface "audited X of Y, upgrade to audit all." */
   auditedProducts: number;
   issueCount: number;
@@ -84,7 +84,7 @@ export interface AuditSummary {
 
 export interface RunFullAuditOptions {
   /** Cap on how many products to audit. Pass `Infinity` (or omit) for
-   *  unlimited. Callers MUST plumb the merchant's plan limit through here —
+   *  unlimited. Callers MUST plumb the merchant's plan limit through here -
    *  no route should call this without first reading `PLAN_LIMITS[plan].
    *  maxAuditProducts`. The cap is enforced inside `fetchAllProductsForAudit`
    *  so it's impossible to bypass via direct service-layer calls. */
@@ -94,7 +94,7 @@ export interface RunFullAuditOptions {
 export interface AutoFixSummary {
   fixed: number;
   failed: number;
-  /** Issues that turned out not to need fixing at fix-time — e.g. merchant
+  /** Issues that turned out not to need fixing at fix-time - e.g. merchant
    *  manually populated the field between audit and fix. Counted separately
    *  from `fixed` so the UI can show "we resolved 12 and skipped 3 that were
    *  already good." Optional for backward compat with older callers. */
@@ -146,7 +146,7 @@ export function sanitizeLlmHtml(html: string): string {
     (match: string, tag: string) => {
       const t = tag.toLowerCase();
       if (!ALLOWED_LLM_TAGS.has(t)) return ""; // strip non-allowlisted tag
-      // Reduce to bare open/close tag — drop every attribute.
+      // Reduce to bare open/close tag - drop every attribute.
       return match.startsWith("</") ? `</${t}>` : `<${t}>`;
     }
   );
@@ -412,7 +412,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       description:
         "This product has no custom meta description. AI search engines like Perplexity and Google AI Overviews use meta descriptions to generate product summaries. Without one, AI may skip your product or generate an inaccurate description.",
       recommendation:
-        `Add a 120–160 character meta description that summarizes the product's key features and target audience. Example: "${product.title} — ${plainDesc.slice(0, 80).trim()}... Shop at ${shopName}."`,
+        `Add a 120–160 character meta description that summarizes the product's key features and target audience. Example: "${product.title} - ${plainDesc.slice(0, 80).trim()}... Shop at ${shopName}."`,
       autoFixable: true,
     });
   }
@@ -680,7 +680,7 @@ async function fetchAllProductsForAudit(
     };
     totalActive = countJson.data?.productsCount?.count ?? 0;
   } catch {
-    // Non-fatal — we'll still audit what we can fetch.
+    // Non-fatal - we'll still audit what we can fetch.
   }
 
   // If maxProducts is finite and small, request only what we need from
@@ -931,18 +931,18 @@ const UPDATE_IMAGE_ALT_MUTATION = `#graphql
 // ─── Claude-Powered Content Generation (used by autoFixIssues) ─────────────────
 
 /** Discriminated union returned by every generator. Distinguishes:
- *  - `ok + source: "claude"` — Claude produced valid output, use it
- *  - `ok + source: "fallback"` — Claude responded but output was unusable;
+ *  - `ok + source: "claude"` - Claude produced valid output, use it
+ *  - `ok + source: "fallback"` - Claude responded but output was unusable;
  *    use the deterministic template (acceptable quality, log as fallback)
- *  - `!ok + claude_credits` — permanent failure (credits exhausted, auth)
+ *  - `!ok + claude_credits` - permanent failure (credits exhausted, auth)
  *    that won't recover this session; caller should ABORT the whole loop
- *  - `!ok + claude_other` — transient failure that didn't recover even
+ *  - `!ok + claude_other` - transient failure that didn't recover even
  *    after retries; caller should SKIP this issue but keep going */
 type GenResult =
   | { ok: true; value: string; source: "claude" | "fallback" }
   | { ok: false; reason: "claude_credits" | "claude_other" };
 
-// Retry/error helpers live in `./ai-retry.server` — shared with tracking +
+// Retry/error helpers live in `./ai-retry.server` - shared with tracking +
 // simulator now that all three call third-party AI vendors with the same
 // failure modes. Imports at top of file.
 
@@ -951,7 +951,7 @@ async function generateMetaDescriptionWithClaude(
   storeName: string
 ): Promise<GenResult> {
   const plainDesc = product.description ? stripHtml(product.description).slice(0, 500) : "";
-  const fallback = `${product.title}${plainDesc ? ` — ${plainDesc.split(/[.!?]/)[0]?.trim() ?? ""}` : ""}. Shop ${product.vendor || ""} ${product.productType || ""} at ${storeName}.`
+  const fallback = `${product.title}${plainDesc ? ` - ${plainDesc.split(/[.!?]/)[0]?.trim() ?? ""}` : ""}. Shop ${product.vendor || ""} ${product.productType || ""} at ${storeName}.`
     .replace(/\s+/g, " ")
     .slice(0, 160)
     .trim();
@@ -963,11 +963,11 @@ async function generateMetaDescriptionWithClaude(
           model: "claude-sonnet-4-6",
           max_tokens: 256,
           system:
-            "You are an expert e-commerce SEO copywriter. You write concise, compelling meta descriptions that get clicked. Output ONLY the meta description — no quotes, no preamble, no labels. Avoid AI-cliché openers like 'Discover', 'Unlock', 'Dive into', 'Experience', 'Elevate'.",
+            "You are an expert e-commerce SEO copywriter. You write concise, compelling meta descriptions that get clicked. Output ONLY the meta description, no quotes, no preamble, no labels. Avoid AI-cliché openers like 'Discover', 'Unlock', 'Dive into', 'Experience', 'Elevate'. CRITICAL: never use em-dashes (the long horizontal dash). Use commas, colons, or periods for sentence breaks instead.",
           messages: [
             {
               role: "user",
-              content: `Write a meta description (strictly between 120 and 158 characters — count carefully and stop at a complete sentence; do not end mid-word) for this product. Lead with the product itself, not a verb. Include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis, no "Discover/Unlock/Dive into".
+              content: `Write a meta description (strictly between 120 and 158 characters - count carefully and stop at a complete sentence; do not end mid-word) for this product. Lead with the product itself, not a verb. Include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis, no "Discover/Unlock/Dive into".
 
 Product title: ${product.title}
 ${plainDesc ? `Product description: ${plainDesc}` : "Product description: (none provided)"}
@@ -987,7 +987,7 @@ Store: ${storeName}`,
         return { ok: true, value: cleaned, source: "claude" };
       }
     }
-    // Claude returned but output was unusable — fall through to template
+    // Claude returned but output was unusable - fall through to template
     return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
     console.error("[GEO Rise auto-fix] meta description generator failed:", err);
@@ -1012,16 +1012,16 @@ async function generateSeoTitleWithClaude(
           model: "claude-sonnet-4-6",
           max_tokens: 128,
           system:
-            "You are an expert e-commerce SEO copywriter. You write concise, click-worthy SEO titles for product pages. Output ONLY the title — no quotes, no preamble, no labels.",
+            "You are an expert e-commerce SEO copywriter. You write concise, click-worthy SEO titles for product pages. Output ONLY the title, no quotes, no preamble, no labels. CRITICAL: never use em-dashes (the long horizontal dash). Use a pipe `|` or a regular hyphen `-` to separate brand from product name.",
           messages: [
             {
               role: "user",
-              content: `Write an SEO title (strictly between 30 and 58 characters — count carefully and end on a complete phrase, never mid-word) for this product. The title MUST be different from the product title. Lead with the product name, then add a short benefit, descriptor, or brand suffix to differentiate.
+              content: `Write an SEO title (strictly between 30 and 58 characters - count carefully and end on a complete phrase, never mid-word) for this product. The title MUST be different from the product title. Lead with the product name, then add a short benefit, descriptor, or brand suffix to differentiate.
 
 Good formats (pick whatever fits best):
-- "Product Name — Key Benefit | Brand"
+- "Product Name - Key Benefit | Brand"
 - "Product Name | Brand"
-- "Product Name — Use Case"
+- "Product Name - Use Case"
 - "Adjective Product Type | Brand"
 
 No clickbait, no all-caps, no emojis. Do NOT just repeat the product title verbatim.
@@ -1084,13 +1084,13 @@ async function generateProductDescriptionWithClaude(
 
 The first paragraph should describe what the product is and its main benefit. The second paragraph should cover features, materials, and what makes it distinctive. If applicable, a third paragraph can cover use cases or who the product is for.
 
-Write in natural, conversational prose. Mention specific details visible in the image — colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion", "elevate", "unlock", "dive into"). Do NOT use all-caps or emojis.
+Write in natural, conversational prose. Mention specific details visible in the image - colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion", "elevate", "unlock", "dive into"). Do NOT use all-caps or emojis.
 
 Product title: ${product.title}
 ${product.vendor ? `Brand: ${product.vendor}` : ""}
 ${product.productType ? `Category: ${product.productType}` : ""}
 ${product.tags && product.tags.length > 0 ? `Tags: ${product.tags.join(", ")}` : ""}
-${existing ? `Existing description (improve and expand — don't just copy verbatim): ${existing}` : "No existing description."}
+${existing ? `Existing description (improve and expand - don't just copy verbatim): ${existing}` : "No existing description."}
 Store: ${storeName}
 
 Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around the output.`,
@@ -1102,7 +1102,7 @@ Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around th
           model: "claude-sonnet-4-6",
           max_tokens: 1024,
           system:
-            "You are an expert e-commerce product copywriter. You write factual, specific, benefit-focused descriptions optimized for AI search engines (ChatGPT, Perplexity, Google AI Overview) and human shoppers. Output is valid HTML using <p> tags.",
+            "You are an expert e-commerce product copywriter. You write factual, specific, benefit-focused descriptions optimized for AI search engines (ChatGPT, Perplexity, Google AI Overview) and human shoppers. Output is valid HTML using <p> tags. CRITICAL: never use em-dashes (the long horizontal dash). Use commas, colons, or periods for breaks instead.",
           messages: [{ role: "user", content: userContent }],
         }),
       "generateProductDescription"
@@ -1138,7 +1138,7 @@ async function generateAltTextWithClaude(
           model: "claude-sonnet-4-6",
           max_tokens: 200,
           system:
-            "You are an accessibility expert writing image alt text for e-commerce product photos. Describe the SPECIFIC visual contents of the image — colors, materials, angle, context, what's visible — not just the product name. Output ONLY the alt text. No quotes, no preamble.",
+            "You are an accessibility expert writing image alt text for e-commerce product photos. Describe the SPECIFIC visual contents of the image (colors, materials, angle, context, what's visible), not just the product name. Output ONLY the alt text. No quotes, no preamble. CRITICAL: never use em-dashes (the long horizontal dash). Use commas instead.",
           messages: [
             {
               role: "user",
@@ -1221,7 +1221,7 @@ async function fixContentIssue(
       currentHtml = ctxJson.data.product.descriptionHtml ?? "";
     }
   } catch {
-    // Continue without context — the generator can work without an image
+    // Continue without context - the generator can work without an image
   }
 
   const currentWords = wordCount(stripHtml(currentHtml));
@@ -1261,7 +1261,7 @@ async function fixContentIssue(
       : { result: "failed", reason: gen.reason };
   }
 
-  // Sanitize LLM output before writing to Shopify — drops any tag outside
+  // Sanitize LLM output before writing to Shopify - drops any tag outside
   // ALLOWED_LLM_TAGS, strips all attributes (no <script>, no inline
   // handlers, no <a href>). See `sanitizeLlmHtml` for the rationale.
   const descriptionHtml = sanitizeLlmHtml(gen.value);
@@ -1284,7 +1284,7 @@ async function fixContentIssue(
     return { result: "failed", reason: "shopify_user_errors" };
   }
 
-  // Persistence check — Shopify has been known to silently no-op (see
+  // Persistence check - Shopify has been known to silently no-op (see
   // project_known_fixes.md for the seo: precedent). Verify the saved
   // description is at least the size of what we wrote (allowing some
   // whitespace normalization, but not a silent revert).
@@ -1331,7 +1331,7 @@ async function fixMetaIssue(
   const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
 
   // Fetch current seo for both (a) skip-if-good check and (b) the
-  // productUpdate seo:-wholesale-replacement workaround — always send BOTH.
+  // productUpdate seo:-wholesale-replacement workaround - always send BOTH.
   const currentResponse = await admin.graphql(
     `#graphql
      query GetCurrentSeo($id: ID!) {
@@ -1537,7 +1537,7 @@ async function fixImagesIssue(
     } else if (gen.reason === "claude_credits") {
       return { result: "aborted", reason: "claude_credits" };
     } else {
-      // Transient on this image — skip just this image, keep going with others
+      // Transient on this image - skip just this image, keep going with others
       console.warn(
         `[GEO Rise auto-fix] IMAGES alt-text generator failed for one image of ${product.shopifyProductId}; continuing`
       );
@@ -1707,7 +1707,7 @@ export async function autoFixIssues(
       break;
     }
 
-    // Pace between fixes — Shopify GraphQL rate-limit headroom.
+    // Pace between fixes - Shopify GraphQL rate-limit headroom.
     await new Promise<void>((r) => setTimeout(r, 300));
   }
 

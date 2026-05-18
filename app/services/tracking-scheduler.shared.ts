@@ -5,7 +5,7 @@
 export type TrackingSchedule = "MANUAL" | "DAILY" | "WEEKLY";
 
 /** Compute when a prompt with the given schedule should next run. Returns null
- *  for MANUAL — manual prompts have no `nextRunAt`. */
+ *  for MANUAL - manual prompts have no `nextRunAt`. */
 export function computeNextRunAt(
   schedule: TrackingSchedule,
   from: Date = new Date()

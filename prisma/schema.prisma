@@ -90,7 +90,7 @@ model Store {
   shopName                String
   email                   String?
   plan                    Plan      @default(FREE)
-  // Phase D3 — insight emails. Default ON for newly-installed Growth+ stores;
+  // Phase D3 - insight emails. Default ON for newly-installed Growth+ stores;
   // FREE stores stay opted out at the plan-tier gate even when this is true.
   weeklyInsightEnabled    Boolean   @default(true)
   lastInsightSentAt       DateTime?

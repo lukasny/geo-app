@@ -1,5 +1,5 @@
 /**
- * App Proxy Route — serves llms.txt at {shop-domain}/a/llms.txt
+ * App Proxy Route - serves llms.txt at {shop-domain}/a/llms.txt
  *
  * Shopify forwards requests from {shop-domain}/a/llms.txt to this route,
  * appending ?shop=store.myshopify.com and an HMAC signature.
@@ -28,7 +28,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!store) {
     return new Response(
       [
-        "# GEO Rise — llms.txt not yet generated",
+        "# GEO Rise - llms.txt not yet generated",
         "",
         "This store has not generated an llms.txt file yet.",
         "Install GEO Rise from the Shopify App Store to get started.",
@@ -51,7 +51,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!llmsFile || !llmsFile.content) {
     return new Response(
       [
-        "# GEO Rise — llms.txt not yet generated",
+        "# GEO Rise - llms.txt not yet generated",
         "",
         "Your llms.txt has not been generated yet.",
         "Go to your GEO Rise app and click 'Generate llms.txt'.",
@@ -70,7 +70,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     status: 200,
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
-      // Cache for 1 hour — Shopify's proxy layer also caches responses
+      // Cache for 1 hour - Shopify's proxy layer also caches responses
       "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
       "X-Generated-At": llmsFile.lastGeneratedAt?.toISOString() ?? "unknown",
       "X-File-Size": String(llmsFile.fileSizeBytes),

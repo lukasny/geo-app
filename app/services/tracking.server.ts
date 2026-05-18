@@ -7,7 +7,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // OpenAI: real ChatGPT-equivalent answers via gpt-4o-search-preview.
 // Perplexity exposes an OpenAI-compatible API at api.perplexity.ai so the
-// same SDK works — just a different base URL + key. Both clients are
+// same SDK works - just a different base URL + key. Both clients are
 // constructed lazily so missing keys don't crash on module load; the
 // per-platform fetcher checks before calling.
 const openai = process.env.OPENAI_API_KEY
@@ -183,7 +183,7 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
         max_tokens: 2048,
         system: SYSTEM_PROMPT,
         tools: [
-          // Anthropic's server-hosted web search tool — runs the search on
+          // Anthropic's server-hosted web search tool - runs the search on
           // Anthropic's infrastructure and returns citations inline.
           { type: "web_search_20260209", name: "web_search", max_uses: 5 },
         ],
@@ -459,7 +459,7 @@ export async function runTrackingCheck(
   const platforms = enabledPlatforms();
   if (platforms.length === 0) {
     throw new Error(
-      "No AI tracking platforms configured — set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or PERPLEXITY_API_KEY"
+      "No AI tracking platforms configured - set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or PERPLEXITY_API_KEY"
     );
   }
 
@@ -471,7 +471,7 @@ export async function runTrackingCheck(
 
   // Parallel fanout. allSettled so one platform's failure (network, rate
   // limit, model deprecated, missing model permission) doesn't abort the
-  // others — partial results are still useful tracking data.
+  // others - partial results are still useful tracking data.
   const settled = await Promise.allSettled(
     platforms.map(async (p) => {
       const apiResult = await askFn[p](prompt.prompt);
@@ -519,7 +519,7 @@ export async function runTrackingCheck(
     );
   }
 
-  // lastCheckedAt is owned by the orchestrator, not the scheduler — manual
+  // lastCheckedAt is owned by the orchestrator, not the scheduler - manual
   // clicks intentionally don't disturb the schedule clock (see A4 audit).
   await prisma.trackingPrompt.update({
     where: { id: promptId },
@@ -528,7 +528,7 @@ export async function runTrackingCheck(
 
   // Aggregate for the caller. "cited" reflects whether ANY platform cited
   // the store. We surface the first cited platform's snippet / sentiment /
-  // position to the UI (or just the first result if none cited) — the full
+  // position to the UI (or just the first result if none cited) - the full
   // per-platform breakdown lives in the AiCitation rows the loader pulls.
   const anyCited = results.some((r) => r.cited);
   const primary = results.find((r) => r.cited) ?? results[0];
@@ -555,7 +555,9 @@ You will be given a store's product catalog. Generate 8 tracking prompts that:
 2. Cover a mix of intents: product comparisons, "best of" recommendations, use-case scenarios, price/value, and brand questions
 3. Are specific enough to be answerable but broad enough that the store could realistically be cited
 
-Do NOT include the store's brand name in the prompts — these are questions OTHER people would ask, not the store owner. The whole point is to find prompts where AI might mention the store organically.
+Do NOT include the store's brand name in the prompts. These are questions OTHER people would ask, not the store owner. The whole point is to find prompts where AI might mention the store organically.
+
+CRITICAL: never use em-dashes (the long horizontal dash) anywhere in your output. Use commas, colons, or periods instead. This rule applies to both the "prompt" and "rationale" fields.
 
 Output strictly as JSON: { "suggestions": [{ "prompt": "...", "category": "comparison|recommendation|use_case|price|brand", "rationale": "one sentence on why this prompt matters for this store" }] }`;
 
@@ -572,7 +574,7 @@ export async function suggestTrackingPrompts(storeId: string): Promise<Suggested
   });
 
   if (products.length === 0) {
-    throw new Error("Run an audit first — we need product data to generate relevant prompts.");
+    throw new Error("Run an audit first - we need product data to generate relevant prompts.");
   }
 
   const productLines = products
@@ -625,7 +627,7 @@ Generate 8 tracking prompts for this store.`,
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("Couldn't parse Claude's suggestions — please try again.");
+    throw new Error("Couldn't parse Claude's suggestions - please try again.");
   }
 
   const suggestions = parsed.suggestions ?? [];

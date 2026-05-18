@@ -95,7 +95,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const products: ProductOption[] = dbProducts.map((p) => ({
     ...p,
-    imageUrl: null, // Not stored in DB — fetched via Shopify when simulating
+    imageUrl: null, // Not stored in DB - fetched via Shopify when simulating
   }));
 
   return { products, store } satisfies LoaderData;
@@ -141,7 +141,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { PLAN_LIMITS } = await import("~/services/billing.shared");
     const limit = PLAN_LIMITS.FREE.maxSimulations;
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    // Count actual simulator runs — the previous code counted AiCitation
+    // Count actual simulator runs - the previous code counted AiCitation
     // records, which are never created by the simulator, so the limit never
     // tripped and free users could run unlimited simulations.
     const usedThisMonth = await prisma.simulationUsage.count({
@@ -304,7 +304,7 @@ function importanceBadge(importance: FieldComparison["importance"]) {
 }
 
 function formatValue(val: unknown): string {
-  if (val === null || val === undefined) return "—";
+  if (val === null || val === undefined) return "-";
   if (Array.isArray(val)) return val.length > 0 ? val.slice(0, 3).join(", ") : "None";
   if (typeof val === "boolean") return val ? "Yes" : "No";
   return String(val).slice(0, 80);
@@ -326,7 +326,7 @@ const FIX_RECOMMENDATIONS: Record<string, string> = {
   rating:
     "Collect customer reviews using a review app. Products with ratings are significantly more likely to be cited by AI search engines.",
   imagesHaveAltText:
-    "Add descriptive alt text to all product images. GEO Rise can auto-generate these for you — go to the Audit page and click 'Auto-fix All'.",
+    "Add descriptive alt text to all product images. GEO Rise can auto-generate these for you - go to the Audit page and click 'Auto-fix All'.",
   brand:
     "Set the Vendor field on your product. AI search engines use brand information to answer queries like 'best [product] by [brand]'.",
   shippingInfo:
@@ -544,14 +544,14 @@ export default function SimulatorPage() {
               ? `AI can only see ${result.foundFields} of ${result.totalFields} product attributes. Your product is nearly invisible to AI search.`
               : result.visibilityScore < 70
               ? `AI found ${result.foundFields} of ${result.totalFields} attributes. There's significant room for improvement.`
-              : `AI can see ${result.foundFields} of ${result.totalFields} attributes. Good foundation — let's make it even better.`;
+              : `AI can see ${result.foundFields} of ${result.totalFields} attributes. Good foundation - let's make it even better.`;
 
           return (
             <BlockStack gap="500">
-              {/* Fallback notice — explains why we're simulating off Shopify data
+              {/* Fallback notice - explains why we're simulating off Shopify data
                   instead of the live page (password protected, 404, etc.) */}
               {result.usedFallback && result.fallbackReason && (
-                <Banner tone="warning" title="Simulating on Shopify data — live page not reachable">
+                <Banner tone="warning" title="Simulating on Shopify data - live page not reachable">
                   <Text as="p" variant="bodyMd">
                     {result.fallbackReason}
                   </Text>
@@ -577,7 +577,7 @@ export default function SimulatorPage() {
                 </InlineStack>
               </Banner>
 
-              {/* Cross-AI platform breakdown — only when 2+ platforms ran.
+              {/* Cross-AI platform breakdown - only when 2+ platforms ran.
                   Shows merchant which models see their product differently.
                   Hidden in single-platform setups so the UI stays uncluttered. */}
               {result.platforms && result.platforms.length > 1 && (
@@ -590,7 +590,7 @@ export default function SimulatorPage() {
                       <Text as="p" variant="bodySm" tone="subdued">
                         Each model extracted from the same page independently.
                         A gap between platforms means one of them is missing
-                        something the other found — usually a sign your
+                        something the other found - usually a sign your
                         structured data could be clearer.
                       </Text>
                     </BlockStack>
@@ -654,7 +654,7 @@ export default function SimulatorPage() {
 
               {/* Two-column layout */}
               <Layout>
-                {/* Left — what humans see */}
+                {/* Left - what humans see */}
                 <Layout.Section variant="oneHalf">
                   <Card>
                     <BlockStack gap="400">
@@ -702,7 +702,7 @@ export default function SimulatorPage() {
                   </Card>
                 </Layout.Section>
 
-                {/* Right — what AI sees */}
+                {/* Right - what AI sees */}
                 <Layout.Section variant="oneHalf">
                   <Card>
                     <BlockStack gap="400">

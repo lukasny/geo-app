@@ -4,16 +4,16 @@ import type { Severity, AuditCategory } from "@prisma/client";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ActionItem {
-  /** Stable ID derived from category + title — usable as a React key and
+  /** Stable ID derived from category + title - usable as a React key and
    *  as the form value when the merchant clicks "Auto-fix this bucket". */
   id: string;
   /** What the merchant should do, e.g. "Add product descriptions". */
   title: string;
-  /** Why it matters — copied from one representative AuditResult.recommendation
+  /** Why it matters - copied from one representative AuditResult.recommendation
    *  (or description if recommendation is empty). */
   description: string;
   category: AuditCategory;
-  /** Worst severity in the group — drives the badge color. */
+  /** Worst severity in the group - drives the badge color. */
   severity: Severity;
   /** Number of audit issues this bucket covers. Equals affectedProductCount
    *  for per-product issues. */
@@ -48,7 +48,7 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
 };
 
 /** Rough Claude+Shopify round-trip time per fix in each category. Used only
- *  for the "≈ N seconds" hint on cards — not enforced. Tuned from
+ *  for the "≈ N seconds" hint on cards - not enforced. Tuned from
  *  observed timings on boda-brands. */
 const SECONDS_PER_FIX: Record<string, number> = {
   CONTENT: 6, // vision call + descriptionHtml write + persistence verify
@@ -103,7 +103,7 @@ export async function getActionPlan(
         storeId,
         fixed: false,
         // Restrict to allowed products on capped plans. Issues with no
-        // productId are also excluded under the cap — they're rare and
+        // productId are also excluded under the cap - they're rare and
         // safer to hide than to leak.
         ...(allowedProductIds !== null
           ? { productId: { in: allowedProductIds } }
@@ -118,7 +118,7 @@ export async function getActionPlan(
 
   const hasAudit = anyAuditResult !== null;
 
-  // Group by (category, title) — same title = same fix recipe.
+  // Group by (category, title) - same title = same fix recipe.
   type Group = {
     title: string;
     description: string;
@@ -138,7 +138,7 @@ export async function getActionPlan(
         description: issue.recommendation || issue.description,
         category: issue.category,
         worstSeverity: issue.severity,
-        // A group is auto-fixable only if EVERY issue in it is — protects
+        // A group is auto-fixable only if EVERY issue in it is - protects
         // against accidentally promising one-click fixes for the non-auto
         // subset.
         autoFixable: issue.autoFixable,
@@ -187,7 +187,7 @@ export async function getActionPlan(
 
   // Rank: severity tier first, then count as tiebreaker within each tier.
   // Reason: a small bucket of CRITICAL issues should always rank above a
-  // huge bucket of LOW issues — fixing a critical-but-rare problem usually
+  // huge bucket of LOW issues - fixing a critical-but-rare problem usually
   // adds more score per click than knocking out many cosmetic ones. A pure
   // `severity × count` impact score lets count drown out severity (e.g. 35
   // HIGH alt-text > 2 CRITICAL missing descriptions, which is the wrong

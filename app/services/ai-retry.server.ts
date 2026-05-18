@@ -3,7 +3,7 @@
 // the helpers reference `console` and don't need to ship in the client bundle.
 
 /** A "permanent" error means: this won't recover by retrying. The user (or
- *  GEO Rise itself) needs to fix something external — top up credits, fix
+ *  GEO Rise itself) needs to fix something external - top up credits, fix
  *  the API key, switch to a supported model. Detect these so retry loops
  *  bail immediately instead of burning seconds and dollars.
  *

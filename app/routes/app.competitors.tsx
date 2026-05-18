@@ -105,7 +105,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!domain) {
       return {
         error:
-          "Please enter a valid domain (e.g. example.com — protocols and paths are stripped automatically).",
+          "Please enter a valid domain (e.g. example.com - protocols and paths are stripped automatically).",
       };
     }
     // If the merchant didn't type a name, fall back to the domain. Easier
@@ -117,7 +117,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (existingCount >= limits.maxCompetitors) {
       return {
-        // Plan caps are 3/10/25 — all plural, so no `=== 1` branch needed.
+        // Plan caps are 3/10/25 - all plural, so no `=== 1` branch needed.
         error: `Your plan allows ${limits.maxCompetitors} tracked competitors. Upgrade for more.`,
       };
     }
@@ -136,7 +136,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         };
       }
       console.error("[competitors] addCompetitor failed:", err);
-      return { error: "Couldn't add competitor — please try again." };
+      return { error: "Couldn't add competitor - please try again." };
     }
 
     return { success: true, intent, addedDomain: domain };
@@ -211,7 +211,7 @@ export default function CompetitorsPage() {
     } else if (data.success && data.intent === "addCompetitor") {
       const addedDomain = ((data.addedDomain as string) ?? "").trim();
       if (addedDomain && addingSuggestion && addingSuggestion === addedDomain) {
-        // Came from a suggestion card — drop the suggestion row.
+        // Came from a suggestion card - drop the suggestion row.
         setVisibleSuggestions((s) =>
           s.filter((sp) => sp.domain !== addedDomain)
         );
@@ -269,7 +269,7 @@ export default function CompetitorsPage() {
           <Text as="p" variant="bodyMd">
             Track named competitor domains across your AI tracking results.
             When AI search engines (ChatGPT, Perplexity, Claude) answer your
-            tracked prompts, we&apos;ll show whose store gets cited — yours,
+            tracked prompts, we&apos;ll show whose store gets cited - yours,
             your competitors&apos;, or both.
           </Text>
         </Banner>
@@ -396,7 +396,7 @@ export default function CompetitorsPage() {
                     value={domainDraft}
                     onChange={setDomainDraft}
                     placeholder="e.g. burton.com"
-                    helpText="Just the hostname — we strip http://, www., and paths automatically. Subdomains (shop.burton.com) match the parent too."
+                    helpText="Just the hostname - we strip http://, www., and paths automatically. Subdomains (shop.burton.com) match the parent too."
                     autoComplete="off"
                   />
                   <TextField
@@ -585,7 +585,7 @@ function CompetitorCard({
           >
             <Text as="p" variant="bodySm" tone="subdued">
               No tracking checks have run yet. Add some prompts on{" "}
-              <Link to="/app/tracking">AI Tracking</Link> and run them — once
+              <Link to="/app/tracking">AI Tracking</Link> and run them - once
               there&apos;s data, this card will show how often AI search
               engines cite {competitor.name} alongside (or instead of) your
               store.

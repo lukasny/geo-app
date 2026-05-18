@@ -144,7 +144,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // P0-4 fix: for plans with an audit cap (Free), restrict what the loader
   // sends to the client to the audited subset. Previously the loader
   // returned every product + every audit result and the UI just visually
-  // locked the locked rows — but a savvy merchant could inspect the network
+  // locked the locked rows - but a savvy merchant could inspect the network
   // payload and see all of it. Server-side filtering plugs that gap.
   const { PLAN_LIMITS } = await import("~/services/billing.shared");
   const planLimits =
@@ -295,7 +295,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     } catch (err) {
       // The auto-fix loop catches its own per-issue errors. Reaching here
-      // means something unexpected (DB outage, etc.) — log raw for debugging
+      // means something unexpected (DB outage, etc.) - log raw for debugging
       // and show a sanitized message to the merchant.
       console.error("[GEO Rise auto-fix] orchestrator threw:", err);
       return {
@@ -374,7 +374,7 @@ function ProductDetailModal({
       {sorted.length === 0 && (
         <Modal.Section>
           <Text as="p" variant="bodyMd" tone="success">
-            No issues found — this product is well optimized for AI discovery.
+            No issues found - this product is well optimized for AI discovery.
           </Text>
         </Modal.Section>
       )}
@@ -481,21 +481,21 @@ export default function AuditPage() {
       shopify.toast.show(
         `Audit complete! Your GEO score is ${s.storeScore}/100`
       );
-      // Audit just finished — the post-fix banner is stale info, clear it.
+      // Audit just finished - the post-fix banner is stale info, clear it.
       setLastFixResult(null);
     } else if ("fixed" in data) {
       const f = data.fixed as number;
       const s = (data.skipped as number) ?? 0;
       const fl = (data.failed as number) ?? 0;
       const aborted = (data.aborted as boolean) ?? false;
-      // Persist a Banner with the breakdown + "Re-run audit" CTA — the toast
+      // Persist a Banner with the breakdown + "Re-run audit" CTA - the toast
       // disappears in 5 seconds; the banner stays until the merchant either
       // re-runs the audit or dismisses it.
       setLastFixResult({ fixed: f, skipped: s, failed: fl, aborted });
       if (aborted) {
         const fixedPart = `Auto-fixed ${f} issue${f !== 1 ? "s" : ""}`;
         shopify.toast.show(
-          `${fixedPart} — then the AI service hit a limit. Try again in a few minutes to pick up the rest.`,
+          `${fixedPart} - then the AI service hit a limit. Try again in a few minutes to pick up the rest.`,
           { isError: true }
         );
       } else {
@@ -684,7 +684,7 @@ export default function AuditPage() {
       </TitleBar>
 
       <BlockStack gap="500">
-        {/* ── Post-fix banner — persists until re-audit or dismiss ── */}
+        {/* ── Post-fix banner - persists until re-audit or dismiss ── */}
         {lastFixResult && !isAutoFixing && !isRunningAudit && (
           <Banner
             tone={
@@ -696,7 +696,7 @@ export default function AuditPage() {
             }
             title={
               lastFixResult.aborted
-                ? `Auto-fix stopped early — ${lastFixResult.fixed} fix${
+                ? `Auto-fix stopped early - ${lastFixResult.fixed} fix${
                     lastFixResult.fixed !== 1 ? "es" : ""
                   } applied`
                 : `Auto-fix complete: ${lastFixResult.fixed} fix${
@@ -786,7 +786,7 @@ export default function AuditPage() {
               <Text as="p" variant="bodyMd">
                 Run your first audit to get a detailed AI readiness score for
                 every product. We check descriptions, images, meta data,
-                structured data, and more — then tell you exactly what to fix.
+                structured data, and more - then tell you exactly what to fix.
               </Text>
             </EmptyState>
           </Card>
@@ -1054,7 +1054,7 @@ export default function AuditPage() {
                 {Math.max(10, Math.ceil(autoFixBreakdown.total * 3))} seconds.
                 We&apos;ll skip anything you&apos;ve already fixed manually, and
                 the page refreshes when done. Your existing data is overwritten
-                — there&apos;s no undo, so review one product first if
+                - there&apos;s no undo, so review one product first if
                 you&apos;re unsure.
               </Text>
             </Banner>

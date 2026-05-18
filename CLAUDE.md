@@ -1,11 +1,11 @@
-# GEO Rise — Project Overview for Claude Code
+# GEO Rise - Project Overview for Claude Code
 
 ## What this app is
 
 GEO Rise is a Shopify app that helps merchants get their products discovered and recommended by AI search engines (ChatGPT, Gemini, Perplexity, Claude). The practice is called Generative Engine Optimization (GEO).
 
 **Business goal:** 30,000 NOK/month via $39/mo Growth and $79/mo Pro subscriptions.
-**Developer:** Lukas (Boda Apps, Norway) — non-technical founder using Claude Code to build.
+**Developer:** Lukas (Boda Apps, Norway) - non-technical founder using Claude Code to build.
 
 ---
 
@@ -17,7 +17,7 @@ GEO Rise is a Shopify app that helps merchants get their products discovered and
 | Language | TypeScript (strict) |
 | UI | Shopify Polaris v12 + App Bridge React |
 | Database | Neon PostgreSQL via Prisma ORM |
-| AI | Anthropic SDK — `claude-sonnet-4-6` |
+| AI | Anthropic SDK - `claude-sonnet-4-6` |
 | Billing | Shopify native billing API (direct GraphQL mutations) |
 | Hosting | To be deployed (Fly.io or Render recommended) |
 | Shopify CLI | `@shopify/cli` |
@@ -68,20 +68,20 @@ geo-rise/
 
 ```
 DATABASE_URL=                  # Neon PostgreSQL connection string (pooled)
-DIRECT_URL=                    # Neon direct (non-pooled) — for prisma migrations
-ANTHROPIC_API_KEY=             # Claude — required (simulator, auto-fix, tracking)
-OPENAI_API_KEY=                # OpenAI — optional (ChatGPT platform in AI Tracking)
-PERPLEXITY_API_KEY=            # Perplexity — optional (Perplexity platform in AI Tracking)
+DIRECT_URL=                    # Neon direct (non-pooled) - for prisma migrations
+ANTHROPIC_API_KEY=             # Claude - required (simulator, auto-fix, tracking)
+OPENAI_API_KEY=                # OpenAI - optional (ChatGPT platform in AI Tracking)
+PERPLEXITY_API_KEY=            # Perplexity - optional (Perplexity platform in AI Tracking)
 SHOPIFY_API_KEY=               # From shopify.app.toml client_id
 SHOPIFY_API_SECRET=            # From Shopify Partner Dashboard
 SHOPIFY_APP_URL=               # Public URL (set by CLI during dev)
 SCOPES=write_products
 SCHEDULER_ENABLED=             # Optional: "false" disables the tracking-check + insight-email crons (default: enabled)
-RESEND_API_KEY=                # Optional: Resend API key — enables weekly insight emails. Without it, the UI surface exists but sends are no-ops.
+RESEND_API_KEY=                # Optional: Resend API key - enables weekly insight emails. Without it, the UI surface exists but sends are no-ops.
 INSIGHT_FROM_EMAIL=            # Optional: "Display Name <addr@domain>" sender. Default: "GEO Rise <onboarding@resend.dev>". Set to a verified-domain address for production.
 ```
 
-Multi-platform tracking is opt-in per platform. With only `ANTHROPIC_API_KEY` set, the AI Tracking feature runs Claude only (current behavior). Adding `OPENAI_API_KEY` and/or `PERPLEXITY_API_KEY` makes each tracking-check fan out to those platforms too — one `AiCitation` row per platform per check, displayed alongside Claude on each prompt card.
+Multi-platform tracking is opt-in per platform. With only `ANTHROPIC_API_KEY` set, the AI Tracking feature runs Claude only (current behavior). Adding `OPENAI_API_KEY` and/or `PERPLEXITY_API_KEY` makes each tracking-check fan out to those platforms too - one `AiCitation` row per platform per check, displayed alongside Claude on each prompt card.
 
 ---
 
@@ -109,28 +109,28 @@ See `prisma/schema.prisma` for full definitions. Key models:
 ## Key services
 
 ### `llms-generator.server.ts`
-- `generateLlmsTxt(storeId)` — fetches products/collections/blog posts via Shopify Admin GraphQL, formats as llms.txt, saves to DB
+- `generateLlmsTxt(storeId)` - fetches products/collections/blog posts via Shopify Admin GraphQL, formats as llms.txt, saves to DB
 - Uses exponential backoff (`withRetry`) for rate limit handling
 - API version: 2025-01
 
 ### `audit-engine.server.ts`
-- `runFullAudit(storeId, admin)` — scores all products across 5 rubric categories (Content 35, Meta 15, Images 20, Variants 15, Reviews 15 pts)
-- `autoFixIssues(storeId, admin)` — auto-generates meta descriptions and alt text via Shopify mutations
+- `runFullAudit(storeId, admin)` - scores all products across 5 rubric categories (Content 35, Meta 15, Images 20, Variants 15, Reviews 15 pts)
+- `autoFixIssues(storeId, admin)` - auto-generates meta descriptions and alt text via Shopify mutations
 - Rate limiting: pauses at 75% of `X-Shopify-Shop-Api-Call-Limit`
 
 ### `ai-simulator.server.ts`
-- `simulateAiView(productUrl, shopifyProductData)` — fetches live HTML, sends to Claude Sonnet 4.6, compares 22 fields
+- `simulateAiView(productUrl, shopifyProductData)` - fetches live HTML, sends to Claude Sonnet 4.6, compares 22 fields
 - Returns visibility score + field-by-field comparison
 - Model: `claude-sonnet-4-6`, max_tokens: 1024
 
 ### `billing.server.ts`
-- `PLAN_DEFINITIONS` / `PLAN_LIMITS` — single source of truth for plan features
-- `createSubscription(admin, planKey, shopDomain)` — `appSubscriptionCreate` GraphQL mutation → returns `confirmationUrl`
-- `cancelSubscription(admin, subscriptionId, shopDomain)` — `appSubscriptionCancel` mutation + DB downgrade
-- `getActiveSubscription(admin)` — queries `currentAppInstallation { activeSubscriptions }`
-- `syncSubscriptionFromShopify(admin, shopDomain)` — call when returning from billing approval
-- `checkAndEnforceLimits(storeId, planKey, feature)` — checks real usage vs plan limits
-- `ensurePlan(storePlan, requiredPlan)` — route guard, returns `redirect("/app/pricing")` or null
+- `PLAN_DEFINITIONS` / `PLAN_LIMITS` - single source of truth for plan features
+- `createSubscription(admin, planKey, shopDomain)` - `appSubscriptionCreate` GraphQL mutation → returns `confirmationUrl`
+- `cancelSubscription(admin, subscriptionId, shopDomain)` - `appSubscriptionCancel` mutation + DB downgrade
+- `getActiveSubscription(admin)` - queries `currentAppInstallation { activeSubscriptions }`
+- `syncSubscriptionFromShopify(admin, shopDomain)` - call when returning from billing approval
+- `checkAndEnforceLimits(storeId, planKey, feature)` - checks real usage vs plan limits
+- `ensurePlan(storePlan, requiredPlan)` - route guard, returns `redirect("/app/pricing")` or null
 
 ---
 
@@ -146,7 +146,7 @@ subpath = "llms-txt"
 prefix = "a"
 ```
 
-Note: Shopify does not allow periods in proxy subpaths — use "llms-txt" not "llms.txt".
+Note: Shopify does not allow periods in proxy subpaths - use "llms-txt" not "llms.txt".
 
 ---
 
@@ -155,11 +155,11 @@ Note: Shopify does not allow periods in proxy subpaths — use "llms-txt" not "l
 Located at `extensions/geo-rise-schema/`.
 
 - Type: `theme` (app embed block)
-- Target: `"head"` — injected into `<head>` of all pages
+- Target: `"head"` - injected into `<head>` of all pages
 - Injects JSON-LD schemas for: Organization, WebSite+SearchAction, Product+Offer+BreadcrumbList, CollectionPage, BlogPosting, Blog
 - Liquid workaround for SearchAction URL: uses string concatenation to avoid Liquid parser confusion with `{search_term_string}`
 
-To enable on a store: Online Store → Themes → Customize → App embeds → toggle on "GEO Rise — AI Schema"
+To enable on a store: Online Store → Themes → Customize → App embeds → toggle on "GEO Rise - AI Schema"
 
 ---
 
@@ -170,7 +170,7 @@ Billing uses direct Shopify GraphQL mutations (NOT the shopify-app-remix billing
 Plans:
 | Key | Name | Price | Trial |
 |---|---|---|---|
-| FREE | Free | $0 | — |
+| FREE | Free | $0 | - |
 | GROWTH | Growth | $39/mo | 7 days |
 | PRO | Pro | $79/mo | 7 days |
 | ENTERPRISE | Enterprise | $199/mo | 7 days |
@@ -209,7 +209,7 @@ npm run dev
 ```
 
 After running `npm run dev`, Shopify CLI will:
-1. Print a URL — open it to install the app on your dev store
+1. Print a URL - open it to install the app on your dev store
 2. Set `SHOPIFY_APP_URL` automatically
 
 ---
@@ -257,7 +257,7 @@ This deploys both the app and the theme extension to the Shopify Partner Dashboa
 ## Naming conventions
 
 - Route files: `app.[page-name].tsx` for admin pages, `webhooks.[topic].tsx` for webhooks
-- Server services: `[name].server.ts` suffix (Remix convention — never imported client-side)
+- Server services: `[name].server.ts` suffix (Remix convention - never imported client-side)
 - All GraphQL: use `admin.graphql()` with `#graphql` tag for syntax highlighting
 - Plan keys: always uppercase (`"FREE"`, `"GROWTH"`, `"PRO"`, `"ENTERPRISE"`)
 - Imports: use `~/` alias for `app/` directory (configured in tsconfig.json paths)

@@ -12,7 +12,7 @@ interface SchedulerState {
   registered: boolean;
   /** True while the tracking-check tick is mid-run, prevents overlap. */
   isRunning: boolean;
-  /** Separate guard for the weekly digest tick — it runs much less often
+  /** Separate guard for the weekly digest tick - it runs much less often
    *  than tracking, but conceivably could overlap on slow days. */
   isDigestRunning: boolean;
 }
@@ -32,7 +32,7 @@ const state: SchedulerState =
 
 // ─── Cron registration ────────────────────────────────────────────────────────
 
-// Optional kill switch — if `SCHEDULER_ENABLED=false`, the cron tick is never
+// Optional kill switch - if `SCHEDULER_ENABLED=false`, the cron tick is never
 // registered. Useful for one-off Node scripts that should not start background
 // timers when they import services from this codebase.
 const ENABLED =

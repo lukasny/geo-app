@@ -1,4 +1,4 @@
-// Shared billing constants — safe to import in both server and client code.
+// Shared billing constants - safe to import in both server and client code.
 // Do NOT add server-only imports (prisma, shopify SDK, etc.) here.
 
 export const PLAN_DEFINITIONS = {
@@ -36,7 +36,7 @@ export const PLAN_LIMITS = {
     maxCompetitors:          3,
     aiTracking:              true,
     // Growth gets competitor monitoring with the 3-competitor cap above.
-    // (Previously this was `false` while maxCompetitors was already 3 —
+    // (Previously this was `false` while maxCompetitors was already 3 -
     //  a self-contradictory plan limit.)
     competitorMonitoring:    true,
     revenueAttribution:      false,

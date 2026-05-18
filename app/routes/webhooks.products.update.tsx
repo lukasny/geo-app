@@ -34,7 +34,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // numeric ID. Normalize to GID form here so findUnique actually matches.
   const shopifyProductId = `gid://shopify/Product/${product.id}`;
 
-  // Update our Product record if it exists (don't create — audit engine handles that)
+  // Update our Product record if it exists (don't create - audit engine handles that)
   const existing = await db.product.findUnique({
     where: {
       storeId_shopifyProductId: {

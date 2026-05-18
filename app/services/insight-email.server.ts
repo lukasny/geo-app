@@ -82,7 +82,7 @@ export async function composeInsightEmail(
     .sort((a, b) => b.citedCount - a.citedCount)[0];
 
   // Shopify admin deep link. We can't know the app's "handle" reliably, so
-  // we use the app's public URL — clicking it triggers Shopify's normal
+  // we use the app's public URL - clicking it triggers Shopify's normal
   // embedded-app handoff back into the admin.
   const appBaseUrl =
     process.env.SHOPIFY_APP_URL ?? "https://geo-app-hkhi.onrender.com";
@@ -98,8 +98,8 @@ export async function composeInsightEmail(
   const top = actionPlan.actions[0];
   const subject =
     top !== undefined
-      ? `Your GEO Score ${store.geoScore}/100 — top action: ${top.title}`
-      : `Your GEO Score ${store.geoScore}/100 — all clear`;
+      ? `Your GEO Score ${store.geoScore}/100 - top action: ${top.title}`
+      : `Your GEO Score ${store.geoScore}/100 - all clear`;
 
   // ── Build plain text (for accessibility / non-HTML clients) ──
   const textLines: string[] = [];
@@ -129,24 +129,24 @@ export async function composeInsightEmail(
       textLines.push(
         `  ${i + 1}. [${a.severity}] ${a.title} (${a.count} ${
           a.count === 1 ? "issue" : "issues"
-        }${a.autoFixable ? " — auto-fixable" : ""})`
+        }${a.autoFixable ? " - auto-fixable" : ""})`
       );
     }
     textLines.push("");
     textLines.push(`Open your action plan: ${actionPlanUrl}`);
   } else {
-    textLines.push(`No unfixed issues right now — your store is in good shape.`);
+    textLines.push(`No unfixed issues right now - your store is in good shape.`);
     textLines.push(`Open dashboard: ${dashboardUrl}`);
   }
   textLines.push("");
-  textLines.push(`— GEO Rise (Boda Apps)`);
+  textLines.push(`- GEO Rise (Boda Apps)`);
   textLines.push(
     `Manage email preferences in your GEO Rise dashboard.`
   );
   const text = textLines.join("\n");
 
   // ── Build HTML ──
-  // Minimal inline-styled email — emails clients are notoriously
+  // Minimal inline-styled email - emails clients are notoriously
   // stylesheet-stripping, so all styling is inline.
   const scoreColor =
     store.geoScore < 40 ? "#E24B4A" : store.geoScore < 70 ? "#EF9F27" : "#1D9E75";
@@ -267,7 +267,7 @@ export async function composeInsightEmail(
         ${escapeHtml(store.plan)} plan. Manage preferences in your GEO Rise
         dashboard.
         <br /><br />
-        — Boda Apps / GEO Rise
+        - Boda Apps / GEO Rise
       </div>
     </div>
   </body>
@@ -280,7 +280,7 @@ export async function composeInsightEmail(
 
 /** Compose + send the insight email for one store. Returns a detailed result
  *  so the caller (manual "send test" button or weekly cron) can react
- *  appropriately — `recoverable: true` means transient and worth retrying
+ *  appropriately - `recoverable: true` means transient and worth retrying
  *  next tick; `recoverable: false` means a config gap that won't fix itself. */
 export async function sendInsightEmail(storeId: string): Promise<SendResult> {
   if (!resend) {
@@ -331,7 +331,7 @@ export async function sendInsightEmail(storeId: string): Promise<SendResult> {
       return {
         sent: false,
         reason: `Email service rejected: ${result.error.message ?? "unknown error"}`,
-        // Transient 5xx / rate-limit vs permanent auth/bad-recipient — Resend
+        // Transient 5xx / rate-limit vs permanent auth/bad-recipient - Resend
         // doesn't always type the error well, so treat as transient.
         recoverable: true,
       };
@@ -370,7 +370,7 @@ export interface DigestRunResult {
  *  opted in, has an email on file, AND its last digest was more than 6.5 days
  *  ago (or never sent). */
 export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
-  // 6.5-day cutoff gives some slack — running the cron daily-ish means
+  // 6.5-day cutoff gives some slack - running the cron daily-ish means
   // each store's digest cycle slides between 6.5–7.5 days, not strictly
   // 7. Avoids a "missed by 90 minutes, has to wait another full week"
   // failure mode.

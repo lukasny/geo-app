@@ -235,9 +235,9 @@ export default function ActionPlanPage() {
     } else if (data.success && data.intent === "runAudit") {
       const score = data.storeScore as number | undefined;
       shopify.toast.show(
-        score !== undefined ? `Audit complete — new score ${score}/100` : "Audit complete"
+        score !== undefined ? `Audit complete - new score ${score}/100` : "Audit complete"
       );
-      // Clear stale fix outcome — the new audit invalidates it.
+      // Clear stale fix outcome - the new audit invalidates it.
       setLastFixOutcome(null);
     }
   }, [fetcher.data, fetcher.state, shopify]);
@@ -289,7 +289,7 @@ export default function ActionPlanPage() {
         <TitleBar title="Action Plan" />
         <Card>
           <EmptyState
-            heading="Nothing to fix — your store is in great shape"
+            heading="Nothing to fix - your store is in great shape"
             action={{
               content: "Re-run audit",
               onAction: handleAudit,
@@ -310,7 +310,7 @@ export default function ActionPlanPage() {
   return (
     <Page>
       <TitleBar title="Action Plan">
-        {/* Disable during ANY fetcher state, not just runAudit — otherwise
+        {/* Disable during ANY fetcher state, not just runAudit - otherwise
             a merchant could trigger an audit while an auto-fix is mid-flight,
             which clobbers the in-flight request and leaves partial state. */}
         <button onClick={handleAudit} disabled={isWorking}>
@@ -323,7 +323,7 @@ export default function ActionPlanPage() {
           <Text as="p" variant="bodyMd">
             Your top <strong>{actions.length}</strong> actions, ranked by
             impact. Click <em>Auto-fix</em> on any card to burn down that
-            bucket — we&apos;ll skip anything you&apos;ve already fixed
+            bucket - we&apos;ll skip anything you&apos;ve already fixed
             manually. {totalUnfixed > actions.length ? (
               <>
                 {totalUnfixed - actions.reduce((sum, a) => sum + a.count, 0)} smaller issues sit below this list; they&apos;ll bubble up
@@ -472,7 +472,7 @@ function ActionCard({ action, rank, onAutoFix, isFixing, anyInFlight }: ActionCa
               <Spinner size="small" />
               <Text as="span" variant="bodySm" tone="subdued">
                 Working through the {action.count} issue
-                {action.count === 1 ? "" : "s"} — stay on this page; the
+                {action.count === 1 ? "" : "s"} - stay on this page; the
                 results land when done.
               </Text>
             </InlineStack>

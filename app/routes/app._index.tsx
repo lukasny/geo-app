@@ -86,9 +86,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Backfill `store.email` from Shopify the first time the merchant lands
   // on the dashboard. Earlier installs created the Store row without an
-  // email which broke the "Send a test email now" button — it can't send
+  // email which broke the "Send a test email now" button - it can't send
   // anywhere if we don't know where. We pull `shop.email` (the owner
-  // login email — the operator we want to email weekly digests to) rather
+  // login email - the operator we want to email weekly digests to) rather
   // than `shop.contactEmail` (the customer-facing support address, which
   // is sometimes blank). One-shot: only fetches when the column is null,
   // so it costs nothing on subsequent loads.
@@ -149,7 +149,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     activity.push({
       id: "audit",
       type: "audit",
-      title: `Audit completed — GEO score: ${store.geoScore}`,
+      title: `Audit completed - GEO score: ${store.geoScore}`,
       detail: `${store.auditedProducts} products audited, ${issueCounts.total} issues found`,
       timestamp: auditResults[0].createdAt.toISOString(),
     });
@@ -223,7 +223,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "runAudit") {
     try {
-      // Plan limit MUST flow through the service layer — calling
+      // Plan limit MUST flow through the service layer - calling
       // runFullAudit without `maxProducts` previously let a Free merchant
       // audit their entire catalog by triggering the audit from the
       // dashboard instead of the audit page.
@@ -248,7 +248,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "toggleWeeklyEmail") {
     // Plan-tier guard: only paid plans get insight emails. Block the toggle
-    // from being enabled on FREE — the cron tick filters them out anyway,
+    // from being enabled on FREE - the cron tick filters them out anyway,
     // but failing fast surfaces "upgrade required" instead of silently
     // toggling a flag that has no effect.
     const planLimits =
@@ -413,7 +413,7 @@ function OnboardingWizard({
       <div style={{ maxWidth: 640, margin: "0 auto" }}>
         <Card>
           <BlockStack gap="600">
-            {/* Step dots — 4 steps total */}
+            {/* Step dots - 4 steps total */}
             <InlineStack align="center" gap="200">
               {[1, 2, 3, 4].map((n) => (
                 <span
@@ -437,7 +437,7 @@ function OnboardingWizard({
               ))}
             </InlineStack>
 
-            {/* Step 1 — Welcome */}
+            {/* Step 1 - Welcome */}
             {step === 1 && (
               <BlockStack gap="400">
                 <BlockStack gap="100">
@@ -455,7 +455,7 @@ function OnboardingWizard({
               </BlockStack>
             )}
 
-            {/* Step 2 — Generate llms.txt */}
+            {/* Step 2 - Generate llms.txt */}
             {step === 2 && (
               <BlockStack gap="400">
                 <BlockStack gap="100">
@@ -463,7 +463,7 @@ function OnboardingWizard({
                   <Text as="h2" variant="headingXl">Generate your AI sitemap</Text>
                 </BlockStack>
                 <Text as="p" variant="bodyMd">
-                  We&apos;ll create an <strong>llms.txt</strong> file — a
+                  We&apos;ll create an <strong>llms.txt</strong> file - a
                   sitemap specifically for AI engines. This tells ChatGPT and
                   other AI tools exactly what your store sells, including
                   product details, prices, and availability.
@@ -489,7 +489,7 @@ function OnboardingWizard({
               </BlockStack>
             )}
 
-            {/* Step 3 — Audit (pre-run) / Step 4 — Audit result */}
+            {/* Step 3 - Audit (pre-run) / Step 4 - Audit result */}
             {(step === 3 || step === 4) && (
               <BlockStack gap="400">
                 <BlockStack gap="100">
@@ -499,7 +499,7 @@ function OnboardingWizard({
                 <Text as="p" variant="bodyMd">
                   Let&apos;s run a quick AI readiness audit on your products.
                   This gives you a GEO score and shows exactly what AI search
-                  engines can — and can&apos;t — see about your store.
+                  engines can - and can&apos;t - see about your store.
                 </Text>
 
                 {step === 4 && storeScore !== null && (
@@ -542,7 +542,7 @@ function OnboardingWizard({
               </BlockStack>
             )}
 
-            {/* Step 5 — Enable theme app extension */}
+            {/* Step 5 - Enable theme app extension */}
             {step === 5 && (
               <BlockStack gap="400">
                 <BlockStack gap="100">
@@ -569,7 +569,7 @@ function OnboardingWizard({
                       <br />
                       2. In the left sidebar, click <strong>App embeds</strong>
                       <br />
-                      3. Toggle on <strong>GEO Rise — AI Schema</strong>
+                      3. Toggle on <strong>GEO Rise - AI Schema</strong>
                       <br />
                       4. Click Save, then come back here
                     </Text>
@@ -588,7 +588,7 @@ function OnboardingWizard({
                     onClick={() => submit("completeOnboarding")}
                     loading={isLoading}
                   >
-                    I&apos;ve enabled it — Go to Dashboard →
+                    I&apos;ve enabled it - Go to Dashboard →
                   </Button>
                 </InlineStack>
                 <Button
@@ -616,7 +616,7 @@ export default function Index() {
   const shopify = useAppBridge();
 
   // All hooks must be called unconditionally on every render, before any
-  // early return — otherwise the order changes between renders and React
+  // early return - otherwise the order changes between renders and React
   // throws "rendered fewer hooks than expected" once onboarding completes.
   useEffect(() => {
     const data = fetcher.data as Record<string, unknown> | undefined;
@@ -630,11 +630,11 @@ export default function Index() {
     } else if (data.intent === "toggleWeeklyEmail") {
       shopify.toast.show(
         data.weeklyInsightEnabled
-          ? "Weekly insight emails on — you'll get the next one within ~7 days"
+          ? "Weekly insight emails on - you'll get the next one within ~7 days"
           : "Weekly insight emails turned off"
       );
     } else if (data.intent === "sendTestEmail") {
-      shopify.toast.show("Test email sent — check your inbox");
+      shopify.toast.show("Test email sent - check your inbox");
     }
   }, [fetcher.data, fetcher.state, shopify]);
 
@@ -661,7 +661,7 @@ export default function Index() {
 
   return (
     <Page>
-      <TitleBar title={`GEO Rise — ${store.shopName}`} />
+      <TitleBar title={`GEO Rise - ${store.shopName}`} />
 
       <BlockStack gap="600">
         {/* ── ROW 1: GEO Score ── */}
@@ -817,7 +817,7 @@ export default function Index() {
         </Card>
 
         {/* ── ROW 3.5: Weekly insight email preferences ── */}
-        {/* Paid plans only — Free plan hides the card. Lets merchant toggle
+        {/* Paid plans only - Free plan hides the card. Lets merchant toggle
             the weekly digest and send a one-off test to verify deliverability
             before the next scheduled run. */}
         {!isFreePlan && (
@@ -881,7 +881,7 @@ export default function Index() {
                 </Button>
                 {!store.email && (
                   <Text as="span" variant="bodySm" tone="critical">
-                    No email on file — set it in your Shopify store contact.
+                    No email on file - set it in your Shopify store contact.
                   </Text>
                 )}
               </InlineStack>
@@ -890,7 +890,7 @@ export default function Index() {
         )}
 
         {/* ── ROW 4: Plan upgrade ── */}
-        {/* Pricing pulls from PLAN_DEFINITIONS so we don't drift again — this
+        {/* Pricing pulls from PLAN_DEFINITIONS so we don't drift again - this
             copy was stale-by-a-pivot until late on 2026-05-17. */}
         {isFreePlan ? (
           <CalloutCard
@@ -905,7 +905,7 @@ export default function Index() {
               </strong>{" "}
               to unlock unlimited product audits and auto-fix,{" "}
               {PLAN_LIMITS.GROWTH.maxTrackingPrompts} AI tracking prompts across
-              Claude / ChatGPT / Perplexity, and the multi-AI simulator — with
+              Claude / ChatGPT / Perplexity, and the multi-AI simulator - with
               a 7-day free trial.
             </Text>
           </CalloutCard>
@@ -916,7 +916,7 @@ export default function Index() {
           >
             <Text as="p" variant="bodyMd">
               Tracking up to {PLAN_LIMITS.GROWTH.maxTrackingPrompts} prompts on
-              Growth — upgrade to{" "}
+              Growth - upgrade to{" "}
               <strong>
                 {PLAN_DEFINITIONS.PRO.name} (${PLAN_DEFINITIONS.PRO.price}/mo)
               </strong>{" "}

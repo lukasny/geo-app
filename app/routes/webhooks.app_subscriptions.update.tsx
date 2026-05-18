@@ -64,7 +64,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { plan: "FREE" },
     });
 
-    // Convert any scheduled tracking prompts back to MANUAL — FREE doesn't
+    // Convert any scheduled tracking prompts back to MANUAL - FREE doesn't
     // include automatic scheduling. Without this, the scheduler tick would
     // keep firing the merchant's old prompts and we'd pay Claude API for it
     // indefinitely. The scheduler tick also filters `store.plan != "FREE"`

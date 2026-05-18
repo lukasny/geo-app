@@ -469,7 +469,7 @@ export async function getOrCreateLlmsFile(storeId: string) {
 export interface GenerateLlmsTxtOptions {
   /** Cap on how many products to include in the generated file. Plumbed
    *  through to `fetchAllProducts` so we stop paginating once the cap is
-   *  hit — both an API-cost and a plan-enforcement measure. Callers MUST
+   *  hit - both an API-cost and a plan-enforcement measure. Callers MUST
    *  pass `PLAN_LIMITS[plan].maxProductsInLlmsTxt`; otherwise Free-plan
    *  stores end up with their entire catalog in the public llms.txt file. */
   maxProducts?: number;

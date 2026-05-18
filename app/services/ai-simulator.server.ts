@@ -61,7 +61,7 @@ export interface SimulationResult {
   /** Per-platform breakdowns. Always at least one entry (the orchestrator
    *  throws if every platform failed). */
   platforms: PlatformSimulationResult[];
-  /** Mean visibility score across platforms — quick "is my page AI-readable?"
+  /** Mean visibility score across platforms - quick "is my page AI-readable?"
    *  number for the headline pill. */
   averageVisibilityScore: number;
 
@@ -131,11 +131,11 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// OpenAI is optional — without OPENAI_API_KEY, the simulator silently runs
+// OpenAI is optional - without OPENAI_API_KEY, the simulator silently runs
 // Claude-only (current behavior). When the key is set, ChatGPT runs alongside
 // Claude on every simulation and the UI gets a side-by-side platform breakdown.
 // Perplexity intentionally excluded: their `sonar` models are tuned for web
-// search across many sources, not single-page HTML extraction — wrong tool.
+// search across many sources, not single-page HTML extraction - wrong tool.
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
@@ -147,7 +147,7 @@ function enabledSimulatorPlatforms(): SimulatorPlatform[] {
   return out;
 }
 
-const SYSTEM_PROMPT = `You are an AI shopping agent evaluating a product page. Extract ALL product information you can reliably find from this HTML. Return ONLY a JSON object with these fields. For any field you cannot confidently find in the HTML, set the value to null. Be strict — only extract what is clearly and unambiguously present.`;
+const SYSTEM_PROMPT = `You are an AI shopping agent evaluating a product page. Extract ALL product information you can reliably find from this HTML. Return ONLY a JSON object with these fields. For any field you cannot confidently find in the HTML, set the value to null. Be strict - only extract what is clearly and unambiguously present.`;
 
 const JSON_SCHEMA = `{
   "productName": "string or null",
@@ -216,13 +216,13 @@ function priceStatus(shopifyVal: unknown, aiVal: unknown): FieldStatus {
   if (sNum === null && aNum === null) return "missing";
   if (sNum === null && aNum !== null) return "found";
   if (sNum !== null && aNum === null) return "missing";
-  // Both are numbers — anything within 1 cent counts as a match.
+  // Both are numbers - anything within 1 cent counts as a match.
   return Math.abs((sNum ?? 0) - (aNum ?? 0)) <= 0.01 ? "found" : "mismatch";
 }
 
 /** Presence check for fields where the question is "did the AI extract
  *  something meaningful?", not "does the AI's text match Shopify's
- *  verbatim?". Used for description — Shopify stores the full long-form
+ *  verbatim?". Used for description - Shopify stores the full long-form
  *  HTML, the AI's JSON_SCHEMA caps at 300 chars, so a strict-match check
  *  always disagrees even when AI clearly saw the description. */
 function presenceStatus(
@@ -255,7 +255,7 @@ function statusFor(shopifyVal: unknown, aiVal: unknown): FieldStatus {
   if (!shopifyEmpty && aiEmpty) return "missing";
   if (shopifyEmpty && !aiEmpty) return "found"; // AI found something Shopify didn't expose
 
-  // Both have values — check if they roughly match
+  // Both have values - check if they roughly match
   if (typeof shopifyVal === "string" && typeof aiVal === "string") {
     const a = shopifyVal.toLowerCase().trim();
     const b = aiVal.toLowerCase().trim();
@@ -387,7 +387,7 @@ function buildComparison(
     {
       fieldName: "structuredDataFound",
       label: "Structured Data (JSON-LD)",
-      shopifyValue: true, // We inject it — assume present
+      shopifyValue: true, // We inject it - assume present
       aiValue: ai.structuredDataFound,
       importance: "medium",
     },
@@ -503,7 +503,7 @@ ${d.sku ? `<div class="sku">SKU: ${d.sku}</div>` : ""}
 ${d.description ? `<div class="description">${d.description}</div>` : ""}
 ${variantList ? `<div class="variants">${variantList}</div>` : ""}
 ${d.imageCount > 0 ? `<div class="images">${Array.from({ length: Math.min(d.imageCount, 5) }, () => `[Image: ${d.hasAltText ? d.title : "no alt text"}]`).join("")}</div>` : ""}
-${d.hasReviews && d.reviewCount > 0 ? `<div class="reviews">Rating: ${d.rating ?? "—"} (${d.reviewCount} reviews)</div>` : ""}
+${d.hasReviews && d.reviewCount > 0 ? `<div class="reviews">Rating: ${d.rating ?? "-"} (${d.reviewCount} reviews)</div>` : ""}
 </body></html>`;
 }
 
@@ -555,7 +555,7 @@ async function extractWithOpenAI(cleanedHtml: string): Promise<ExtractResult> {
   const completion = await withRetry(
     () =>
       openai!.chat.completions.create({
-        // gpt-4o-mini is the cost-sweet-spot — pure HTML extraction doesn't need
+        // gpt-4o-mini is the cost-sweet-spot - pure HTML extraction doesn't need
         // search (so no `-search-preview` variant) and doesn't need the full 4o.
         model: "gpt-4o-mini",
         max_tokens: 1024,
@@ -582,7 +582,7 @@ export async function simulateAiView(
   productUrl: string,
   shopifyProductData: ShopifyProductInput
 ): Promise<SimulationResult> {
-  // 1. Fetch the raw HTML — but be ready to fall back if the live page isn't
+  // 1. Fetch the raw HTML - but be ready to fall back if the live page isn't
   //    usable (404, password-protected dev store, etc).
   let rawHtml = "";
   let usedFallback = false;
@@ -629,7 +629,7 @@ export async function simulateAiView(
   const platforms = enabledSimulatorPlatforms();
   if (platforms.length === 0) {
     throw new Error(
-      "No AI simulator platforms configured — set ANTHROPIC_API_KEY (and optionally OPENAI_API_KEY for ChatGPT)"
+      "No AI simulator platforms configured - set ANTHROPIC_API_KEY (and optionally OPENAI_API_KEY for ChatGPT)"
     );
   }
 
@@ -645,7 +645,7 @@ export async function simulateAiView(
     })
   );
 
-  // Build a per-platform result for each attempted platform — including a
+  // Build a per-platform result for each attempted platform - including a
   // placeholder for the ones that failed so the UI shows "ChatGPT couldn't
   // extract" rather than silently dropping it.
   const platformResults: PlatformSimulationResult[] = settled.map((r, i) => {
@@ -688,7 +688,7 @@ export async function simulateAiView(
     };
   });
 
-  // If EVERY platform failed, throw — there's nothing useful to render.
+  // If EVERY platform failed, throw - there's nothing useful to render.
   const successful = platformResults.filter((p) => !p.errorReason);
   if (successful.length === 0) {
     throw new Error(
