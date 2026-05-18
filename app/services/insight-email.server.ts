@@ -90,11 +90,16 @@ export async function composeInsightEmail(
   const dashboardUrl = `${appBaseUrl}/app`;
 
   // ── Build subject ──
+  // Earlier draft used `${count} ${title.toLowerCase()} to fix`, which
+  // produced broken English on audit titles starting with "No"
+  // ("15 no customer reviews to fix"). The current form sidesteps
+  // pluralization / preposition concerns by treating the title as the
+  // standalone label of the top action.
   const top = actionPlan.actions[0];
   const subject =
     top !== undefined
-      ? `Your GEO Score: ${store.geoScore}/100 — ${top.count} ${top.title.toLowerCase()} to fix`
-      : `Your GEO Score: ${store.geoScore}/100 — no unfixed issues`;
+      ? `Your GEO Score ${store.geoScore}/100 — top action: ${top.title}`
+      : `Your GEO Score ${store.geoScore}/100 — all clear`;
 
   // ── Build plain text (for accessibility / non-HTML clients) ──
   const textLines: string[] = [];
