@@ -43,7 +43,16 @@ interface StoreData {
   installedAt: string;
   weeklyInsightEnabled: boolean;
   lastInsightSentAt: string | null;
+  schemaInjectionEnabled: boolean;
 }
+
+type DiscoveryCard =
+  | "schema"
+  | "tracking"
+  | "competitors"
+  | "blog"
+  | "simulator"
+  | "weeklyEmail";
 
 interface ActivityItem {
   id: string;
@@ -63,6 +72,11 @@ interface LoaderData {
   citationCount: number;
   issueCounts: { total: number; critical: number; high: number };
   recentActivity: ActivityItem[];
+  /** Ordered list of feature-discovery cards to render on the dashboard.
+   *  Each is filtered by plan + a "has the merchant used this" signal,
+   *  so once the merchant tries a feature its card auto-dismisses on the
+   *  next loader pass. */
+  discoveryCards: DiscoveryCard[];
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -189,6 +203,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     timestamp: store.installedAt.toISOString(),
   });
 
+  // Compute the feature-discovery cards to show on the dashboard. Each card
+  // is filtered by plan + a usage signal (zero rows in the relevant table
+  // means the merchant hasn't tried that feature yet). Once they use a
+  // feature, the corresponding card auto-dismisses on the next loader pass.
+  const planKey = store.plan as keyof typeof PLAN_LIMITS;
+  const limits = PLAN_LIMITS[planKey] ?? PLAN_LIMITS.FREE;
+  const discoveryCards: DiscoveryCard[] = [
+    !store.schemaInjectionEnabled ? "schema" : null,
+    limits.aiTracking && trackingPromptCount === 0 ? "tracking" : null,
+    limits.competitorMonitoring && competitorCount === 0 ? "competitors" : null,
+    limits.maxBlogPostsPerMonth > 0 && blogPostCount === 0 ? "blog" : null,
+    simulationCount === 0 ? "simulator" : null,
+    limits.insightEmails && !store.weeklyInsightEnabled ? "weeklyEmail" : null,
+  ].filter((c): c is DiscoveryCard => c !== null);
+
   return {
     store: {
       ...store,
@@ -208,6 +237,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (a, b) =>
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     ),
+    discoveryCards,
   } satisfies LoaderData;
 };
 
