@@ -464,6 +464,41 @@ function TrendTimeline({ history }: { history: HistoryPoint[] }) {
  *  for known service-layer error messages we WANT the merchant to see. The
  *  shared helper handles the generic vendor failure modes (credit / rate-limit
  *  / timeout / overloaded). */
+/** Builds the one-line summary above the suggestions card grid that
+ *  tells the merchant which sources contributed. Intent Lab makes this
+ *  the visible signal that suggestions came from real shopper data. */
+function summarizeSources(suggestions: SuggestedPrompt[]): string {
+  if (suggestions.length === 0) return "";
+
+  const fromStore = suggestions.filter(
+    (s) => s.source === "shopify_search"
+  ).length;
+  const fromReddit = suggestions.filter((s) => s.source === "reddit").length;
+  const aiOnly = suggestions.every((s) => s.source === "ai_brainstorm");
+
+  if (aiOnly) {
+    return `${suggestions.length} suggestions brainstormed by Claude. We couldn't reach Shopify analytics or Reddit this time, so we used your catalog only.`;
+  }
+
+  const parts: string[] = [];
+  if (fromStore > 0) {
+    parts.push(`${fromStore} from your store's recent searches`);
+  }
+  if (fromReddit > 0) {
+    const subreddits = Array.from(
+      new Set(
+        suggestions
+          .filter((s) => s.source === "reddit")
+          .map((s) => s.sourceDetail?.match(/r\/[a-z0-9_]+/i)?.[0])
+          .filter((x): x is string => Boolean(x))
+      )
+    );
+    const sublabel = subreddits.length > 0 ? ` (${subreddits.join(", ")})` : "";
+    parts.push(`${fromReddit} from shopper communities${sublabel}`);
+  }
+  return `${suggestions.length} suggestions: ${parts.join(" + ")}.`;
+}
+
 function sanitizeTrackingError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (/run an audit first/i.test(raw)) return raw;
@@ -680,8 +715,7 @@ export default function TrackingPage() {
                     Suggested prompts ({suggestions.length})
                   </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Generated from your product catalog. Click Add on the ones
-                    that match how your customers actually search.
+                    {summarizeSources(suggestions)}
                   </Text>
                 </BlockStack>
                 <Button
@@ -696,6 +730,10 @@ export default function TrackingPage() {
               <BlockStack gap="300">
                 {suggestions.map((sp) => {
                   const isAddingThis = addingSuggestion === sp.prompt.trim();
+                  const subredditMatch =
+                    sp.source === "reddit"
+                      ? sp.sourceDetail?.match(/r\/[a-z0-9_]+/i)?.[0]
+                      : null;
                   return (
                     <Box
                       key={sp.prompt}
@@ -713,8 +751,26 @@ export default function TrackingPage() {
                               {sp.rationale}
                             </Text>
                           )}
-                          <InlineStack gap="200">
+                          {sp.source === "shopify_search" && sp.sourceDetail && (
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Based on: {sp.sourceDetail}
+                            </Text>
+                          )}
+                          <InlineStack gap="200" wrap>
                             <Badge tone="info">{sp.category.replace("_", " ")}</Badge>
+                            {sp.source === "shopify_search" && (
+                              <Badge tone="success">From your store</Badge>
+                            )}
+                            {sp.source === "reddit" && (
+                              <Badge tone="info">
+                                {subredditMatch
+                                  ? `From ${subredditMatch}`
+                                  : "From shopper community"}
+                              </Badge>
+                            )}
+                            {sp.source === "ai_brainstorm" && (
+                              <Badge>AI suggested</Badge>
+                            )}
                           </InlineStack>
                         </BlockStack>
                         <Button
