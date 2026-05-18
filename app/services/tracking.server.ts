@@ -559,9 +559,270 @@ export async function runTrackingCheck(
   };
 }
 
+// ─── Intent Lab signal sources ────────────────────────────────────────────────
+
+interface SearchTerm {
+  term: string;
+  count: number;
+}
+
+const SHOPIFY_SEARCH_ANALYTICS_QUERY = `#graphql
+  query SearchAnalytics($q: String!) {
+    shopifyqlQuery(query: $q) {
+      __typename
+      ... on TableResponse {
+        tableData {
+          rowData
+          columns { name dataType }
+        }
+      }
+      ... on ParseError {
+        code
+        message
+      }
+    }
+  }
+`;
+
+const SHOPIFYQL = `FROM online_store_search
+SHOW count
+BY search_term
+SINCE -30d UNTIL today
+ORDER BY count DESC
+LIMIT 50`;
+
+/** Stage 1 of Intent Lab. Pulls the top 50 storefront search terms from the
+ *  merchant's last 30 days via ShopifyQL. Returns up to 20 cleaned results
+ *  (3 to 200 character terms, deduped, ordered by count). Returns [] on any
+ *  error so the caller can run Stage 2 regardless. */
+async function fetchShopifySearchAnalytics(
+  admin: AdminApiContext
+): Promise<SearchTerm[]> {
+  try {
+    const response = await admin.graphql(SHOPIFY_SEARCH_ANALYTICS_QUERY, {
+      variables: { q: SHOPIFYQL },
+    });
+    const json = (await response.json()) as {
+      data?: {
+        shopifyqlQuery?:
+          | {
+              __typename: "TableResponse";
+              tableData: { rowData: unknown[][] };
+            }
+          | {
+              __typename: "ParseError";
+              code: string;
+              message: string;
+            };
+      };
+      errors?: { message?: string }[];
+    };
+
+    if (json.errors && json.errors.length > 0) {
+      console.warn(
+        "[Intent Lab] shopifyqlQuery returned top-level errors:",
+        json.errors
+      );
+      return [];
+    }
+
+    const result = json.data?.shopifyqlQuery;
+    if (!result) return [];
+    if (result.__typename === "ParseError") {
+      console.warn(
+        `[Intent Lab] shopifyqlQuery ParseError ${result.code}: ${result.message}`
+      );
+      return [];
+    }
+
+    const rows = result.tableData?.rowData ?? [];
+    const terms: SearchTerm[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const rawTerm = String(row[0] ?? "").trim();
+      const rawCount = Number(row[1]);
+      if (!rawTerm) continue;
+      if (rawTerm.length < 3 || rawTerm.length > 200) continue;
+      if (!Number.isFinite(rawCount) || rawCount <= 0) continue;
+      const lower = rawTerm.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      terms.push({ term: rawTerm, count: rawCount });
+      if (terms.length >= 20) break;
+    }
+    return terms;
+  } catch (err) {
+    console.warn("[Intent Lab] fetchShopifySearchAnalytics threw:", err);
+    return [];
+  }
+}
+
+interface NicheInfo {
+  niche: string;
+  subreddits: string[];
+}
+
+const NICHE_DETECTION_SYSTEM_PROMPT = `You analyze a Shopify merchant's product catalog and identify two things:
+1. The niche: a short descriptor of what they sell (e.g. "snowboarding gear and apparel", "natural skincare", "home espresso equipment")
+2. 3 to 5 relevant subreddits where shoppers in this niche discuss products and recommendations
+
+Choose subreddits known for product discussions and gear recommendations. Avoid NSFW, off-topic, or meme subreddits. Use real subreddit names that you are confident exist. Use lowercase names without the "r/" prefix.
+
+CRITICAL: never use em-dashes (the long horizontal dash, U+2014) anywhere in your output. Use commas, colons, or periods instead.
+
+Output strictly as JSON: { "niche": "string", "subreddits": ["name1", "name2"] }`;
+
+const SUBREDDIT_DENYLIST = new Set<string>([
+  "all",
+  "popular",
+  "askreddit",
+  "funny",
+  "memes",
+  "nsfw",
+]);
+
+/** Stage 2a of Intent Lab. Returns the merchant's niche + 3 to 5 candidate
+ *  subreddits. Used to drive the Stage 2b Reddit fetch. Returns null if the
+ *  store has no products, Claude errors, or output is malformed. */
+async function detectNicheAndSubreddits(
+  storeId: string
+): Promise<NicheInfo | null> {
+  const products = await prisma.product.findMany({
+    where: { storeId, status: "active" },
+    select: { title: true, vendor: true, productType: true },
+    take: 25,
+  });
+  if (products.length === 0) return null;
+
+  const productLines = products
+    .map(
+      (p) =>
+        `- ${p.title}${p.vendor ? ` (brand: ${p.vendor})` : ""}${p.productType ? ` [${p.productType}]` : ""}`
+    )
+    .join("\n");
+
+  try {
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 400,
+          system: NICHE_DETECTION_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: `Catalog (up to 25 active products):\n${productLines}\n\nIdentify the niche and suggest 3 to 5 subreddits.`,
+            },
+          ],
+        }),
+      "detectNicheAndSubreddits"
+    );
+
+    const block = message.content[0];
+    if (block?.type !== "text") return null;
+
+    const raw = block.text
+      .trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+
+    const parsed = JSON.parse(raw) as {
+      niche?: unknown;
+      subreddits?: unknown;
+    };
+
+    const niche = typeof parsed.niche === "string" ? parsed.niche.trim() : "";
+    const subreddits = Array.isArray(parsed.subreddits)
+      ? parsed.subreddits
+          .filter((s): s is string => typeof s === "string")
+          .map((s) => s.replace(/^r\//i, "").trim().toLowerCase())
+          .filter((s) => /^[a-z0-9_]{2,21}$/i.test(s))
+          .filter((s) => !SUBREDDIT_DENYLIST.has(s))
+          .slice(0, 5)
+      : [];
+
+    if (!niche || subreddits.length === 0) return null;
+    return { niche, subreddits };
+  } catch (err) {
+    console.warn("[Intent Lab] detectNicheAndSubreddits failed:", err);
+    return null;
+  }
+}
+
+interface RedditSignal {
+  subreddit: string;
+  title: string;
+  permalink: string;
+}
+
+const QUESTION_OPENERS_RE =
+  /^(best|should i|what['']s the difference|what is|how to|how do|vs\b|recommend|looking for|any tips for|need help|which|where|why)\b/i;
+
+function isQuestionShapedTitle(title: string): boolean {
+  const t = title.trim();
+  if (t.length < 10 || t.length > 200) return false;
+  if (t.endsWith("?")) return true;
+  return QUESTION_OPENERS_RE.test(t);
+}
+
+/** Stage 2b of Intent Lab. Fetches recent question-shaped post titles from
+ *  the given subreddits via Reddit's public JSON endpoint. No auth needed;
+ *  Reddit requires a non-default User-Agent so we set one. Returns up to
+ *  25 titles total, 10 per subreddit max. */
+async function fetchRedditTitles(
+  subreddits: string[]
+): Promise<RedditSignal[]> {
+  const results: RedditSignal[] = [];
+  const PER_SUBREDDIT_LIMIT = 10;
+  const TOTAL_LIMIT = 25;
+
+  for (const subreddit of subreddits) {
+    if (results.length >= TOTAL_LIMIT) break;
+    const url = `https://www.reddit.com/r/${encodeURIComponent(subreddit)}/top.json?t=month&limit=25`;
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "web:geo-rise-shopify-app:1.0" },
+      });
+      if (!response.ok) {
+        console.warn(
+          `[Intent Lab] reddit ${subreddit} returned ${response.status}, skipping`
+        );
+        continue;
+      }
+      const json = (await response.json()) as {
+        data?: {
+          children?: Array<{
+            data?: { title?: string; permalink?: string };
+          }>;
+        };
+      };
+      const posts = json.data?.children ?? [];
+      let countForThisSub = 0;
+      for (const post of posts) {
+        if (countForThisSub >= PER_SUBREDDIT_LIMIT) break;
+        if (results.length >= TOTAL_LIMIT) break;
+        const title = post.data?.title?.trim();
+        const permalink = post.data?.permalink ?? "";
+        if (!title || !isQuestionShapedTitle(title)) continue;
+        results.push({ subreddit, title, permalink });
+        countForThisSub += 1;
+      }
+    } catch (err) {
+      console.warn(`[Intent Lab] reddit ${subreddit} fetch threw:`, err);
+      continue;
+    }
+  }
+
+  return results;
+}
+
 // ─── Suggest Tracking Prompts ─────────────────────────────────────────────────
 
-const SUGGEST_SYSTEM_PROMPT = `You are an AEO (Answer Engine Optimization) strategist. Your job is to generate the kinds of questions a real shopper would ask an AI assistant (ChatGPT, Perplexity, Claude, Gemini) when researching products in a specific store's category.
+// Used only as the Stage 0 fallback when both Shopify search analytics and
+// Reddit returned zero signals. Same text as the pre-Intent-Lab prompt.
+const BRAINSTORM_SYSTEM_PROMPT = `You are an AEO (Answer Engine Optimization) strategist. Your job is to generate the kinds of questions a real shopper would ask an AI assistant (ChatGPT, Perplexity, Claude, Gemini) when researching products in a specific store's category.
 
 You will be given a store's product catalog. Generate 8 tracking prompts that:
 1. Sound like natural, conversational questions a human would type into an AI
@@ -574,20 +835,274 @@ CRITICAL: never use em-dashes (the long horizontal dash) anywhere in your output
 
 Output strictly as JSON: { "suggestions": [{ "prompt": "...", "category": "comparison|recommendation|use_case|price|brand", "rationale": "one sentence on why this prompt matters for this store" }] }`;
 
-export async function suggestTrackingPrompts(storeId: string): Promise<SuggestedPrompt[]> {
+// Stage 3 prompt: polish real shopper signals into tracking prompts. Each
+// output prompt must cite the index of the signal it was derived from.
+const POLISH_SYSTEM_PROMPT = `You polish real shopper queries into tracking prompts for a Shopify merchant's AI search visibility tool.
+
+The signals provided are REAL shopper queries from two sources:
+  - shopify_search: terms the merchant's own shoppers typed into their storefront search bar
+  - reddit: question-shaped post titles from relevant subreddits
+
+Your job: convert these raw signals into 8 well-formed tracking prompts. Each output prompt MUST be derived from one of the provided signals. Do not fabricate prompts that have no signal backing.
+
+For each prompt:
+- Phrase as a question a shopper would ask an AI search engine like ChatGPT or Perplexity
+- Reference specific products or brands from the merchant's catalog when relevant
+- Categorize as one of: comparison / recommendation / use_case / price / brand
+- Add a one-sentence rationale explaining why this prompt matters for this merchant
+- Cite the source index (the integer prefix of the signal that inspired it)
+
+CRITICAL: never use em-dashes (the long horizontal dash, U+2014). Use commas, colons, or periods instead. This rule applies to the prompt and rationale fields.
+
+Output strictly as JSON:
+{
+  "suggestions": [
+    {
+      "prompt": "string",
+      "category": "comparison|recommendation|use_case|price|brand",
+      "rationale": "one sentence",
+      "sourceIndex": 0
+    }
+  ]
+}`;
+
+/** Intent Lab orchestrator. Pulls real shopper signals from Shopify
+ *  storefront search analytics and Reddit in parallel, then asks Claude to
+ *  polish them into 8 tracking prompts. Falls back to pure-Claude
+ *  brainstorming if both signal sources came back empty.
+ *
+ *  Each returned SuggestedPrompt carries a `source` field showing where
+ *  it came from so the UI can attribute it. */
+export async function suggestTrackingPrompts(
+  storeId: string,
+  admin: AdminApiContext
+): Promise<SuggestedPrompt[]> {
   const store = await prisma.store.findUnique({ where: { id: storeId } });
   if (!store) throw new Error("Store not found");
 
-  // Pull up to 25 representative products to give Claude enough context
-  // without spending too many tokens. Active products only.
+  // Stages 1 + 2 run in parallel. Both gracefully return empty arrays on
+  // error so the orchestrator can always proceed to polish or fallback.
+  const [searchTerms, niche] = await Promise.all([
+    fetchShopifySearchAnalytics(admin),
+    detectNicheAndSubreddits(storeId),
+  ]);
+  const redditSignals: RedditSignal[] = niche
+    ? await fetchRedditTitles(niche.subreddits)
+    : [];
+
+  const haveSignals = searchTerms.length > 0 || redditSignals.length > 0;
+
+  if (!haveSignals) {
+    // Stage 0 fallback: existing pure-Claude brainstorm. Same as the
+    // pre-Intent-Lab behavior. Output gets the ai_brainstorm source tag.
+    return runBrainstormFallback(storeId, store.shopName);
+  }
+
+  return runPolishStage({
+    storeId,
+    shopName: store.shopName,
+    searchTerms,
+    redditSignals,
+  });
+}
+
+/** Stage 3 polish: hand all collected signals to Claude with the polish
+ *  prompt. Each Claude-returned suggestion cites a sourceIndex which we
+ *  map back to the originating signal for source attribution. */
+async function runPolishStage(args: {
+  storeId: string;
+  shopName: string;
+  searchTerms: SearchTerm[];
+  redditSignals: RedditSignal[];
+}): Promise<SuggestedPrompt[]> {
+  const { storeId, shopName, searchTerms, redditSignals } = args;
+
+  type Signal =
+    | { kind: "shopify_search"; index: number; term: string; count: number }
+    | {
+        kind: "reddit";
+        index: number;
+        subreddit: string;
+        title: string;
+      };
+  const signals: Signal[] = [];
+  for (const t of searchTerms) {
+    signals.push({
+      kind: "shopify_search",
+      index: signals.length,
+      term: t.term,
+      count: t.count,
+    });
+  }
+  for (const r of redditSignals) {
+    signals.push({
+      kind: "reddit",
+      index: signals.length,
+      subreddit: r.subreddit,
+      title: r.title,
+    });
+  }
+
+  const signalLines = signals
+    .map((s) => {
+      if (s.kind === "shopify_search") {
+        return `[${s.index}] shopify_search: "${s.term}" (${s.count} ${s.count === 1 ? "search" : "searches"})`;
+      }
+      return `[${s.index}] reddit (r/${s.subreddit}): "${s.title}"`;
+    })
+    .join("\n");
+
   const products = await prisma.product.findMany({
     where: { storeId, status: "active" },
     select: { title: true, vendor: true, productType: true },
     take: 25,
   });
+  const productLines = products
+    .map(
+      (p) =>
+        `- ${p.title}${p.vendor ? ` (brand: ${p.vendor})` : ""}${p.productType ? ` [${p.productType}]` : ""}`
+    )
+    .join("\n");
+  const vendorSet = new Set<string>();
+  for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
+  const vendors = [...vendorSet];
 
+  const message = await withRetry(
+    () =>
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2000,
+        system: POLISH_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `Store name: ${shopName}
+${vendors.length > 0 ? `Brands sold: ${vendors.join(", ")}` : ""}
+
+Products (up to 25):
+${productLines}
+
+Signals (real shopper data):
+${signalLines}
+
+Generate 8 tracking prompts derived from these signals.`,
+          },
+        ],
+      }),
+    "suggestTrackingPrompts.polish"
+  );
+
+  const block = message.content[0];
+  if (block?.type !== "text") {
+    throw new Error("Claude returned no text response");
+  }
+
+  const raw = block.text
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  let parsed: {
+    suggestions?: Array<{
+      prompt?: unknown;
+      category?: unknown;
+      rationale?: unknown;
+      sourceIndex?: unknown;
+    }>;
+  };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Couldn't parse Claude's suggestions - please try again.");
+  }
+  const rawSuggestions = parsed.suggestions ?? [];
+
+  const existing = await prisma.trackingPrompt.findMany({
+    where: { storeId },
+    select: { prompt: true },
+  });
+  const existingLower = new Set(
+    existing.map((p) => p.prompt.toLowerCase().trim())
+  );
+
+  const validCategories = new Set([
+    "comparison",
+    "recommendation",
+    "use_case",
+    "price",
+    "brand",
+  ]);
+
+  const polished: SuggestedPrompt[] = [];
+  for (const s of rawSuggestions) {
+    if (typeof s.prompt !== "string") continue;
+    if (typeof s.category !== "string") continue;
+    if (typeof s.rationale !== "string") continue;
+    if (typeof s.sourceIndex !== "number") continue;
+
+    const promptText = s.prompt.trim();
+    const category = s.category.trim();
+    const rationale = s.rationale.trim();
+    const sourceIndex = Math.floor(s.sourceIndex);
+
+    if (!promptText || promptText.length > 500) continue;
+    if (!validCategories.has(category)) continue;
+    if (existingLower.has(promptText.toLowerCase())) continue;
+
+    const signal = signals[sourceIndex];
+    if (!signal) continue;
+
+    const source: SuggestionSource =
+      signal.kind === "shopify_search" ? "shopify_search" : "reddit";
+    const sourceDetail =
+      signal.kind === "shopify_search"
+        ? `search query: "${signal.term}" (${signal.count} ${signal.count === 1 ? "search" : "searches"} on your store)`
+        : `from r/${signal.subreddit}`;
+
+    polished.push({
+      prompt: promptText,
+      category: category as SuggestedPrompt["category"],
+      rationale,
+      source,
+      sourceDetail,
+    });
+  }
+
+  // If polish produced too few results, fall through to brainstorm fallback
+  // for the remainder. Most stores should get at least 8 here.
+  if (polished.length < 4) {
+    const fallback = await runBrainstormFallback(storeId, shopName);
+    const merged = [...polished];
+    for (const f of fallback) {
+      if (merged.length >= 8) break;
+      if (
+        !merged.some((m) => m.prompt.toLowerCase() === f.prompt.toLowerCase())
+      ) {
+        merged.push(f);
+      }
+    }
+    return merged;
+  }
+  return polished.slice(0, 8);
+}
+
+/** Stage 0 fallback. The original pure-Claude brainstorm flow. Used when
+ *  both Stage 1 and Stage 2 returned zero signals. */
+async function runBrainstormFallback(
+  storeId: string,
+  shopName: string
+): Promise<SuggestedPrompt[]> {
+  const products = await prisma.product.findMany({
+    where: { storeId, status: "active" },
+    select: { title: true, vendor: true, productType: true },
+    take: 25,
+  });
   if (products.length === 0) {
-    throw new Error("Run an audit first - we need product data to generate relevant prompts.");
+    throw new Error(
+      "Run an audit first - we need product data to generate relevant prompts."
+    );
   }
 
   const productLines = products
@@ -596,7 +1111,6 @@ export async function suggestTrackingPrompts(storeId: string): Promise<Suggested
         `- ${p.title}${p.vendor ? ` (brand: ${p.vendor})` : ""}${p.productType ? ` [${p.productType}]` : ""}`
     )
     .join("\n");
-
   const vendorSet = new Set<string>();
   for (const p of products) if (p.vendor) vendorSet.add(p.vendor);
   const vendors = [...vendorSet];
@@ -606,11 +1120,11 @@ export async function suggestTrackingPrompts(storeId: string): Promise<Suggested
       anthropic.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 1500,
-        system: SUGGEST_SYSTEM_PROMPT,
+        system: BRAINSTORM_SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
-            content: `Store name: ${store.shopName}
+            content: `Store name: ${shopName}
 ${vendors.length > 0 ? `Brands sold: ${vendors.join(", ")}` : ""}
 
 Products (up to 25):
@@ -620,15 +1134,13 @@ Generate 8 tracking prompts for this store.`,
           },
         ],
       }),
-    "suggestTrackingPrompts"
+    "suggestTrackingPrompts.brainstorm"
   );
 
   const block = message.content[0];
   if (block?.type !== "text") {
     throw new Error("Claude returned no text response");
   }
-
-  // Strip code fences if Claude wrapped the JSON in ```json … ```
   const raw = block.text
     .trim()
     .replace(/^```json\s*/i, "")
@@ -636,34 +1148,52 @@ Generate 8 tracking prompts for this store.`,
     .replace(/```\s*$/i, "")
     .trim();
 
-  let parsed: { suggestions?: SuggestedPrompt[] };
+  let parsed: {
+    suggestions?: Array<{
+      prompt?: unknown;
+      category?: unknown;
+      rationale?: unknown;
+    }>;
+  };
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error("Couldn't parse Claude's suggestions - please try again.");
   }
+  const rawSuggestions = parsed.suggestions ?? [];
 
-  const suggestions = parsed.suggestions ?? [];
-
-  // Filter against prompts the merchant already has so we don't suggest dupes.
   const existing = await prisma.trackingPrompt.findMany({
     where: { storeId },
     select: { prompt: true },
   });
-  const existingLower = new Set(existing.map((p) => p.prompt.toLowerCase().trim()));
+  const existingLower = new Set(
+    existing.map((p) => p.prompt.toLowerCase().trim())
+  );
+  const validCategories = new Set([
+    "comparison",
+    "recommendation",
+    "use_case",
+    "price",
+    "brand",
+  ]);
 
-  const valid = suggestions
-    .filter(
-      (s): s is SuggestedPrompt =>
-        typeof s?.prompt === "string" &&
-        s.prompt.trim().length > 0 &&
-        s.prompt.length <= 500 &&
-        !existingLower.has(s.prompt.toLowerCase().trim()) &&
-        ["comparison", "recommendation", "use_case", "price", "brand"].includes(
-          s.category as string
-        )
-    )
-    .slice(0, 10);
-
-  return valid;
+  const valid: SuggestedPrompt[] = [];
+  for (const s of rawSuggestions) {
+    if (typeof s.prompt !== "string") continue;
+    if (typeof s.category !== "string") continue;
+    if (typeof s.rationale !== "string") continue;
+    const promptText = s.prompt.trim();
+    const category = s.category.trim();
+    const rationale = s.rationale.trim();
+    if (!promptText || promptText.length > 500) continue;
+    if (!validCategories.has(category)) continue;
+    if (existingLower.has(promptText.toLowerCase())) continue;
+    valid.push({
+      prompt: promptText,
+      category: category as SuggestedPrompt["category"],
+      rationale,
+      source: "ai_brainstorm",
+    });
+  }
+  return valid.slice(0, 8);
 }
