@@ -67,7 +67,7 @@ interface LoaderData {
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
 
   // Auto-create store record on first load
   let store = await prisma.store.findUnique({
@@ -82,6 +82,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopName: session.shop.replace(".myshopify.com", ""),
       },
     });
+  }
+
+  // Backfill `store.email` from Shopify the first time the merchant lands
+  // on the dashboard. Earlier installs created the Store row without an
+  // email which broke the "Send a test email now" button — it can't send
+  // anywhere if we don't know where. We pull `shop.email` (the owner
+  // login email — the operator we want to email weekly digests to) rather
+  // than `shop.contactEmail` (the customer-facing support address, which
+  // is sometimes blank). One-shot: only fetches when the column is null,
+  // so it costs nothing on subsequent loads.
+  if (!store.email) {
+    try {
+      const shopResponse = await admin.graphql(
+        `#graphql
+         query GetShopOwnerEmail {
+           shop { email }
+         }`
+      );
+      const shopJson = (await shopResponse.json()) as {
+        data?: { shop?: { email?: string | null } };
+      };
+      const shopEmail = shopJson.data?.shop?.email;
+      if (shopEmail) {
+        store = await prisma.store.update({
+          where: { id: store.id },
+          data: { email: shopEmail },
+        });
+      }
+    } catch (err) {
+      // Non-fatal: dashboard still renders without the email; the Weekly
+      // Insight card just keeps showing "No email on file" until next try.
+      console.error("[GEO Rise] Failed to backfill shop email:", err);
+    }
   }
 
   const [llmsFile, auditResults, citations] = await Promise.all([
