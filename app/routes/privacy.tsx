@@ -54,10 +54,24 @@ export default function PrivacyPolicy() {
             and app activity - used to show you your GEO score and progress
             over time.
           </li>
+          <li>
+            <strong>AI referral tracking (paid plans):</strong> when a shopper
+            arrives at your storefront from an AI search engine (ChatGPT,
+            Perplexity, Claude, Gemini, Grok), we record the referring
+            platform name and a unix timestamp in a first-party cookie on the
+            shopper&apos;s browser and as an attribute on their Shopify cart.
+            The cookie expires after 30 days. No personally identifiable
+            information is collected. When the shopper completes an order, we
+            store the AI platform name, order total, currency, and order ID
+            against your store record so the AI Revenue page can attribute
+            revenue to the AI platform that drove the visit.
+          </li>
         </ul>
         <p>
-          We do <strong>not</strong> collect customer order data, customer
-          personal information, or payment details.
+          We do <strong>not</strong> collect customer personal information or
+          payment details. For AI-attributed orders we store the order total
+          and order ID (not customer names, addresses, or line items) solely
+          to compute the AI Revenue report.
         </p>
       </Section>
 
