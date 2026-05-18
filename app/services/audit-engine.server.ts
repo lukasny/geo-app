@@ -1613,6 +1613,11 @@ export interface AutoFixOptions {
    *  "Missing SEO title" issues, not the "Missing meta description" ones,
    *  even though both live under category=META). */
   title?: string;
+  /** If set, stop the orchestrator after attempting this many fixes (counting
+   *  successful + failed attempts; skipped fixes don't count). Used by the
+   *  onboarding wizard's wow step to bound the runtime to a predictable
+   *  ~60 seconds regardless of catalog size. */
+  maxIssues?: number;
 }
 
 export async function autoFixIssues(
@@ -1705,6 +1710,16 @@ export async function autoFixIssues(
       );
       aborted = true;
       break;
+    }
+
+    // maxIssues cap (onboarding wizard wow step). Counts fixed+failed
+    // (actual attempts); skipped rows don't count so a merchant with
+    // many already-good products doesn't stop the loop prematurely.
+    if (options.maxIssues !== undefined && fixed + failed >= options.maxIssues) {
+      console.log(
+        `[GEO Rise auto-fix] maxIssues cap (${options.maxIssues}) reached; stopping orchestrator after ${fixed} fixed + ${failed} failed`
+      );
+      break outer;
     }
 
     // Pace between fixes - Shopify GraphQL rate-limit headroom.
