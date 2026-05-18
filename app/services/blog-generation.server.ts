@@ -408,15 +408,27 @@ export async function publishBlogPostToShopify(
     };
   }
 
-  // Shopify's articleCreate input. Shopify's `body` field accepts HTML
-  // directly, NOT a separate `bodyHtml` (the API renamed at some point;
-  // 2025-01 uses `body`).
+  // Shopify's 2025-01 `articleCreate` input requires `author: { name }`.
+  // We default to the store/brand name so the article reads as authored by
+  // the merchant's store. The merchant can edit it in Shopify's admin after
+  // publish if they want a personal byline. We deliberately don't query the
+  // user session for firstName/lastName because the action runs on an
+  // offline session that doesn't carry user info.
+  const storeForAuthor = await prisma.store.findUnique({
+    where: { id: storeId },
+    select: { shopName: true },
+  });
+  const authorName = storeForAuthor?.shopName?.trim() || "Store";
+
+  // Shopify's `body` field accepts HTML directly, NOT a separate `bodyHtml`
+  // (the API renamed at some point; 2025-01 uses `body`).
   const articleInput: Record<string, unknown> = {
     blogId,
     title: post.title,
     body: post.bodyHtml,
     summary: post.excerpt,
     isPublished: true,
+    author: { name: authorName },
   };
   if (Array.isArray(post.tags) && post.tags.length > 0) {
     articleInput.tags = post.tags as string[];
@@ -485,13 +497,36 @@ export async function publishBlogPostToShopify(
 
     return { ok: true, shopifyArticleId: articleId, shopifyBlogId: blogId };
   } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
     console.error(
       `[GEO Rise blog] publish to Shopify threw for post ${postId}:`,
       err
     );
+    // Shopify's GraphQL client throws on top-level schema validation failures
+    // (e.g. missing required input). Map common cases to merchant-safe text.
+    if (/scope|permission|access denied|write_content/i.test(raw)) {
+      return {
+        ok: false,
+        error:
+          "Your Shopify app doesn't have permission to create blog posts. Reinstall the app to grant write_content access.",
+      };
+    }
+    if (/Variable .* type .*Input.*was provided invalid value/i.test(raw)) {
+      return {
+        ok: false,
+        error:
+          "Shopify's blog post API rejected this request. Please report this to GEO Rise support, we'll patch it.",
+      };
+    }
+    if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
+      return {
+        ok: false,
+        error: "Shopify didn't respond in time. Please try again in a moment.",
+      };
+    }
     return {
       ok: false,
-      error: err instanceof Error ? err.message : "Unknown error",
+      error: "Couldn't publish to Shopify. Please try again in a moment.",
     };
   }
 }
