@@ -17,6 +17,7 @@ export const PLAN_LIMITS = {
     maxSimulations:          3,
     maxTrackingPrompts:      0,
     maxCompetitors:          0,
+    maxBlogPostsPerMonth:    0,
     aiTracking:              false,
     competitorMonitoring:    false,
     revenueAttribution:      false,
@@ -34,9 +35,13 @@ export const PLAN_LIMITS = {
     maxSimulations:         Infinity,
     maxTrackingPrompts:     10,
     maxCompetitors:          3,
+    // Phase F1 - blog post generation. Per-month cap; Free has none,
+    // Growth gets 5, Pro gets 20, Enterprise gets 100. Roughly matches
+    // Vizby's tier metering.
+    maxBlogPostsPerMonth:    5,
     aiTracking:              true,
     // Growth gets competitor monitoring with the 3-competitor cap above.
-    // (Previously this was `false` while maxCompetitors was already 3 -
+    // (Previously this was `false` while maxCompetitors was already 3,
     //  a self-contradictory plan limit.)
     competitorMonitoring:    true,
     revenueAttribution:      false,
@@ -54,6 +59,7 @@ export const PLAN_LIMITS = {
     maxSimulations:         Infinity,
     maxTrackingPrompts:     30,
     maxCompetitors:         10,
+    maxBlogPostsPerMonth:   20,
     aiTracking:              true,
     competitorMonitoring:    true,
     revenueAttribution:      true,
@@ -71,6 +77,7 @@ export const PLAN_LIMITS = {
     maxSimulations:         Infinity,
     maxTrackingPrompts:     50,
     maxCompetitors:         25,
+    maxBlogPostsPerMonth:  100,
     aiTracking:              true,
     competitorMonitoring:    true,
     revenueAttribution:      true,

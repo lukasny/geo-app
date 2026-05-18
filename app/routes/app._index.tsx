@@ -810,6 +810,9 @@ export default function Index() {
               {!isFreePlan && (
                 <Button url="/app/tracking">AI Visibility Tracking</Button>
               )}
+              {!isFreePlan && (
+                <Button url="/app/blog-generator">Blog Generator</Button>
+              )}
               <Button url="/app/llms-txt">llms.txt Manager</Button>
               {!isFreePlan && <Button url="/app/pricing">View Plan</Button>}
             </ButtonGroup>

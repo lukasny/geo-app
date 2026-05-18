@@ -111,6 +111,7 @@ model Store {
   competitors      Competitor[]
   aiTrafficEvents  AiTrafficEvent[]
   simulationUsages SimulationUsage[]
+  blogPosts        BlogPost[]
   subscription     Subscription?
 }
 
@@ -305,5 +306,41 @@ model SimulationUsage {
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
+  @@index([storeId, createdAt])
+}
+
+// One row per generated blog post. Stored locally as a draft until the
+// merchant clicks "Publish" - then we POST to Shopify's articleCreate
+// mutation and stamp shopifyArticleId + publishedAt. Counting rows from
+// the start of the current calendar month enforces the monthly plan cap
+// (Free: 0, Growth: 5, Pro: 20, Enterprise: 100).
+model BlogPost {
+  id               String    @id @default(cuid())
+  storeId          String
+  // Inputs the merchant provided so we can re-generate or audit later.
+  topic            String    @db.Text
+  targetKeywords   Json?
+  tone             String?
+  // Claude's structured output, sanitized.
+  title            String
+  excerpt          String    @db.Text
+  bodyHtml         String    @db.Text
+  tags             Json?
+  metaTitle        String?
+  metaDescription  String?   @db.Text
+  wordCount        Int       @default(0)
+  // "draft" (in our DB only) or "published" (created on Shopify). Soft-delete
+  // via "deleted" so we can keep monthly-usage counts honest after a delete.
+  status           String    @default("draft")
+  shopifyArticleId String?
+  shopifyBlogId    String?
+  publishedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, status])
   @@index([storeId, createdAt])
 }
