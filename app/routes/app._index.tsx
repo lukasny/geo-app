@@ -24,7 +24,7 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { generateLlmsTxt } from "~/services/llms-generator.server";
-import { runFullAudit } from "~/services/audit-engine.server";
+import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
 
@@ -286,6 +286,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "runStarterAudit") {
+    try {
+      // Bounded "wizard starter audit" of 5 products so the wizard step
+      // completes in ~30-60s regardless of catalog size. Merchant can run
+      // the full plan-capped audit from the AI Audit page after onboarding.
+      const summary = await runFullAudit(store.id, admin, { maxProducts: 5 });
+      return { success: true, intent, storeScore: summary.storeScore };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Audit failed." };
+    }
+  }
+
+  if (intent === "runWizardAutoFix") {
+    try {
+      // Bounded auto-fix: at most 5 attempted fixes so the wow step stays
+      // under ~60s. Then re-run the starter audit so we can compute the
+      // before/after score delta in one round-trip.
+      const autoFix = await autoFixIssues(store.id, admin, { maxIssues: 5 });
+      const audit = await runFullAudit(store.id, admin, { maxProducts: 5 });
+      return {
+        success: true,
+        intent,
+        fixedCount: autoFix.fixed,
+        failedCount: autoFix.failed,
+        afterScore: audit.storeScore,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Auto-fix failed." };
+    }
+  }
+
   if (intent === "completeOnboarding") {
     await prisma.store.update({
       where: { id: store.id },
@@ -442,39 +473,28 @@ function GeoScoreRing({ score }: { score: number }) {
 
 function OnboardingWizard({
   shopName,
-  shopifyDomain,
 }: {
   shopName: string;
   shopifyDomain: string;
 }) {
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [beforeScore, setBeforeScore] = useState<number | null>(null);
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
-  const isLoading = fetcher.state !== "idle";
   const lastData = fetcher.data as Record<string, unknown> | undefined;
-  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
 
-  // Displayed dot count (steps 3 and 4 share dot 3)
-  const dotStep = step <= 3 ? step : step - 1;
-
+  // The completeOnboarding intent reloads to the regular dashboard.
+  // Step 2 and Step 3 handle their own action dispatch / state internally.
   useEffect(() => {
     if (!lastData || fetcher.state !== "idle") return;
-    if ("error" in lastData) {
+    if ("error" in lastData && lastData.intent === "completeOnboarding") {
       shopify.toast.show(lastData.error as string, { isError: true });
       return;
     }
-    if (lastData.intent === "generateLlms") setStep(3);
-    if (lastData.intent === "runAudit") setStep(4);
-    if (lastData.intent === "completeOnboarding") window.location.reload();
+    if (lastData.intent === "completeOnboarding") {
+      window.location.reload();
+    }
   }, [lastData, fetcher.state, shopify]);
-
-  const submit = (intent: string) =>
-    fetcher.submit({ intent }, { method: "POST" });
-
-  const storeScore =
-    lastData && "storeScore" in lastData ? (lastData.storeScore as number) : null;
-
-  const themeEditorUrl = `https://${shopifyDomain}/admin/themes/current/editor?context=apps`;
 
   return (
     <Page>
@@ -482,9 +502,9 @@ function OnboardingWizard({
       <div style={{ maxWidth: 640, margin: "0 auto" }}>
         <Card>
           <BlockStack gap="600">
-            {/* Step dots - 4 steps total */}
+            {/* Step dots - 3 steps total */}
             <InlineStack align="center" gap="200">
-              {[1, 2, 3, 4].map((n) => (
+              {[1, 2, 3].map((n) => (
                 <span
                   key={n}
                   style={{
@@ -497,11 +517,11 @@ function OnboardingWizard({
                     fontSize: 13,
                     fontWeight: 600,
                     background:
-                      dotStep > n ? "#1D9E75" : dotStep === n ? "#008060" : "#E4E5E7",
-                    color: dotStep >= n ? "#fff" : "#6D7175",
+                      step > n ? "#1D9E75" : step === n ? "#008060" : "#E4E5E7",
+                    color: step >= n ? "#fff" : "#6D7175",
                   }}
                 >
-                  {dotStep > n ? "✓" : n}
+                  {step > n ? "✓" : n}
                 </span>
               ))}
             </InlineStack>
@@ -510,169 +530,327 @@ function OnboardingWizard({
             {step === 1 && (
               <BlockStack gap="400">
                 <BlockStack gap="100">
-                  <Text as="p" variant="bodySm" tone="subdued">Step 1 of 4</Text>
-                  <Text as="h2" variant="headingXl">Welcome to GEO Rise, {shopName}!</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Step 1 of 3
+                  </Text>
+                  <Text as="h2" variant="headingXl">
+                    Welcome to GEO Rise, {shopName}
+                  </Text>
                 </BlockStack>
                 <Text as="p" variant="bodyMd">
-                  GEO Rise helps AI search engines like ChatGPT, Gemini, and
-                  Perplexity discover and recommend your products. Let&apos;s
-                  get your store AI-ready in 4 quick steps.
+                  GEO Rise will audit your store, show you how AI search engines
+                  like ChatGPT and Perplexity see it, and fix the biggest issues
+                  for you with one click. About 2 minutes.
                 </Text>
                 <Button variant="primary" onClick={() => setStep(2)}>
-                  Let&apos;s go →
+                  Let&apos;s go
                 </Button>
               </BlockStack>
             )}
 
-            {/* Step 2 - Generate llms.txt */}
+            {/* Step 2 - Audit + score reveal */}
             {step === 2 && (
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="p" variant="bodySm" tone="subdued">Step 2 of 4</Text>
-                  <Text as="h2" variant="headingXl">Generate your AI sitemap</Text>
-                </BlockStack>
-                <Text as="p" variant="bodyMd">
-                  We&apos;ll create an <strong>llms.txt</strong> file - a
-                  sitemap specifically for AI engines. This tells ChatGPT and
-                  other AI tools exactly what your store sells, including
-                  product details, prices, and availability.
-                </Text>
-                {isLoading && lastIntent === "generateLlms" && (
-                  <InlineStack gap="200" blockAlign="center">
-                    <Spinner size="small" />
-                    <Text as="p" variant="bodySm">Generating your llms.txt…</Text>
-                  </InlineStack>
-                )}
-                <InlineStack gap="300">
-                  <Button
-                    variant="primary"
-                    onClick={() => submit("generateLlms")}
-                    loading={isLoading && lastIntent === "generateLlms"}
-                  >
-                    Generate llms.txt
-                  </Button>
-                  <Button variant="plain" onClick={() => setStep(3)} disabled={isLoading}>
-                    I&apos;ll do this later
-                  </Button>
-                </InlineStack>
-              </BlockStack>
+              <Step2
+                fetcher={fetcher}
+                onNext={(score) => {
+                  setBeforeScore(score);
+                  setStep(3);
+                }}
+              />
             )}
 
-            {/* Step 3 - Audit (pre-run) / Step 4 - Audit result */}
-            {(step === 3 || step === 4) && (
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="p" variant="bodySm" tone="subdued">Step 3 of 4</Text>
-                  <Text as="h2" variant="headingXl">See how AI sees your store</Text>
-                </BlockStack>
-                <Text as="p" variant="bodyMd">
-                  Let&apos;s run a quick AI readiness audit on your products.
-                  This gives you a GEO score and shows exactly what AI search
-                  engines can - and can&apos;t - see about your store.
-                </Text>
-
-                {step === 4 && storeScore !== null && (
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="200">
-                    <BlockStack gap="200" align="center">
-                      <GeoScoreRing score={storeScore} />
-                      <Text as="p" variant="headingMd" alignment="center">
-                        Your GEO Score: {storeScore}/100
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-                        {scoreLabel(storeScore)}
-                      </Text>
-                    </BlockStack>
-                  </Box>
-                )}
-
-                {isLoading && lastIntent === "runAudit" && (
-                  <InlineStack gap="200" blockAlign="center">
-                    <Spinner size="small" />
-                    <Text as="p" variant="bodySm">Auditing your products…</Text>
-                  </InlineStack>
-                )}
-
-                <InlineStack gap="300">
-                  {step === 3 && (
-                    <Button
-                      variant="primary"
-                      onClick={() => submit("runAudit")}
-                      loading={isLoading && lastIntent === "runAudit"}
-                    >
-                      Run Quick Audit
-                    </Button>
-                  )}
-                  {step === 4 && (
-                    <Button variant="primary" onClick={() => setStep(5)}>
-                      Continue →
-                    </Button>
-                  )}
-                </InlineStack>
-              </BlockStack>
-            )}
-
-            {/* Step 5 - Enable theme app extension */}
-            {step === 5 && (
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="p" variant="bodySm" tone="subdued">Step 4 of 4</Text>
-                  <Text as="h2" variant="headingXl">Enable AI Schema Injection</Text>
-                </BlockStack>
-                <Text as="p" variant="bodyMd">
-                  This adds structured data (JSON-LD) to your product pages so
-                  AI engines like ChatGPT and Gemini can fully understand what
-                  you sell. It&apos;s automatic and won&apos;t affect your
-                  store&apos;s design or speed.
-                </Text>
-                <Box
-                  padding="400"
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                >
-                  <BlockStack gap="200">
-                    <Text as="p" variant="bodyMd" fontWeight="semibold">
-                      How to enable:
-                    </Text>
-                    <Text as="p" variant="bodySm">
-                      1. Click &quot;Open Theme Editor&quot; below
-                      <br />
-                      2. In the left sidebar, click <strong>App embeds</strong>
-                      <br />
-                      3. Toggle on <strong>GEO Rise - AI Schema</strong>
-                      <br />
-                      4. Click Save, then come back here
-                    </Text>
-                  </BlockStack>
-                </Box>
-                <InlineStack gap="300">
-                  <Button
-                    variant="primary"
-                    url={themeEditorUrl}
-                    target="_blank"
-                  >
-                    Open Theme Editor ↗
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => submit("completeOnboarding")}
-                    loading={isLoading}
-                  >
-                    I&apos;ve enabled it - Go to Dashboard →
-                  </Button>
-                </InlineStack>
-                <Button
-                  variant="plain"
-                  onClick={() => submit("completeOnboarding")}
-                  disabled={isLoading}
-                >
-                  Skip for now
-                </Button>
-              </BlockStack>
+            {/* Step 3 - The wow */}
+            {step === 3 && beforeScore !== null && (
+              <Step3
+                fetcher={fetcher}
+                beforeScore={beforeScore}
+                onComplete={() => {
+                  fetcher.submit(
+                    { intent: "completeOnboarding" },
+                    { method: "POST" }
+                  );
+                }}
+              />
             )}
           </BlockStack>
         </Card>
       </div>
     </Page>
+  );
+}
+
+function Step2({
+  fetcher,
+  onNext,
+}: {
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  onNext: (score: number) => void;
+}) {
+  const [hasFiredAudit, setHasFiredAudit] = useState(false);
+  const [hasFiredLlms, setHasFiredLlms] = useState(false);
+  const data = fetcher.data as Record<string, unknown> | undefined;
+  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
+  const isAuditing =
+    fetcher.state !== "idle" && lastIntent === "runStarterAudit";
+  const score =
+    data && data.intent === "runStarterAudit" && "storeScore" in data
+      ? (data.storeScore as number)
+      : null;
+  const auditError =
+    data && data.intent === "runStarterAudit" && "error" in data
+      ? (data.error as string)
+      : null;
+
+  // Fire the audit and llms-gen exactly once on mount. They run in parallel:
+  // the audit reveals the score (the merchant-facing reward), the llms-gen
+  // is silent (no toast, no UI; merchant finds the result on the llms.txt
+  // Manager page later).
+  useEffect(() => {
+    if (!hasFiredAudit) {
+      fetcher.submit({ intent: "runStarterAudit" }, { method: "POST" });
+      setHasFiredAudit(true);
+    }
+    if (!hasFiredLlms) {
+      // Fire-and-forget llms-gen via a separate plain fetch so the audit
+      // result still lands on `fetcher.data`. If it fails, the merchant
+      // can regenerate from the llms.txt Manager page.
+      const formData = new FormData();
+      formData.append("intent", "generateLlms");
+      fetch(window.location.pathname, {
+        method: "POST",
+        body: formData,
+      }).catch((err) => {
+        console.warn("[onboarding] silent llms generation failed:", err);
+      });
+      setHasFiredLlms(true);
+    }
+  }, [fetcher, hasFiredAudit, hasFiredLlms]);
+
+  if (auditError) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 2 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            We hit a snag
+          </Text>
+        </BlockStack>
+        <Banner tone="warning">
+          <Text as="p" variant="bodyMd">
+            We couldn&apos;t finish the audit just now. {auditError}
+          </Text>
+        </Banner>
+        <Button
+          variant="primary"
+          onClick={() => {
+            setHasFiredAudit(false);
+          }}
+        >
+          Try again
+        </Button>
+      </BlockStack>
+    );
+  }
+
+  if (isAuditing || score === null) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 2 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            Auditing your top products
+          </Text>
+        </BlockStack>
+        <InlineStack gap="200" blockAlign="center">
+          <Spinner size="small" />
+          <Text as="p" variant="bodySm">
+            This takes about 30 to 60 seconds.
+          </Text>
+        </InlineStack>
+      </BlockStack>
+    );
+  }
+
+  return (
+    <BlockStack gap="400">
+      <BlockStack gap="100">
+        <Text as="p" variant="bodySm" tone="subdued">
+          Step 2 of 3
+        </Text>
+        <Text as="h2" variant="headingXl">
+          Here&apos;s how AI sees your store
+        </Text>
+      </BlockStack>
+      <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+        <BlockStack gap="200" align="center">
+          <GeoScoreRing score={score} />
+          <Text as="p" variant="headingMd" alignment="center">
+            Your starting GEO Score: {score} of 100
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+            {scoreLabel(score)}
+          </Text>
+        </BlockStack>
+      </Box>
+      <Button variant="primary" onClick={() => onNext(score)}>
+        Fix the biggest issues for me
+      </Button>
+    </BlockStack>
+  );
+}
+
+function Step3({
+  fetcher,
+  beforeScore,
+  onComplete,
+}: {
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  beforeScore: number;
+  onComplete: () => void;
+}) {
+  const [hasFired, setHasFired] = useState(false);
+  const [animatedScore, setAnimatedScore] = useState(beforeScore);
+  const data = fetcher.data as Record<string, unknown> | undefined;
+  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
+  const isFixing =
+    fetcher.state !== "idle" && lastIntent === "runWizardAutoFix";
+
+  const afterScore =
+    data && data.intent === "runWizardAutoFix" && "afterScore" in data
+      ? (data.afterScore as number)
+      : null;
+  const fixedCount =
+    data && data.intent === "runWizardAutoFix" && "fixedCount" in data
+      ? (data.fixedCount as number)
+      : 0;
+  const fixError =
+    data && data.intent === "runWizardAutoFix" && "error" in data
+      ? (data.error as string)
+      : null;
+
+  // Fire the auto-fix exactly once on mount.
+  useEffect(() => {
+    if (!hasFired) {
+      fetcher.submit({ intent: "runWizardAutoFix" }, { method: "POST" });
+      setHasFired(true);
+    }
+  }, [fetcher, hasFired]);
+
+  // Animate the score ring from before to after over 1.2s once afterScore
+  // arrives. Uses requestAnimationFrame; no new dependency.
+  useEffect(() => {
+    if (afterScore === null) return;
+    if (afterScore === beforeScore) {
+      setAnimatedScore(afterScore);
+      return;
+    }
+    const start = performance.now();
+    const duration = 1200;
+    let frame = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - (1 - t) * (1 - t); // ease-out quadratic
+      const current = Math.round(
+        beforeScore + (afterScore - beforeScore) * eased
+      );
+      setAnimatedScore(current);
+      if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [afterScore, beforeScore]);
+
+  // Auto-fix returned an error OR fixed 0 issues. Either way, no wow.
+  // Don't block the merchant; let them continue to the dashboard with
+  // their original score.
+  if (fixError || (afterScore !== null && fixedCount === 0)) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 3 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            Auto-fix didn&apos;t run this time
+          </Text>
+        </BlockStack>
+        <Banner tone="info">
+          <Text as="p" variant="bodyMd">
+            {fixError
+              ? "Auto-fix is temporarily unavailable, you can try it from the AI Audit page later."
+              : "We didn't find any issues to fix automatically right now. You can review the audit results from the AI Audit page."}
+          </Text>
+        </Banner>
+        <Box
+          padding="400"
+          background="bg-surface-secondary"
+          borderRadius="200"
+        >
+          <BlockStack gap="200" align="center">
+            <GeoScoreRing score={beforeScore} />
+            <Text as="p" variant="headingMd" alignment="center">
+              Your starting GEO Score: {beforeScore} of 100
+            </Text>
+          </BlockStack>
+        </Box>
+        <Button variant="primary" onClick={onComplete}>
+          Open the dashboard
+        </Button>
+      </BlockStack>
+    );
+  }
+
+  if (isFixing || afterScore === null) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 3 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            Claude is rewriting your content
+          </Text>
+        </BlockStack>
+        <InlineStack gap="200" blockAlign="center">
+          <Spinner size="small" />
+          <Text as="p" variant="bodySm">
+            This takes about 60 seconds. Hold tight.
+          </Text>
+        </InlineStack>
+      </BlockStack>
+    );
+  }
+
+  return (
+    <BlockStack gap="400">
+      <BlockStack gap="100">
+        <Text as="p" variant="bodySm" tone="subdued">
+          Step 3 of 3
+        </Text>
+        <Text as="h2" variant="headingXl">
+          Done. Your store just got better.
+        </Text>
+      </BlockStack>
+      <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+        <BlockStack gap="200" align="center">
+          <GeoScoreRing score={animatedScore} />
+          <Text as="p" variant="headingMd" alignment="center">
+            Your GEO Score: {beforeScore} to {afterScore}
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+            We just auto-fixed {fixedCount}{" "}
+            {fixedCount === 1 ? "issue" : "issues"} on your top products.
+          </Text>
+        </BlockStack>
+      </Box>
+      <Button variant="primary" onClick={onComplete}>
+        Open the dashboard
+      </Button>
+    </BlockStack>
   );
 }
 
