@@ -118,7 +118,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  const [llmsFile, auditResults, citations] = await Promise.all([
+  const [
+    llmsFile,
+    auditResults,
+    citations,
+    trackingPromptCount,
+    competitorCount,
+    blogPostCount,
+    simulationCount,
+  ] = await Promise.all([
     prisma.llmsFile.findFirst({
       where: { storeId: store.id, marketCode: "default" },
       select: { productCount: true, lastGeneratedAt: true, content: true },
@@ -137,6 +145,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         },
       },
     }),
+    prisma.trackingPrompt.count({ where: { storeId: store.id } }),
+    prisma.competitor.count({ where: { storeId: store.id } }),
+    prisma.blogPost.count({
+      where: {
+        storeId: store.id,
+        status: { in: ["draft", "published"] },
+      },
+    }),
+    prisma.simulationUsage.count({ where: { storeId: store.id } }),
   ]);
 
   const issueCounts = {
