@@ -223,6 +223,7 @@ model AiCitation {
 
   @@index([storeId])
   @@index([storeId, platform])
+  @@index([storeId, checkedAt])
   @@index([checkedAt])
 }
 

@@ -13,7 +13,7 @@ Tell merchants which of their products AI assistants actually mention, per platf
 **In scope:**
 - A new pure-DB aggregation service `app/services/product-citations.server.ts`. No AI calls, no schema migration.
 - A "Top cited products" card on `/app/tracking`, inserted between the suggested-prompts card and the prompts list.
-- Rolling 30-day window over `AiCitation.checkedAt` (the dashboard's existing citation-count convention), with a bounded scan (most recent 500 rows, mirroring competitor-monitoring's `CITATIONS_WINDOW`).
+- Rolling 30-day window over `AiCitation.checkedAt` (the dashboard's existing citation-count convention), with a 5,000-row safety backstop. The window filter is the real bound; if the backstop ever trips, the service reports `truncated: true` and the card copy hedges ("based on your most recent AI answers") instead of claiming the full window. A new composite index `[storeId, checkedAt]` on `AiCitation` (shipped as a Prisma migration) keeps the windowed query cheap.
 - Counting semantics: one "mention" = one `AiCitation` row whose `productsCited` array contains the product title. Each row is one platform's answer in one check, so the UI copy says "mentioned in N AI answers", which is literally true. This matches how competitor stats count rows.
 - Group titles case-insensitively (display the most recently recorded casing). Best-effort join against the cached `Product` table by lowercased title; titles that no longer match any catalog product still show, flagged "not in your catalog".
 - Plan gating: identical to the rest of the tracking page (FREE has `maxTrackingPrompts: 0` and sees the existing upgrade banner; the new card is simply not rendered for FREE and the loader skips the query).
@@ -33,9 +33,9 @@ Three small parts, all following existing patterns:
 
 Modeled on `competitor-monitoring.server.ts` / `revenue-attribution.server.ts`: named exports, exported result interfaces with JSDoc on every field, `storeId` first argument, all Prisma queries scoped by `storeId`, dates serialized to ISO strings, aggregation in JavaScript over a bounded row window (no JSON-path SQL, consistent with the codebase).
 
-Query: `prisma.aiCitation.findMany({ where: { storeId, checkedAt: { gte: rangeStart } }, select: { platform, productsCited, checkedAt }, orderBy: { checkedAt: "desc" }, take: 500 })` with `rangeStart` = rolling `rangeDays` (default 30) from UTC midnight, the revenue-attribution pattern.
+Query: `prisma.aiCitation.findMany({ where: { storeId, checkedAt: { gte: rangeStart } }, select: { platform, productsCited, checkedAt }, orderBy: { checkedAt: "desc" }, take: 5000 })` with `rangeStart` = rolling `rangeDays` (default 30) from UTC midnight, the revenue-attribution pattern. The take is a backstop; hitting it sets `truncated: true` on the result.
 
-Aggregation: per row, guard `Array.isArray(productsCited)` (column is NULL when nothing matched, never `[]`), dedupe within the row, and accumulate into a `Map` keyed by lowercased title: mention count, per-platform counts (`Partial<Record<AiPlatform, number>>` built from observed rows, never the full enum), most recent `checkedAt`, most recent display casing. Then one `prisma.product.findMany({ where: { storeId }, select: { title } })` builds the lowercased catalog set for the `inCatalog` flag. Sort by mention count desc, tie-break most recent mention, cap at `maxProducts` (default 10).
+Aggregation: per row, guard `Array.isArray(productsCited)` (column is NULL when nothing matched, never `[]`), dedupe within the row, and accumulate into a `Map` keyed by lowercased title: mention count, per-platform counts (`Partial<Record<AiPlatform, number>>` built from observed rows, never the full enum), most recent `checkedAt`, most recent display casing. Sort by mention count desc, tie-break most recent mention, cap at `maxProducts` (default 10). Then resolve the `inCatalog` flag for only the surviving top N titles via one case-insensitive `title: { in: [...], mode: "insensitive" }` lookup, so the catalog join is bounded regardless of catalog size.
 
 ### 2. Loader wiring in `app.tracking.tsx`
 

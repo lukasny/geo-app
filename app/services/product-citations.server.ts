@@ -36,6 +36,10 @@ export interface ProductCitationStats {
   rangeDays: number;
   /** Total product mentions across all citation rows in the window. */
   totalMentions: number;
+  /** True when the row backstop was hit, meaning the counts cover only the
+   *  store's most recent AI answers rather than the full rangeDays window.
+   *  The UI must hedge its copy instead of claiming the full window. */
+  truncated: boolean;
   /** Per-product stats, most mentioned first, capped at maxProducts. */
   products: ProductCitationStat[];
 }
@@ -50,10 +54,14 @@ export interface GetProductCitationStatsOptions {
 
 // ─── Aggregation ──────────────────────────────────────────────────────────────
 
-// Bounded scan like competitor-monitoring's CITATIONS_WINDOW. Aggregation
-// runs in JavaScript over the rows - Prisma can't group inside a Json column,
-// and no service in this codebase does JSON-path SQL.
-const CITATIONS_WINDOW = 500;
+// Safety backstop only - the checkedAt window is the real bound. Paid plans
+// generate at most ~150 rows/day (50 prompts x 3 platforms on DAILY), so a
+// 30-day window stays well under this. The cap exists so pathological data
+// can't make the loader fetch unbounded rows; when it trips, `truncated` is
+// set and the UI copy hedges instead of claiming the full window.
+// Aggregation runs in JavaScript over the rows - Prisma can't group inside
+// a Json column, and no service in this codebase does JSON-path SQL.
+const CITATIONS_WINDOW = 5000;
 
 /** Aggregate which products AI assistants mentioned for this store, grouped
  *  per product title across platforms, over a rolling time window. */
@@ -68,20 +76,13 @@ export async function getProductCitationStats(
   rangeStart.setUTCHours(0, 0, 0, 0);
   rangeStart.setUTCDate(rangeStart.getUTCDate() - (rangeDays - 1));
 
-  const [citations, catalog] = await Promise.all([
-    prisma.aiCitation.findMany({
-      where: { storeId, checkedAt: { gte: rangeStart } },
-      select: { platform: true, productsCited: true, checkedAt: true },
-      orderBy: { checkedAt: "desc" },
-      take: CITATIONS_WINDOW,
-    }),
-    prisma.product.findMany({
-      where: { storeId },
-      select: { title: true },
-    }),
-  ]);
-
-  const catalogTitles = new Set(catalog.map((p) => p.title.toLowerCase()));
+  const citations = await prisma.aiCitation.findMany({
+    where: { storeId, checkedAt: { gte: rangeStart } },
+    select: { platform: true, productsCited: true, checkedAt: true },
+    orderBy: { checkedAt: "desc" },
+    take: CITATIONS_WINDOW,
+  });
+  const truncated = citations.length === CITATIONS_WINDOW;
 
   interface TitleAccumulator {
     displayTitle: string;
@@ -125,14 +126,7 @@ export async function getProductCitationStats(
     }
   }
 
-  const products: ProductCitationStat[] = Array.from(byTitle.entries())
-    .map(([key, acc]) => ({
-      title: acc.displayTitle,
-      mentionCount: acc.mentionCount,
-      byPlatform: acc.byPlatform,
-      lastMentionedAt: acc.lastMentionedAt,
-      inCatalog: catalogTitles.has(key),
-    }))
+  const ranked = Array.from(byTitle.values())
     .sort(
       (a, b) =>
         b.mentionCount - a.mentionCount ||
@@ -140,5 +134,32 @@ export async function getProductCitationStats(
     )
     .slice(0, maxProducts);
 
-  return { rangeDays, totalMentions, products };
+  // Catalog join AFTER ranking so the lookup is bounded to the top N titles
+  // instead of scanning every product the store has.
+  const catalogMatches =
+    ranked.length > 0
+      ? await prisma.product.findMany({
+          where: {
+            storeId,
+            title: {
+              in: ranked.map((r) => r.displayTitle),
+              mode: "insensitive",
+            },
+          },
+          select: { title: true },
+        })
+      : [];
+  const catalogTitles = new Set(
+    catalogMatches.map((p) => p.title.toLowerCase())
+  );
+
+  const products: ProductCitationStat[] = ranked.map((acc) => ({
+    title: acc.displayTitle,
+    mentionCount: acc.mentionCount,
+    byPlatform: acc.byPlatform,
+    lastMentionedAt: acc.lastMentionedAt,
+    inCatalog: catalogTitles.has(acc.displayTitle.toLowerCase()),
+  }));
+
+  return { rangeDays, totalMentions, truncated, products };
 }

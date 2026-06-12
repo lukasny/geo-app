@@ -213,10 +213,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const cap = limits.maxTrackingPrompts;
   const promptsRemaining = cap === Infinity ? null : Math.max(0, cap - used);
 
-  // Per-product mention stats. FREE has no tracking (and therefore no
-  // citation rows worth aggregating), so skip the query entirely.
+  // Per-product mention stats. FREE has no tracking, and the card only
+  // renders when prompts exist, so skip the query in both cases. This
+  // mirrors the render condition exactly.
   const productCitations =
-    limits.maxTrackingPrompts > 0
+    limits.maxTrackingPrompts > 0 && prompts.length > 0
       ? await getProductCitationStats(store.id)
       : null;
 
@@ -859,8 +860,9 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
             Top cited products
           </Text>
           <Text as="p" variant="bodySm" tone="subdued">
-            Which of your products AI assistants mentioned in the last{" "}
-            {stats.rangeDays} days, across all your prompts.
+            {stats.truncated
+              ? "Which of your products AI assistants mentioned, based on your most recent AI answers."
+              : `Which of your products AI assistants mentioned in the last ${stats.rangeDays} days, across all your prompts.`}
           </Text>
         </BlockStack>
 
