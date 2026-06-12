@@ -28,28 +28,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { storeId: store.id, shopifyProductId },
   });
 
-  // Refresh llms.txt if auto-refresh is on - the deleted product
-  // shouldn't keep appearing in the public file.
-  const llmsFile = await db.llmsFile.findFirst({
-    where: { storeId: store.id, marketCode: "default" },
-    select: { autoRefresh: true, refreshInterval: true },
+  // Refresh every llms.txt file (default + markets) whose own settings say
+  // on_change - the deleted product shouldn't keep appearing in any public
+  // file. Default first; market files skipped when the plan dropped the
+  // multi-market feature.
+  const llmsFiles = await db.llmsFile.findMany({
+    where: { storeId: store.id },
+    select: { marketCode: true, autoRefresh: true, refreshInterval: true },
   });
+  const toRefresh = llmsFiles
+    .filter((f) => f.autoRefresh && f.refreshInterval === "on_change")
+    .sort((a, b) =>
+      a.marketCode === "default" ? -1 : b.marketCode === "default" ? 1 : 0
+    );
 
-  if (llmsFile?.autoRefresh && llmsFile.refreshInterval === "on_change") {
-    try {
-      const planLimits =
-        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
-      await generateLlmsTxt(store.id, {
-        maxProducts: planLimits.maxProductsInLlmsTxt,
-      });
-      console.log(
-        `[GEO Rise] Auto-regenerated llms.txt for ${shop} after product delete`
-      );
-    } catch (err) {
-      console.error(
-        `[GEO Rise] Failed to auto-regenerate llms.txt for ${shop} after delete:`,
-        err
-      );
+  if (toRefresh.length > 0) {
+    const planLimits =
+      PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+    for (const file of toRefresh) {
+      if (file.marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
+        continue;
+      }
+      try {
+        await generateLlmsTxt(store.id, {
+          maxProducts: planLimits.maxProductsInLlmsTxt,
+          marketCode: file.marketCode,
+        });
+        console.log(
+          `[GEO Rise] Auto-regenerated llms.txt (${file.marketCode}) for ${shop} after product delete`
+        );
+      } catch (err) {
+        console.error(
+          `[GEO Rise] Failed to auto-regenerate llms.txt (${file.marketCode}) for ${shop} after delete:`,
+          err
+        );
+      }
     }
   }
 

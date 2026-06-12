@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useFetcher, useLoaderData, useSearchParams } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -25,6 +25,7 @@ import {
   generateLlmsTxt,
   getOrCreateLlmsFile,
 } from "~/services/llms-generator.server";
+import { listMarkets } from "~/services/markets.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,6 +51,15 @@ interface LlmsFileData {
   lastGeneratedAt: string | null;
 }
 
+interface MarketOption {
+  /** Market handle, used as LlmsFile.marketCode and the ?market= value. */
+  handle: string;
+  /** Merchant-facing market name from Shopify. */
+  name: string;
+  /** True when this market already has generated llms.txt content. */
+  hasFile: boolean;
+}
+
 interface LoaderData {
   store: {
     id: string;
@@ -58,8 +68,23 @@ interface LoaderData {
     plan: string;
     totalProducts: number;
   } | null;
+  /** The ACTIVE market's file (null when a market was selected that has no
+   *  generated file yet). */
   llmsFile: LlmsFileData | null;
+  /** Public URL of the active market's file (?market= included). */
   proxyUrl: string;
+  /** Non-primary Shopify Markets (the primary market IS the default file).
+   *  Empty for plans without multi-market or before the merchant re-auths
+   *  with the read_markets permission. */
+  markets: MarketOption[];
+  activeMarketCode: string;
+  planAllowsMultiMarket: boolean;
+}
+
+/** Market codes are URL-safe slugs; anything else falls back to default. */
+function normalizeMarketCode(raw: string | null): string {
+  const code = String(raw ?? "").trim().toLowerCase();
+  return /^[a-z0-9-]{1,64}$/.test(code) ? code : "default";
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -67,6 +92,9 @@ interface LoaderData {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
+  const marketParam = normalizeMarketCode(
+    new URL(request.url).searchParams.get("market")
+  );
 
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: shopDomain },
@@ -80,17 +108,74 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   let llmsFile: LlmsFileData | null = null;
+  let markets: MarketOption[] = [];
+  let activeMarketCode = "default";
+  let planAllowsMultiMarket = false;
+
   if (store) {
-    const raw = await getOrCreateLlmsFile(store.id);
-    llmsFile = {
-      ...raw,
-      lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null,
-    };
+    const planLimits =
+      PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+    planAllowsMultiMarket = Boolean(planLimits.multiMarketLlmsTxt);
+
+    if (planAllowsMultiMarket) {
+      try {
+        const storeMarkets = (await listMarkets(store.id)).filter(
+          (m) => !m.isPrimary
+        );
+        const rows = await prisma.llmsFile.findMany({
+          where: { storeId: store.id, marketCode: { not: "default" } },
+          select: { marketCode: true, content: true },
+        });
+        const rowsByCode = new Map(rows.map((r) => [r.marketCode, r]));
+        markets = storeMarkets.map((m) => ({
+          handle: m.handle,
+          name: m.name,
+          hasFile: Boolean(rowsByCode.get(m.handle)?.content),
+        }));
+        if (
+          marketParam !== "default" &&
+          storeMarkets.some((m) => m.handle === marketParam)
+        ) {
+          activeMarketCode = marketParam;
+        }
+      } catch (err) {
+        // Markets are an enhancement; the default file must keep working
+        // even if the markets lookup fails outright.
+        console.error(`[llms.txt] markets lookup failed for ${store.id}:`, err);
+      }
+    }
+
+    if (activeMarketCode === "default") {
+      const raw = await getOrCreateLlmsFile(store.id);
+      llmsFile = {
+        ...raw,
+        lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null,
+      };
+    } else {
+      // Browsing a market must not create rows; generation does that.
+      const raw = await prisma.llmsFile.findFirst({
+        where: { storeId: store.id, marketCode: activeMarketCode },
+      });
+      llmsFile = raw
+        ? { ...raw, lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null }
+        : null;
+    }
   }
 
-  const proxyUrl = `https://${shopDomain}/a/llms-txt`;
+  const baseProxyUrl = `https://${shopDomain}/a/llms-txt`;
+  const proxyUrl =
+    activeMarketCode === "default"
+      ? baseProxyUrl
+      : `${baseProxyUrl}?market=${activeMarketCode}`;
 
-  return { store, llmsFile, proxyUrl };
+  return {
+    store,
+    llmsFile,
+    proxyUrl,
+    markets,
+    activeMarketCode,
+    planAllowsMultiMarket,
+  };
 };
 
 // ─── Action ───────────────────────────────────────────────────────────────────
@@ -109,12 +194,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Store not found. Please reinstall the app." };
   }
 
+  const planLimits =
+    PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+
+  // Server-side plan enforcement: non-default markets are Growth+, no
+  // matter what the client sends.
+  const marketCode = normalizeMarketCode(
+    formData.get("marketCode") as string | null
+  );
+  if (marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
+    return {
+      error:
+        "Multi-market llms.txt requires the Growth plan or higher. Upgrade on the Plans page to generate market files.",
+    };
+  }
+
   if (intent === "generate" || intent === "regenerate") {
     try {
-      const planLimits =
-        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
       const result = await generateLlmsTxt(store.id, {
         maxProducts: planLimits.maxProductsInLlmsTxt,
+        marketCode,
       });
       return {
         success: true,
@@ -127,7 +226,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "updateSettings") {
-    const llmsFile = await getOrCreateLlmsFile(store.id);
+    const llmsFile = await getOrCreateLlmsFile(store.id, marketCode);
     await prisma.llmsFile.update({
       where: { id: llmsFile.id },
       data: {
@@ -172,9 +271,17 @@ const REFRESH_OPTIONS = [
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function LlmsTxtPage() {
-  const { store, llmsFile, proxyUrl } = useLoaderData<LoaderData>();
+  const {
+    store,
+    llmsFile,
+    proxyUrl,
+    markets,
+    activeMarketCode,
+    planAllowsMultiMarket,
+  } = useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Local settings state (controlled form)
   const [settings, setSettings] = useState({
@@ -190,7 +297,37 @@ export default function LlmsTxtPage() {
     refreshInterval: llmsFile?.refreshInterval ?? "daily",
   });
 
+  // Resync the controlled form when the merchant switches markets: each
+  // market has its own settings row and useState only seeds once.
+  useEffect(() => {
+    setSettings({
+      includeProducts: llmsFile?.includeProducts ?? true,
+      includeCollections: llmsFile?.includeCollections ?? true,
+      includeBlogPosts: llmsFile?.includeBlogPosts ?? true,
+      allowChatGPT: llmsFile?.allowChatGPT ?? true,
+      allowClaude: llmsFile?.allowClaude ?? true,
+      allowGemini: llmsFile?.allowGemini ?? true,
+      allowPerplexity: llmsFile?.allowPerplexity ?? true,
+      allowDeepSeek: llmsFile?.allowDeepSeek ?? true,
+      allowGrok: llmsFile?.allowGrok ?? true,
+      refreshInterval: llmsFile?.refreshInterval ?? "daily",
+    });
+    // llmsFile changes identity on every revalidation; the market switch
+    // (and the row id swap that comes with it) is the signal we care about.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMarketCode, llmsFile?.id]);
+
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  const handleMarketChange = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "default") {
+      next.delete("market");
+    } else {
+      next.set("market", value);
+    }
+    setSearchParams(next);
+  };
 
   const isGenerating =
     ["loading", "submitting"].includes(fetcher.state) &&
@@ -213,13 +350,14 @@ export default function LlmsTxtPage() {
   }, [fetcher.data, shopify]);
 
   const submitGenerate = (intent: "generate" | "regenerate") => {
-    fetcher.submit({ intent }, { method: "POST" });
+    fetcher.submit({ intent, marketCode: activeMarketCode }, { method: "POST" });
   };
 
   const submitSettings = useCallback(() => {
     fetcher.submit(
       {
         intent: "updateSettings",
+        marketCode: activeMarketCode,
         includeProducts: String(settings.includeProducts),
         includeCollections: String(settings.includeCollections),
         includeBlogPosts: String(settings.includeBlogPosts),
@@ -233,7 +371,7 @@ export default function LlmsTxtPage() {
       },
       { method: "POST" }
     );
-  }, [fetcher, settings]);
+  }, [fetcher, settings, activeMarketCode]);
 
   const hasFile = !!(llmsFile?.content && llmsFile.content.length > 0);
   const lastGenerated = llmsFile?.lastGeneratedAt
@@ -291,6 +429,58 @@ export default function LlmsTxtPage() {
               Gemini, and Perplexity.
             </Text>
           </Banner>
+        )}
+
+        {/* ── Market Picker ── */}
+        {planAllowsMultiMarket && markets.length > 0 && (
+          <Card>
+            <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  Market
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Each Shopify Market gets its own llms.txt with translated
+                  content, local prices and market URLs. Generate and tune
+                  them one market at a time.
+                </Text>
+              </BlockStack>
+              <div style={{ minWidth: "240px" }}>
+                <Select
+                  label="Market"
+                  labelHidden
+                  options={[
+                    { label: "Default (primary market)", value: "default" },
+                    ...markets.map((m) => ({
+                      label: m.hasFile ? m.name : `${m.name} (not generated yet)`,
+                      value: m.handle,
+                    })),
+                  ]}
+                  value={activeMarketCode}
+                  onChange={handleMarketChange}
+                />
+              </div>
+            </InlineStack>
+          </Card>
+        )}
+        {store && !planAllowsMultiMarket && (
+          <Card>
+            <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  Multi-market llms.txt
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Selling in multiple countries or languages? Growth and
+                  higher plans generate one llms.txt per Shopify Market,
+                  with translated content and local prices.
+                </Text>
+              </BlockStack>
+              <Button variant="primary" url="/app/pricing">
+                See pricing
+              </Button>
+            </InlineStack>
+          </Card>
         )}
 
         {/* ── Stats Cards ── */}
