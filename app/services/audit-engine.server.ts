@@ -630,9 +630,14 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
 
 // ─── Shopify GraphQL Fetchers ─────────────────────────────────────────────────
 
+// Server-side status filter keeps draft/archived products from consuming
+// pages (we only audit ACTIVE products; the client-side check below stays
+// as belt-and-braces). Nested `first` values are part of the 1,000-point
+// requested-cost budget documented at the pageSize computation - do not
+// raise them without redoing that math.
 const PRODUCTS_AUDIT_QUERY = `#graphql
   query AuditProducts($first: Int!, $after: String) {
-    products(first: $first, after: $after) {
+    products(first: $first, after: $after, query: "status:active") {
       pageInfo { hasNextPage endCursor }
       edges {
         node {
@@ -649,7 +654,7 @@ const PRODUCTS_AUDIT_QUERY = `#graphql
           images(first: 10) {
             edges { node { id altText url } }
           }
-          variants(first: 100) {
+          variants(first: 25) {
             edges {
               node { id title price sku availableForSale }
             }
@@ -665,6 +670,85 @@ const PRODUCTS_AUDIT_QUERY = `#graphql
     shop { name }
   }
 `;
+
+interface AuditPageJson {
+  data: {
+    products: {
+      pageInfo: { hasNextPage: boolean; endCursor: string };
+      edges: { node: ShopifyProductData }[];
+    };
+    shop: { name: string };
+  };
+  extensions?: {
+    cost?: {
+      requestedQueryCost?: number;
+      throttleStatus?: {
+        maximumAvailable: number;
+        currentlyAvailable: number;
+        restoreRate: number;
+      };
+    };
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+/** True when an error thrown by `admin.graphql` is Shopify's THROTTLED
+ *  GraphQL rejection. The underlying @shopify/shopify-api client throws
+ *  GraphqlQueryError for any 200 response whose body contains `errors`
+ *  (message taken from the first GraphQL error, parsed body attached) -
+ *  it never returns `json.errors` to the caller. We duck-type the thrown
+ *  error rather than importing the class from a transitive dependency. */
+function isThrottledGraphqlError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (/throttled/i.test(err.message)) return true;
+  const body = (
+    err as Error & {
+      body?: {
+        errors?: { graphQLErrors?: { extensions?: { code?: string } }[] };
+      };
+    }
+  ).body;
+  return Boolean(
+    body?.errors?.graphQLErrors?.some((e) => e?.extensions?.code === "THROTTLED")
+  );
+}
+
+/** Retry delays for a throttled page fetch: 3 attempts at 2s/4s/8s before
+ *  giving up. Each successful page costs ~950 points against a bucket that
+ *  restores 50-100 points/second, so a few seconds is usually enough. */
+const THROTTLE_RETRY_DELAYS_MS = [2000, 4000, 8000];
+
+async function fetchAuditPage(
+  admin: AdminApiContext,
+  pageSize: number,
+  cursor: string | null
+): Promise<AuditPageJson> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await admin.graphql(PRODUCTS_AUDIT_QUERY, {
+        variables: { first: pageSize, after: cursor },
+      });
+      return (await response.json()) as AuditPageJson;
+    } catch (err) {
+      const throttled = isThrottledGraphqlError(err);
+      if (throttled && attempt < THROTTLE_RETRY_DELAYS_MS.length) {
+        await sleep(THROTTLE_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      // Log the raw error for ourselves, surface a clean one to the
+      // merchant (routes render `err.message` directly in the UI).
+      console.error("[GEO Rise audit] product page fetch failed:", err);
+      throw new Error(
+        throttled
+          ? "Shopify is rate-limiting requests for this store right now. Please wait a minute and run the audit again."
+          : "Couldn't fetch products from Shopify. Please try again; if it keeps failing, contact support."
+      );
+    }
+  }
+}
 
 async function fetchAllProductsForAudit(
   admin: AdminApiContext,
@@ -694,38 +778,30 @@ async function fetchAllProductsForAudit(
     // Non-fatal - we'll still audit what we can fetch.
   }
 
-  // If maxProducts is finite and small, request only what we need from
-  // Shopify (saves an API call for Free-plan stores with 1000s of products).
-  const pageSize = Math.min(50, Math.max(1, Number.isFinite(maxProducts) ? maxProducts : 50));
+  // Page size is bounded by Shopify's 1,000-point requested-cost ceiling per
+  // GraphQL query (enforced pre-execution on EVERY plan, so this is not
+  // something a bigger API bucket lifts). Budget per product node:
+  // 1 (product) + 1 (seo) + 12 (images first:10) + 27 (variants first:25)
+  // + 22 (metafields first:20) = 63 points; products(first:15) costs
+  // 2 + 15 * 63 = 947, +1 for shop = 948 - just under the cap. Do NOT raise
+  // this page size or the query's nested `first`s without redoing the math.
+  // The loop below paginates, so large catalogs still complete across pages;
+  // finite plan caps (e.g. Free = 3) request only what they need.
+  const MAX_PAGE_SIZE = 15;
+  const pageSize = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Number.isFinite(maxProducts) ? maxProducts : MAX_PAGE_SIZE)
+  );
 
   while (hasNextPage && products.length < maxProducts) {
-    const response = await admin.graphql(PRODUCTS_AUDIT_QUERY, {
-      variables: { first: pageSize, after: cursor },
-    });
-
-    // Rate limit check
-    const callLimit = response.headers.get("X-Shopify-Shop-Api-Call-Limit");
-    if (callLimit) {
-      const [current, max] = callLimit.split("/").map(Number);
-      if (current >= max * 0.75) {
-        await new Promise<void>((r) => setTimeout(r, 2000));
-      }
-    }
-
-    const json = (await response.json()) as {
-      data: {
-        products: {
-          pageInfo: { hasNextPage: boolean; endCursor: string };
-          edges: { node: ShopifyProductData }[];
-        };
-        shop: { name: string };
-      };
-    };
+    const json = await fetchAuditPage(admin, pageSize, cursor);
 
     if (!shopName) shopName = json.data.shop.name;
 
     for (const edge of json.data.products.edges) {
       if (products.length >= maxProducts) break;
+      // Belt-and-braces: the query already filters on status:active, but
+      // this keeps protecting us if that filter is ever dropped.
       if (edge.node.status === "ACTIVE") {
         products.push(edge.node);
       }
@@ -733,6 +809,21 @@ async function fetchAllProductsForAudit(
 
     hasNextPage = json.data.products.pageInfo.hasNextPage;
     cursor = json.data.products.pageInfo.endCursor;
+
+    // Proactive rate-limit backoff. GraphQL reports throttle state in the
+    // response body (extensions.cost.throttleStatus), never in headers -
+    // X-Shopify-Shop-Api-Call-Limit is a REST-only header, and the remix
+    // wrapper strips response headers anyway. If the remaining budget can't
+    // cover two more pages like this one, pause and let the bucket restore.
+    const cost = json.extensions?.cost;
+    if (
+      hasNextPage &&
+      cost?.throttleStatus &&
+      typeof cost.requestedQueryCost === "number" &&
+      cost.throttleStatus.currentlyAvailable < cost.requestedQueryCost * 2
+    ) {
+      await sleep(2000);
+    }
   }
 
   // Fallback for stores where productsCount query failed: assume total is at
@@ -1559,6 +1650,14 @@ export interface AutoFixOptions {
    *  onboarding wizard's wow step to bound the runtime to a predictable
    *  ~60 seconds regardless of catalog size. */
   maxIssues?: number;
+  /** If set, restrict the run to issues attached to these Product ids (our
+   *  DB ids, not Shopify gids). Callers on plans with an audit cap MUST pass
+   *  the same allowed product set their UI shows (worst-N audited products,
+   *  per PLAN_LIMITS), otherwise stale AuditResults left over from before a
+   *  downgrade would let a Free store run Claude fixes across its entire
+   *  former catalog. Issues with no productId are excluded when this is set
+   *  (they have no fix handler anyway). */
+  productIds?: string[];
 }
 
 export async function autoFixIssues(
@@ -1573,6 +1672,9 @@ export async function autoFixIssues(
       fixed: false,
       ...(options.category ? { category: options.category } : {}),
       ...(options.title ? { title: options.title } : {}),
+      ...(options.productIds !== undefined
+        ? { productId: { in: options.productIds } }
+        : {}),
     },
   });
 

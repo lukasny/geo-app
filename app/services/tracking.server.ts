@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import prisma from "~/db.server";
 import { withRetry } from "./ai-retry.server";
+import { getFreshAccessToken } from "./offline-admin.server";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -400,15 +401,14 @@ const PRIMARY_DOMAIN_QUERY = `#graphql
 /** The shop's public storefront host (e.g. "acmeboards.com"). AI answers
  *  cite this domain, essentially never the myshopify.com one, so it must
  *  feed both mention matching and the competitor exclusion filter. Raw fetch
- *  with the store's own token (same pattern as llms-generator) because
+ *  with a freshly refreshed offline token (the app uses expiring offline
+ *  tokens, so the persisted Store.shopifyAccessToken goes stale) because
  *  tracking checks also run from the scheduler where no admin context
  *  exists. Falls back to the myshopify domain on any error so a transient
  *  API failure never aborts a check. */
-async function fetchPrimaryDomainHost(
-  shopifyDomain: string,
-  accessToken: string
-): Promise<string> {
+async function fetchPrimaryDomainHost(shopifyDomain: string): Promise<string> {
   try {
+    const accessToken = await getFreshAccessToken(shopifyDomain);
     const response = await fetch(
       `https://${shopifyDomain}/admin/api/2025-07/graphql.json`,
       {
@@ -585,10 +585,7 @@ export async function runTrackingCheck(
   const shortDom = shortDomain(prompt.store.shopifyDomain);
   const fullDom = prompt.store.shopifyDomain.toLowerCase();
   // Resolved once per check and shared across all platform fanouts.
-  const primaryHost = await fetchPrimaryDomainHost(
-    prompt.store.shopifyDomain,
-    prompt.store.shopifyAccessToken
-  );
+  const primaryHost = await fetchPrimaryDomainHost(prompt.store.shopifyDomain);
   const primaryRoot = registrableRoot(primaryHost);
 
   const platforms = enabledPlatforms();
@@ -717,12 +714,14 @@ const SEARCH_ANALYTICS_API_VERSION = "2026-04";
 /** Stage 1 of Intent Lab. Pulls the top 50 storefront search terms from the
  *  merchant's last 30 days via ShopifyQL. Returns up to 20 cleaned results
  *  (3 to 200 character terms, deduped, ordered by count). Returns [] on any
- *  error so the caller can run Stage 2 regardless. */
+ *  error so the caller can run Stage 2 regardless. Uses a freshly refreshed
+ *  offline token: the persisted Store.shopifyAccessToken expires (~60 min)
+ *  and must never be used for API calls. */
 async function fetchShopifySearchAnalytics(
-  shopifyDomain: string,
-  accessToken: string
+  shopifyDomain: string
 ): Promise<SearchTerm[]> {
   try {
+    const accessToken = await getFreshAccessToken(shopifyDomain);
     const response = await fetch(
       `https://${shopifyDomain}/admin/api/${SEARCH_ANALYTICS_API_VERSION}/graphql.json`,
       {
@@ -1036,8 +1035,8 @@ Output strictly as JSON:
 export async function suggestTrackingPrompts(
   storeId: string,
   // Retained for call-site compatibility. Stage 1 needs a newer API version
-  // than the app pins, so it uses a raw versioned fetch with the store's own
-  // token instead of this admin context.
+  // than the app pins, so it uses a raw versioned fetch with a freshly
+  // refreshed offline token instead of this admin context.
   _admin: AdminApiContext
 ): Promise<SuggestedPrompt[]> {
   const store = await prisma.store.findUnique({ where: { id: storeId } });
@@ -1046,7 +1045,7 @@ export async function suggestTrackingPrompts(
   // Stages 1 + 2 run in parallel. Both gracefully return empty arrays on
   // error so the orchestrator can always proceed to polish or fallback.
   const [searchTerms, niche] = await Promise.all([
-    fetchShopifySearchAnalytics(store.shopifyDomain, store.shopifyAccessToken),
+    fetchShopifySearchAnalytics(store.shopifyDomain),
     detectNicheAndSubreddits(storeId),
   ]);
   const redditSignals: RedditSignal[] = niche

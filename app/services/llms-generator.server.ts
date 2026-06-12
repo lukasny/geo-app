@@ -1,6 +1,7 @@
 import prisma from "~/db.server";
 import { getMarketByCode } from "~/services/markets.server";
 import type { StoreMarket } from "~/services/markets.server";
+import { getFreshAccessToken } from "~/services/offline-admin.server";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -100,17 +101,112 @@ export interface GenerateResult {
 
 // ─── HTML Utilities ───────────────────────────────────────────────────────────
 
+/** Named HTML entities we decode to their characters. Case-sensitive, as
+ *  HTML entity names are (&Aring; vs &aring;). `amp` is intentionally
+ *  absent: &amp; must be decoded LAST (see decodeEntities) so that
+ *  double-encoded text like "&amp;eacute;" comes out as the literal
+ *  "&eacute;" the merchant's HTML actually renders, not as "e with acute". */
+const NAMED_ENTITIES: Record<string, string> = {
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  // Typography
+  rsquo: "’",
+  lsquo: "‘",
+  rdquo: "”",
+  ldquo: "“",
+  ndash: "–",
+  mdash: "\u2014",
+  hellip: "…",
+  bull: "•",
+  middot: "·",
+  copy: "©",
+  reg: "®",
+  trade: "™",
+  deg: "°",
+  plusmn: "±",
+  times: "×",
+  frac12: "½",
+  frac14: "¼",
+  frac34: "¾",
+  // Currency
+  euro: "€",
+  pound: "£",
+  yen: "¥",
+  cent: "¢",
+  // Latin letters common in European merchant text (Nordic first: the
+  // app's primary audience is Norwegian merchants)
+  aring: "å",
+  Aring: "Å",
+  aelig: "æ",
+  AElig: "Æ",
+  oslash: "ø",
+  Oslash: "Ø",
+  eacute: "é",
+  Eacute: "É",
+  egrave: "è",
+  Egrave: "È",
+  agrave: "à",
+  Agrave: "À",
+  aacute: "á",
+  acirc: "â",
+  auml: "ä",
+  Auml: "Ä",
+  ouml: "ö",
+  Ouml: "Ö",
+  uuml: "ü",
+  Uuml: "Ü",
+  szlig: "ß",
+  ccedil: "ç",
+  Ccedil: "Ç",
+  ntilde: "ñ",
+  Ntilde: "Ñ",
+};
+
+/** Code points String.fromCodePoint can safely produce: positive, within
+ *  the Unicode range, and not a lone surrogate. */
+function isValidCodePoint(code: number): boolean {
+  return (
+    Number.isInteger(code) &&
+    code > 0 &&
+    code <= 0x10ffff &&
+    !(code >= 0xd800 && code <= 0xdfff)
+  );
+}
+
+/** Decode HTML entities to their characters instead of deleting them
+ *  (deleting corrupted merchant text in the public file: "Women&#8217;s"
+ *  became "Womens", "Bl&aring;b&aelig;r" became "Blbr"). Numeric and hex
+ *  entities are decoded via fromCodePoint; named entities via the map
+ *  above; unknown or malformed entities are left literal; &amp; is decoded
+ *  last so double-encoded entities stay literal text. */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (match, dec: string) => {
+      const code = Number(dec);
+      return isValidCodePoint(code) ? String.fromCodePoint(code) : match;
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex: string) => {
+      const code = parseInt(hex, 16);
+      return isValidCodePoint(code) ? String.fromCodePoint(code) : match;
+    })
+    .replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, (match, name: string) =>
+      // hasOwnProperty guard: a plain object literal still has a prototype,
+      // so "&constructor;" would otherwise look up Object.prototype.
+      Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, name)
+        ? NAMED_ENTITIES[name]
+        : match
+    )
+    .replace(/&amp;/g, "&");
+}
+
 function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#\d+;/g, "")
-    .replace(/&[a-z]+;/gi, "")
+  // Tags are stripped BEFORE entities are decoded: text that was visibly
+  // "&lt;code&gt;" on the storefront correctly becomes "<code>" in the
+  // plain-text output rather than being treated as markup.
+  return decodeEntities(html.replace(/<[^>]*>/g, " "))
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -289,7 +385,15 @@ async function fetchAllProducts(
 
     for (const edge of data.products.edges) {
       if (products.length >= maxProducts) break;
-      if (edge.node.status === "ACTIVE") {
+      // onlineStoreUrl is null exactly when the product is not published to
+      // the Online Store sales channel (POS-only, B2B-only, deliberately
+      // unlisted). Those must never reach the public llms.txt: the merchant
+      // hid them from the web, and any fabricated /products/{handle} link
+      // would 404. This also applies to market files, whose URLs are built
+      // from the handle: channel publication is store-wide, so a product
+      // with a null base onlineStoreUrl has no storefront page in ANY
+      // market.
+      if (edge.node.status === "ACTIVE" && edge.node.onlineStoreUrl !== null) {
         products.push(edge.node);
       }
     }
@@ -354,6 +458,17 @@ async function fetchAllCollections(
   return collections;
 }
 
+function articleFields(vars: MarketQueryVars): string {
+  return `
+                id
+                title
+                body
+                handle
+                publishedAt
+                blog { title handle }
+                ${translationField(vars)}`;
+}
+
 function buildBlogsQuery(vars: MarketQueryVars): string {
   return `
   query GetBlogs($first: Int!, $after: String${translationDecls(vars)}) {
@@ -361,17 +476,12 @@ function buildBlogsQuery(vars: MarketQueryVars): string {
       pageInfo { hasNextPage endCursor }
       edges {
         node {
+          id
           title
           articles(first: 50) {
+            pageInfo { hasNextPage endCursor }
             edges {
-              node {
-                id
-                title
-                body
-                handle
-                publishedAt
-                blog { title handle }
-                ${translationField(vars)}
+              node {${articleFields(vars)}
               }
             }
           }
@@ -382,13 +492,41 @@ function buildBlogsQuery(vars: MarketQueryVars): string {
 `;
 }
 
+/** Follow-up query for blogs whose nested articles connection had more than
+ *  one page. The nested connection in buildBlogsQuery cannot be paginated in
+ *  place, so each such blog is drained individually via blog(id:). */
+function buildBlogArticlesQuery(vars: MarketQueryVars): string {
+  return `
+  query GetBlogArticles($blogId: ID!, $first: Int!, $after: String${translationDecls(vars)}) {
+    blog(id: $blogId) {
+      articles(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {${articleFields(vars)}
+          }
+        }
+      }
+    }
+  }
+`;
+}
+
+interface ArticlesPage {
+  pageInfo: { hasNextPage: boolean; endCursor: string };
+  edges: { node: ShopifyArticle }[];
+}
+
 async function fetchAllArticles(
   domain: string,
   accessToken: string,
   market: MarketQueryVars = {}
 ): Promise<ShopifyArticle[]> {
   const query = buildBlogsQuery(market);
+  const articlesQuery = buildBlogArticlesQuery(market);
   const articles: ShopifyArticle[] = [];
+  // Blogs whose nested articles connection reported another page; drained
+  // with per-blog follow-up queries after the outer blogs loop.
+  const pendingBlogs: { id: string; cursor: string }[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
 
@@ -400,8 +538,9 @@ async function fetchAllArticles(
           pageInfo: { hasNextPage: boolean; endCursor: string };
           edges: {
             node: {
+              id: string;
               title: string;
-              articles: { edges: { node: ShopifyArticle }[] };
+              articles: ArticlesPage;
             };
           }[];
         };
@@ -413,11 +552,46 @@ async function fetchAllArticles(
     );
 
     for (const blogEdge of data.blogs.edges) {
-      articles.push(...blogEdge.node.articles.edges.map((e) => e.node));
+      const blog = blogEdge.node;
+      articles.push(...blog.articles.edges.map((e) => e.node));
+      if (blog.articles.pageInfo.hasNextPage) {
+        pendingBlogs.push({ id: blog.id, cursor: blog.articles.pageInfo.endCursor });
+      }
     }
 
     hasNextPage = data.blogs.pageInfo.hasNextPage;
     cursor = data.blogs.pageInfo.endCursor;
+  }
+
+  // Inner pagination: blogs with more than 50 posts (content-heavy stores,
+  // exactly the ones buying a GEO app) continue here until exhausted.
+  for (const pending of pendingBlogs) {
+    let innerCursor: string | null = pending.cursor;
+    let innerHasNext = true;
+
+    while (innerHasNext) {
+      // eslint-disable-next-line no-loop-func -- closure awaited synchronously
+      const data = await withRetry(() =>
+        shopifyGraphql<{ blog: { articles: ArticlesPage } | null }>(
+          domain,
+          accessToken,
+          articlesQuery,
+          {
+            blogId: pending.id,
+            first: 50,
+            after: innerCursor,
+            ...marketVariables(market),
+          }
+        )
+      );
+
+      // Blog deleted between pages: keep what we already have.
+      if (!data.blog) break;
+
+      articles.push(...data.blog.articles.edges.map((e) => e.node));
+      innerHasNext = data.blog.articles.pageInfo.hasNextPage;
+      innerCursor = data.blog.articles.pageInfo.endCursor;
+    }
   }
 
   return articles;
@@ -473,7 +647,9 @@ function formatProduct(
   isMarketFile: boolean
 ): string {
   // Market files always build links from the market's base URL;
-  // onlineStoreUrl points at the primary domain.
+  // onlineStoreUrl points at the primary domain. fetchAllProducts only
+  // returns products with a non-null onlineStoreUrl, so the default-file
+  // fallback below is purely defensive for the type system.
   const url = isMarketFile
     ? `${storeUrl}/products/${product.handle}`
     : product.onlineStoreUrl ?? `${storeUrl}/products/${product.handle}`;
@@ -624,7 +800,11 @@ export async function generateLlmsTxt(
   }
 
   const llmsFile = await getOrCreateLlmsFile(storeId, marketCode);
-  const { shopifyDomain: domain, shopifyAccessToken: token } = store;
+  const domain = store.shopifyDomain;
+  // Fetched fresh once per generation: the app uses expiring offline access
+  // tokens (~60 min lifetime), and only the Session-table copy refreshed by
+  // the library stays valid. Never read Store.shopifyAccessToken here.
+  const token = await getFreshAccessToken(domain);
   const maxProducts = options.maxProducts ?? Infinity;
 
   // Market context for the GraphQL queries: translated content needs the

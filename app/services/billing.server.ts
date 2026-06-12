@@ -14,6 +14,22 @@ export function planRank(plan: PlanKey): number {
   return PLAN_ORDER.indexOf(plan);
 }
 
+/**
+ * Maps a Shopify subscription display name back to our PlanKey, or null when
+ * nothing matches. Subscription names are immutable snapshots taken at
+ * creation time, so after any rewording of PLAN_DEFINITIONS names the
+ * subscriptions of existing subscribers will no longer match - callers must
+ * treat null as "unknown", never as FREE.
+ */
+export function planKeyFromSubscriptionName(
+  name: string | null | undefined
+): PlanKey | null {
+  const entry = Object.entries(PLAN_DEFINITIONS).find(
+    ([, def]) => def.name === name
+  );
+  return (entry?.[0] as PlanKey | undefined) ?? null;
+}
+
 // ─── createSubscription ───────────────────────────────────────────────────────
 
 /**
@@ -122,29 +138,13 @@ export async function createSubscription(
     throw new Error("No confirmation URL returned from Shopify.");
   }
 
-  // Save pending subscription record
-  const store = await prisma.store.findUnique({
-    where: { shopifyDomain: shopDomain },
-    select: { id: true },
-  });
-
-  if (store) {
-    await prisma.subscription.upsert({
-      where: { storeId: store.id },
-      update: {
-        shopifySubscriptionId: result.appSubscription?.id ?? null,
-        plan: planKey,
-        status: "PENDING",
-      },
-      create: {
-        storeId: store.id,
-        shopifySubscriptionId: result.appSubscription?.id ?? null,
-        plan: planKey,
-        status: "PENDING",
-      },
-    });
-  }
-
+  // Intentionally no DB write here. The merchant has not approved anything
+  // yet: overwriting the live Subscription row with the new plan and a
+  // PENDING status would corrupt the billing mirror whenever checkout is
+  // abandoned (an unapproved subscription silently expires after ~2 days and
+  // nothing would ever correct the row). The charge_id sync on return
+  // (syncSubscriptionFromShopify) and the ACTIVE webhook write the
+  // authoritative state after approval.
   return result.confirmationUrl;
 }
 
@@ -210,7 +210,14 @@ interface ActiveSubscription {
   id: string;
   name: string;
   status: string;
-  planKey: PlanKey;
+  trialDays: number;
+  createdAt: string | null;
+  /**
+   * Plan resolved from the subscription display name, or null when the name
+   * matches no PLAN_DEFINITIONS entry. Callers must not treat null as FREE:
+   * an ACTIVE subscription means Shopify is charging the merchant.
+   */
+  planKeyFromName: PlanKey | null;
 }
 
 export async function getActiveSubscription(
@@ -225,6 +232,7 @@ export async function getActiveSubscription(
           name
           status
           trialDays
+          createdAt
         }
       }
     }`
@@ -233,7 +241,13 @@ export async function getActiveSubscription(
   const json = await response.json() as {
     data?: {
       currentAppInstallation?: {
-        activeSubscriptions?: { id: string; name: string; status: string; trialDays: number }[];
+        activeSubscriptions?: {
+          id: string;
+          name: string;
+          status: string;
+          trialDays: number | null;
+          createdAt: string | null;
+        }[];
       };
     };
   };
@@ -242,11 +256,15 @@ export async function getActiveSubscription(
   if (subs.length === 0) return null;
 
   const sub = subs[0];
-  const planKey = (Object.entries(PLAN_DEFINITIONS).find(
-    ([, def]) => def.name === sub.name
-  )?.[0] ?? "FREE") as PlanKey;
 
-  return { id: sub.id, name: sub.name, status: sub.status, planKey };
+  return {
+    id: sub.id,
+    name: sub.name,
+    status: sub.status,
+    trialDays: sub.trialDays ?? 0,
+    createdAt: sub.createdAt ?? null,
+    planKeyFromName: planKeyFromSubscriptionName(sub.name),
+  };
 }
 
 // ─── syncSubscriptionFromShopify ─────────────────────────────────────────────
@@ -260,33 +278,79 @@ export async function syncSubscriptionFromShopify(
   shopDomain: string
 ): Promise<PlanKey> {
   const sub = await getActiveSubscription(admin);
-  const planKey: PlanKey = sub?.planKey ?? "FREE";
 
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: shopDomain },
-    select: { id: true },
+    select: {
+      id: true,
+      plan: true,
+      subscription: { select: { shopifySubscriptionId: true, plan: true } },
+    },
   });
 
-  if (store) {
+  if (!store) return "FREE";
+
+  if (!sub) {
+    // Shopify reports no active subscription, so the merchant really is on
+    // Free (declined/cancelled/never subscribed).
     await prisma.store.update({
       where: { id: store.id },
-      data: { plan: planKey },
+      data: { plan: "FREE" },
     });
     await prisma.subscription.upsert({
       where: { storeId: store.id },
-      update: {
-        shopifySubscriptionId: sub?.id ?? null,
-        plan: planKey,
-        status: sub ? "ACTIVE" : "CANCELLED",
-      },
-      create: {
-        storeId: store.id,
-        shopifySubscriptionId: sub?.id ?? null,
-        plan: planKey,
-        status: sub ? "ACTIVE" : "CANCELLED",
-      },
+      update: { shopifySubscriptionId: null, plan: "FREE", status: "CANCELLED" },
+      create: { storeId: store.id, plan: "FREE", status: "CANCELLED" },
     });
+    return "FREE";
   }
+
+  // Resolve the plan: prefer the planKey we already persisted for this exact
+  // subscription id (ids are stable; display names can be reworded), then
+  // fall back to the name match. If neither resolves, KEEP the current plan
+  // and log loudly - never silently downgrade a merchant whose subscription
+  // Shopify reports as ACTIVE.
+  let planKey: PlanKey | null =
+    store.subscription?.shopifySubscriptionId &&
+    store.subscription.shopifySubscriptionId === sub.id
+      ? (store.subscription.plan as PlanKey)
+      : sub.planKeyFromName;
+
+  if (!planKey) {
+    planKey = store.plan as PlanKey;
+    console.error(
+      `[GEO Rise] Billing sync: ACTIVE subscription "${sub.name}" (${sub.id}) for ${shopDomain} matches no plan definition and no stored subscription id. Keeping current plan "${planKey}". Likely PLAN_DEFINITIONS name drift - investigate immediately.`
+    );
+  }
+
+  // The app_subscriptions/update webhook payload carries no trial fields, so
+  // this GraphQL-backed sync is the one place trialEndsAt is computed.
+  let trialEndsAt: Date | null = null;
+  if (sub.trialDays > 0 && sub.createdAt) {
+    trialEndsAt = new Date(sub.createdAt);
+    trialEndsAt.setDate(trialEndsAt.getDate() + sub.trialDays);
+  }
+
+  await prisma.store.update({
+    where: { id: store.id },
+    data: { plan: planKey },
+  });
+  await prisma.subscription.upsert({
+    where: { storeId: store.id },
+    update: {
+      shopifySubscriptionId: sub.id,
+      plan: planKey,
+      status: "ACTIVE",
+      trialEndsAt,
+    },
+    create: {
+      storeId: store.id,
+      shopifySubscriptionId: sub.id,
+      plan: planKey,
+      status: "ACTIVE",
+      trialEndsAt,
+    },
+  });
 
   return planKey;
 }

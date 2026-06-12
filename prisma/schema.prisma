@@ -59,6 +59,7 @@ enum SubscriptionStatus {
   PENDING
   CANCELLED
   EXPIRED
+  FROZEN // Shopify paused billing (shop paused / payment failure); temporary
 }
 
 // ─── Models ───────────────────────────────────────────────────────────────────

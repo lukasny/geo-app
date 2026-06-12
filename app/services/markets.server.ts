@@ -1,4 +1,5 @@
 import prisma from "~/db.server";
+import { getFreshAccessToken } from "~/services/offline-admin.server";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -148,15 +149,19 @@ interface MarketsQueryResult {
 export async function listMarkets(storeId: string): Promise<StoreMarket[]> {
   const store = await prisma.store.findUniqueOrThrow({
     where: { id: storeId },
-    select: { shopifyDomain: true, shopifyAccessToken: true },
+    select: { shopifyDomain: true },
   });
+  // Fetched fresh per call: the app uses expiring offline access tokens
+  // (~60 min lifetime), so the persisted Store.shopifyAccessToken column
+  // goes stale and must never be used for API calls.
+  const accessToken = await getFreshAccessToken(store.shopifyDomain);
 
   let data: MarketsQueryResult;
   try {
     data = await withRetry(() =>
       shopifyGraphql<MarketsQueryResult>(
         store.shopifyDomain,
-        store.shopifyAccessToken,
+        accessToken,
         MARKETS_QUERY
       )
     );

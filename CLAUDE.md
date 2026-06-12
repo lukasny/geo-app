@@ -142,7 +142,7 @@ See `prisma/schema.prisma` for full definitions. Key models:
 ### `audit-engine.server.ts`
 - `runFullAudit(storeId, admin)` - scores all products across 5 rubric categories (Content 35, Meta 15, Images 20, Variants 15, Reviews 15 pts)
 - `autoFixIssues(storeId, admin)` - auto-generates meta descriptions and alt text via Shopify mutations
-- Rate limiting: pauses at 75% of `X-Shopify-Shop-Api-Call-Limit`
+- Rate limiting: reads `extensions.cost.throttleStatus` from the GraphQL response body (pauses when remaining budget is below 2 pages) and retries THROTTLED pages on a 2s/4s/8s backoff; page size capped at 15 to stay under Shopify's 1,000-point query cost ceiling
 
 ### `ai-simulator.server.ts`
 - `simulateAiView(productUrl, shopifyProductData)` - fetches live HTML, sends it to one or more AI platforms, compares 22 fields

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
@@ -142,7 +142,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [
     llmsFile,
-    auditResults,
+    totalIssueCount,
+    severityGroups,
+    latestAuditResult,
     citations,
     trackingPromptCount,
     competitorCount,
@@ -153,11 +155,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { storeId: store.id, marketCode: "default" },
       select: { productCount: true, lastGeneratedAt: true, content: true },
     }),
-    prisma.auditResult.findMany({
+    // Aggregate queries instead of a row fetch: the previous findMany used
+    // take: 500, which silently capped the dashboard's issue counts for
+    // exactly the paid plans with big catalogs (Infinity audit cap, several
+    // issues per product).
+    prisma.auditResult.count({ where: { storeId: store.id } }),
+    prisma.auditResult.groupBy({
+      by: ["severity"],
       where: { storeId: store.id },
-      select: { severity: true, createdAt: true },
+      _count: true,
+    }),
+    prisma.auditResult.findFirst({
+      where: { storeId: store.id },
       orderBy: { createdAt: "desc" },
-      take: 500,
+      select: { createdAt: true },
     }),
     prisma.aiCitation.count({
       where: {
@@ -178,20 +189,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prisma.simulationUsage.count({ where: { storeId: store.id } }),
   ]);
 
+  const severityCount = (severity: string) =>
+    severityGroups.find((g) => g.severity === severity)?._count ?? 0;
   const issueCounts = {
-    total: auditResults.length,
-    critical: auditResults.filter((r) => r.severity === "CRITICAL").length,
-    high: auditResults.filter((r) => r.severity === "HIGH").length,
+    total: totalIssueCount,
+    critical: severityCount("CRITICAL"),
+    high: severityCount("HIGH"),
   };
 
   const activity: ActivityItem[] = [];
-  if (auditResults.length > 0) {
+  if (latestAuditResult) {
     activity.push({
       id: "audit",
       type: "audit",
       title: `Audit completed - GEO score: ${store.geoScore}`,
       detail: `${store.auditedProducts} products audited, ${issueCounts.total} issues found`,
-      timestamp: auditResults[0].createdAt.toISOString(),
+      timestamp: latestAuditResult.createdAt.toISOString(),
     });
   }
   if (llmsFile?.lastGeneratedAt) {
@@ -259,6 +272,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // ─── Action ───────────────────────────────────────────────────────────────────
 
+/** How many products the wizard's bounded "starter audit" covers. */
+const STARTER_AUDIT_PRODUCT_CAP = 5;
+
+/**
+ * Guard for the wizard's starter audit and auto-fix intents.
+ *
+ * runFullAudit is destructive regardless of `maxProducts`: it deletes EVERY
+ * AuditResult for the store and overwrites the store-wide geoScore /
+ * auditedProducts with values computed from only the products it audited.
+ * Two reachable paths would let the 5-product starter audit clobber a bigger
+ * audit: (1) a merchant runs a plan-capped audit from /app/audit while
+ * onboarding is still incomplete, then returns to the dashboard wizard;
+ * (2) a stale wizard tab re-fires after onboarding completed elsewhere.
+ *
+ * Returns true when the starter audit must NOT run. Callers respond with the
+ * store's existing score shaped like a normal success so the wizard UI still
+ * advances.
+ */
+async function shouldSkipStarterAudit(store: {
+  id: string;
+  onboardingCompleted: boolean;
+  auditedProducts: number;
+}): Promise<boolean> {
+  if (store.onboardingCompleted) return true;
+  if (store.auditedProducts > STARTER_AUDIT_PRODUCT_CAP) return true;
+  // Belt and braces: store.auditedProducts can lag reality (e.g. an audit
+  // that crashed after createMany but before the store update), so also
+  // check whether existing audit results span more products than the
+  // starter scope. Tenant-scoped to this store only.
+  const distinctProducts = await prisma.auditResult.findMany({
+    where: { storeId: store.id, productId: { not: null } },
+    distinct: ["productId"],
+    select: { productId: true },
+    take: STARTER_AUDIT_PRODUCT_CAP + 1,
+  });
+  return distinctProducts.length > STARTER_AUDIT_PRODUCT_CAP;
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
@@ -320,7 +371,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // Bounded "wizard starter audit" of 5 products so the wizard step
       // completes in ~30-60s regardless of catalog size. Merchant can run
       // the full plan-capped audit from the AI Audit page after onboarding.
-      const summary = await runFullAudit(store.id, admin, { maxProducts: 5 });
+      // Server-side guard: never let the 5-product sample wipe a bigger
+      // existing audit; return the existing score so the wizard advances.
+      if (await shouldSkipStarterAudit(store)) {
+        return { success: true, intent, storeScore: store.geoScore };
+      }
+      const summary = await runFullAudit(store.id, admin, {
+        maxProducts: STARTER_AUDIT_PRODUCT_CAP,
+      });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
       return {
@@ -332,11 +390,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "runWizardAutoFix") {
     try {
+      // Server-side guard, same as runStarterAudit: the re-audit below
+      // wipes all AuditResults, and unsupervised Claude rewrites from a
+      // stale wizard tab are not something a merchant asked for. Skip both
+      // and report "nothing fixed" with the current score so the wizard's
+      // existing no-wow path renders and the merchant can continue.
+      if (await shouldSkipStarterAudit(store)) {
+        return {
+          success: true,
+          intent,
+          fixedCount: 0,
+          failedCount: 0,
+          afterScore: store.geoScore,
+        };
+      }
       // Bounded auto-fix: at most 5 attempted fixes so the wow step stays
       // under ~60s. Then re-run the starter audit so we can compute the
       // before/after score delta in one round-trip.
       const autoFix = await autoFixIssues(store.id, admin, { maxIssues: 5 });
-      const audit = await runFullAudit(store.id, admin, { maxProducts: 5 });
+      const audit = await runFullAudit(store.id, admin, {
+        maxProducts: STARTER_AUDIT_PRODUCT_CAP,
+      });
       return {
         success: true,
         intent,
@@ -623,6 +697,11 @@ function Step2({
 }) {
   const [hasFiredAudit, setHasFiredAudit] = useState(false);
   const [hasFiredLlms, setHasFiredLlms] = useState(false);
+  // Set when a runStarterAudit submission settles without any response
+  // payload - an HTTP-layer failure (proxy/tunnel timeout, dropped
+  // connection, aborted request) that never produces an application-level
+  // { error } for the branch below to render.
+  const [httpError, setHttpError] = useState(false);
   // Dedicated fetcher so the llms-gen response never clobbers the audit
   // result on the shared `fetcher.data`. It must be a fetcher (not a raw
   // fetch): only fetcher.submit appends the ?index param that targets this
@@ -642,6 +721,25 @@ function Step2({
     data && data.intent === "runStarterAudit" && "error" in data
       ? (data.error as string)
       : null;
+
+  // Detect HTTP-level failures of the long-running audit: the action always
+  // echoes `intent` in its response (success and handled errors alike), so a
+  // runStarterAudit submission that transitions back to idle without a
+  // runStarterAudit payload got no response. Without this the merchant is
+  // stuck on the spinner forever (score stays null, no error ever arrives).
+  const inFlightIntentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (fetcher.state !== "idle") {
+      const intent = fetcher.formData?.get("intent");
+      if (typeof intent === "string") inFlightIntentRef.current = intent;
+      return;
+    }
+    const settledIntent = inFlightIntentRef.current;
+    inFlightIntentRef.current = null;
+    if (settledIntent === "runStarterAudit" && data?.intent !== "runStarterAudit") {
+      setHttpError(true);
+    }
+  }, [fetcher.state, fetcher.formData, data]);
 
   // Fire the audit and llms-gen exactly once on mount. They run in parallel:
   // the audit reveals the score (the merchant-facing reward), the llms-gen
@@ -674,7 +772,15 @@ function Step2({
 
   // Don't show the stale error while a retry submission is in flight -
   // `data` still holds the previous failure until the new response lands.
-  if (auditError && !isAuditing) {
+  // HTTP-level failures render the same retryable state; retrying is safe
+  // because the action skips the destructive starter audit when a bigger
+  // audit already exists server-side.
+  const displayedAuditError =
+    auditError ??
+    (httpError
+      ? "The connection was interrupted before we got a response."
+      : null);
+  if (displayedAuditError && !isAuditing) {
     return (
       <BlockStack gap="400">
         <BlockStack gap="100">
@@ -687,12 +793,13 @@ function Step2({
         </BlockStack>
         <Banner tone="warning">
           <Text as="p" variant="bodyMd">
-            We couldn&apos;t finish the audit just now. {auditError}
+            We couldn&apos;t finish the audit just now. {displayedAuditError}
           </Text>
         </Banner>
         <Button
           variant="primary"
           onClick={() => {
+            setHttpError(false);
             setHasFiredAudit(false);
           }}
         >
@@ -768,6 +875,10 @@ function Step3({
   onComplete: () => void;
 }) {
   const [hasFired, setHasFired] = useState(false);
+  // HTTP-layer failure of the auto-fix request (timeout, dropped
+  // connection): no payload ever arrives, so without this flag the
+  // merchant would be stuck on the "Claude is rewriting" spinner forever.
+  const [httpError, setHttpError] = useState(false);
   const [animatedScore, setAnimatedScore] = useState(beforeScore);
   const data = fetcher.data as Record<string, unknown> | undefined;
   const lastIntent = fetcher.formData?.get("intent") as string | undefined;
@@ -795,6 +906,27 @@ function Step3({
     }
   }, [fetcher, hasFired]);
 
+  // Detect a runWizardAutoFix submission that settled back to idle without
+  // its response payload (HTTP-level failure). Scoped to that intent only,
+  // so the later completeOnboarding submission through this same shared
+  // fetcher never trips it.
+  const inFlightIntentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (fetcher.state !== "idle") {
+      const intent = fetcher.formData?.get("intent");
+      if (typeof intent === "string") inFlightIntentRef.current = intent;
+      return;
+    }
+    const settledIntent = inFlightIntentRef.current;
+    inFlightIntentRef.current = null;
+    if (
+      settledIntent === "runWizardAutoFix" &&
+      data?.intent !== "runWizardAutoFix"
+    ) {
+      setHttpError(true);
+    }
+  }, [fetcher.state, fetcher.formData, data]);
+
   // Animate the score ring from before to after over 1.2s once afterScore
   // arrives. Uses requestAnimationFrame; no new dependency.
   useEffect(() => {
@@ -819,10 +951,11 @@ function Step3({
     return () => cancelAnimationFrame(frame);
   }, [afterScore, beforeScore]);
 
-  // Auto-fix returned an error OR fixed 0 issues. Either way, no wow.
-  // Don't block the merchant; let them continue to the dashboard with
-  // their original score.
-  if (fixError || (afterScore !== null && fixedCount === 0)) {
+  // Auto-fix returned an error, failed at the HTTP layer, OR fixed 0
+  // issues. Either way, no wow. Don't block the merchant; let them
+  // continue to the dashboard with their original score.
+  const fixUnavailable = fixError !== null || httpError;
+  if (fixUnavailable || (afterScore !== null && fixedCount === 0)) {
     return (
       <BlockStack gap="400">
         <BlockStack gap="100">
@@ -835,7 +968,7 @@ function Step3({
         </BlockStack>
         <Banner tone="info">
           <Text as="p" variant="bodyMd">
-            {fixError
+            {fixUnavailable
               ? "Auto-fix is temporarily unavailable, you can try it from the AI Audit page later."
               : "We didn't find any issues to fix automatically right now. You can review the audit results from the AI Audit page."}
           </Text>
@@ -914,15 +1047,11 @@ function Step3({
 function DiscoveryCards({
   cards,
   shopifyDomain,
-  fetcher,
 }: {
   cards: DiscoveryCard[];
   shopifyDomain: string;
-  fetcher: ReturnType<typeof useFetcher<typeof action>>;
 }) {
   const themeEditorUrl = `https://${shopifyDomain}/admin/themes/current/editor?context=apps`;
-  const isWorking = fetcher.state !== "idle";
-  const lastIntent = fetcher.formData?.get("intent") as string | undefined;
 
   return (
     <Card>
@@ -944,8 +1073,6 @@ function DiscoveryCards({
                 <DiscoveryCardSchema
                   key={card}
                   themeEditorUrl={themeEditorUrl}
-                  fetcher={fetcher}
-                  isWorking={isWorking && lastIntent === "markSchemaEnabled"}
                 />
               );
             }
@@ -962,13 +1089,7 @@ function DiscoveryCards({
               return <DiscoveryCardSimulator key={card} />;
             }
             if (card === "weeklyEmail") {
-              return (
-                <DiscoveryCardWeeklyEmail
-                  key={card}
-                  fetcher={fetcher}
-                  isWorking={isWorking && lastIntent === "toggleWeeklyEmail"}
-                />
-              );
+              return <DiscoveryCardWeeklyEmail key={card} />;
             }
             return null;
           })}
@@ -978,15 +1099,23 @@ function DiscoveryCards({
   );
 }
 
-function DiscoveryCardSchema({
-  themeEditorUrl,
-  fetcher,
-  isWorking,
-}: {
-  themeEditorUrl: string;
-  fetcher: ReturnType<typeof useFetcher<typeof action>>;
-  isWorking: boolean;
-}) {
+function DiscoveryCardSchema({ themeEditorUrl }: { themeEditorUrl: string }) {
+  // Dedicated fetcher: submitting through the shared dashboard fetcher
+  // would abort its in-flight request (Remix cancels a fetcher's pending
+  // submission when the same fetcher is resubmitted), silently killing a
+  // running audit or llms generation the merchant just kicked off.
+  const fetcher = useFetcher<typeof action>();
+  const shopify = useAppBridge();
+  const data = fetcher.data as Record<string, unknown> | undefined;
+
+  // Keyed on `data` (not idle state): on success the loader revalidation
+  // removes this card, so an idle-gated effect could unmount before firing.
+  useEffect(() => {
+    if (data && "error" in data) {
+      shopify.toast.show(data.error as string, { isError: true });
+    }
+  }, [data, shopify]);
+
   return (
     <BlockStack gap="200">
       <Text as="h3" variant="headingSm">
@@ -1004,7 +1133,7 @@ function DiscoveryCardSchema({
         </Button>
         <Button
           variant="plain"
-          loading={isWorking}
+          loading={fetcher.state !== "idle"}
           onClick={() => {
             fetcher.submit(
               { intent: "markSchemaEnabled" },
@@ -1086,13 +1215,27 @@ function DiscoveryCardSimulator() {
   );
 }
 
-function DiscoveryCardWeeklyEmail({
-  fetcher,
-  isWorking,
-}: {
-  fetcher: ReturnType<typeof useFetcher<typeof action>>;
-  isWorking: boolean;
-}) {
+function DiscoveryCardWeeklyEmail() {
+  // Dedicated fetcher for the same reason as DiscoveryCardSchema: never
+  // share the dashboard fetcher, or this click aborts an in-flight
+  // audit/llms generation.
+  const fetcher = useFetcher<typeof action>();
+  const shopify = useAppBridge();
+  const data = fetcher.data as Record<string, unknown> | undefined;
+
+  // Keyed on `data` (not idle state): on success the loader revalidation
+  // removes this card, so an idle-gated effect could unmount before firing.
+  useEffect(() => {
+    if (!data) return;
+    if ("error" in data) {
+      shopify.toast.show(data.error as string, { isError: true });
+    } else if (data.intent === "toggleWeeklyEmail") {
+      shopify.toast.show(
+        "Weekly insight emails on - you'll get the next one within ~7 days"
+      );
+    }
+  }, [data, shopify]);
+
   return (
     <BlockStack gap="200">
       <Text as="h3" variant="headingSm">
@@ -1103,7 +1246,7 @@ function DiscoveryCardWeeklyEmail({
         rates, and AI mentions. Lands in your inbox about once a week.
       </Text>
       <Button
-        loading={isWorking}
+        loading={fetcher.state !== "idle"}
         onClick={() => {
           const formData = new FormData();
           formData.append("intent", "toggleWeeklyEmail");
@@ -1461,7 +1604,6 @@ export default function Index() {
           <DiscoveryCards
             cards={discoveryCards}
             shopifyDomain={store.shopifyDomain}
-            fetcher={fetcher}
           />
         )}
 

@@ -52,9 +52,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         title: product.title,
         handle: product.handle,
         status: product.status,
-        description: product.body_html ?? undefined,
-        productType: product.product_type || undefined,
-        vendor: product.vendor || undefined,
+        // Cleared fields must write through as null, not be skipped:
+        // clearing description/type/vendor in the Shopify admin delivers
+        // "" (or null) here, and `?? undefined` / `|| undefined` told
+        // Prisma "leave unchanged", so the cache kept deleted values until
+        // the next manual full audit and they leaked into bulk-edit
+        // templates and Claude SEO prompts. `|| null` matches the audit
+        // engine's upsert (the canonical cache write path).
+        description: product.body_html || null,
+        productType: product.product_type || null,
+        vendor: product.vendor || null,
+        // Kept as "skip when absent": a payload without variants says
+        // nothing about price, unlike the cleared-string cases above.
         price: product.variants?.[0]?.price ?? undefined,
         imageCount: product.images?.length ?? 0,
         variantCount: product.variants?.length ?? 0,

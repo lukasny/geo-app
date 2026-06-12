@@ -276,7 +276,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "autoFix") {
     try {
-      const result = await autoFixIssues(store.id, admin);
+      // Mirror the loader's plan cap (P0-4). On capped plans the loader only
+      // shows the worst-N audited products, and the confirm modal's
+      // "Auto-fix N issues" count comes from that subset - but AuditResults
+      // from before a downgrade survive until the next audit run, so without
+      // the same filter here this action would fix the merchant's entire
+      // pre-downgrade catalog: Claude spend and product writes far beyond
+      // both the plan and what the modal promised.
+      const planLimits =
+        PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+      let productIds: string[] | undefined;
+      if (Number.isFinite(planLimits.maxAuditProducts)) {
+        const allowedProducts = await prisma.product.findMany({
+          where: { storeId: store.id, lastAuditedAt: { not: null } },
+          orderBy: { aiReadinessScore: "asc" },
+          take: planLimits.maxAuditProducts,
+          select: { id: true },
+        });
+        productIds = allowedProducts.map((p) => p.id);
+      }
+      const result = await autoFixIssues(store.id, admin, { productIds });
       return {
         success: true,
         fixed: result.fixed,
