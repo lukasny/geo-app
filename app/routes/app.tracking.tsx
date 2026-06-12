@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData, Link } from "@remix-run/react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -16,6 +16,7 @@ import {
   Divider,
   EmptyState,
   ButtonGroup,
+  Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
@@ -32,25 +33,11 @@ import type { PlanKey } from "~/services/billing.shared";
 import { sanitizeAiVendorError } from "~/services/ai-retry.server";
 import { getProductCitationStats } from "~/services/product-citations.server";
 import type { ProductCitationStats } from "~/services/product-citations.server";
+import { platformLabel } from "~/utils/platforms";
+import type { AiPlatformKey as AiPlatform } from "~/utils/platforms";
+import { timeAgo, relativeFuture } from "~/utils/time";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type AiPlatform =
-  | "CLAUDE"
-  | "CHATGPT"
-  | "PERPLEXITY"
-  | "GEMINI"
-  | "GROK"
-  | "GOOGLE_AI_OVERVIEW";
-
-const PLATFORM_LABELS: Record<AiPlatform, string> = {
-  CLAUDE: "Claude",
-  CHATGPT: "ChatGPT",
-  PERPLEXITY: "Perplexity",
-  GEMINI: "Gemini",
-  GROK: "Grok",
-  GOOGLE_AI_OVERVIEW: "Google AI",
-};
 
 interface HistoryPoint {
   id: string;
@@ -367,19 +354,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return "Never";
-  const then = new Date(iso).getTime();
-  const now = Date.now();
-  const mins = Math.round((now - then) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  return `${days}d ago`;
-}
-
 const CATEGORY_OPTIONS = [
   { label: "No category", value: "" },
   { label: "Comparison", value: "comparison" },
@@ -463,7 +437,7 @@ function TrendTimeline({ history }: { history: HistoryPoint[] }) {
               stroke={stroke}
               strokeWidth={1}
             >
-              <title>{`${formatTooltipDate(p.checkedAt)} • ${PLATFORM_LABELS[p.platform] ?? p.platform} • ${label}`}</title>
+              <title>{`${formatTooltipDate(p.checkedAt)} • ${platformLabel(p.platform)} • ${label}`}</title>
             </circle>
           );
         })}
@@ -523,20 +497,6 @@ function sanitizeTrackingError(err: unknown): string {
   return sanitizeAiVendorError(err, { context: "Tracking", logTag: "tracking" });
 }
 
-function relativeFuture(iso: string | null): string {
-  if (!iso) return "-";
-  const then = new Date(iso).getTime();
-  const diff = then - Date.now();
-  if (diff <= 0) return "any moment now";
-  const mins = Math.round(diff / 60000);
-  if (mins < 1) return "in <1m";
-  if (mins < 60) return `in ${mins}m`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `in ${hrs}h`;
-  const days = Math.round(hrs / 24);
-  return `in ${days}d`;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TrackingPage() {
@@ -590,7 +550,7 @@ export default function TrackingPage() {
       const list = (data.suggestions as SuggestedPrompt[] | undefined) ?? [];
       setSuggestions(list);
       if (list.length === 0) {
-        shopify.toast.show("No new suggestions - you already cover the main angles", { isError: true });
+        shopify.toast.show("No new suggestions. You already cover the main angles.");
       } else {
         shopify.toast.show(`Generated ${list.length} prompt suggestions`);
       }
@@ -621,7 +581,7 @@ export default function TrackingPage() {
 
   return (
     <Page>
-      <TitleBar title="AI Visibility Tracking" />
+      <TitleBar title="AI Tracking" />
 
       <BlockStack gap="500">
         <Banner tone="info">
@@ -637,12 +597,12 @@ export default function TrackingPage() {
           <Banner tone="warning" title={`${planDef.name} plan doesn't include AI tracking`}>
             <BlockStack gap="200">
               <Text as="p" variant="bodyMd">
-                Upgrade to Growth ($19/mo) to unlock {PLAN_LIMITS.GROWTH.maxTrackingPrompts} tracking prompts, or Pro ($49/mo) for {PLAN_LIMITS.PRO.maxTrackingPrompts}.
+                Upgrade to {PLAN_DEFINITIONS.GROWTH.name} (${PLAN_DEFINITIONS.GROWTH.price}/mo) to unlock {PLAN_LIMITS.GROWTH.maxTrackingPrompts} tracking prompts, or {PLAN_DEFINITIONS.PRO.name} (${PLAN_DEFINITIONS.PRO.price}/mo) for {PLAN_LIMITS.PRO.maxTrackingPrompts}.
               </Text>
               <div>
-                <Link to="/app/pricing">
-                  <Button variant="primary">See pricing</Button>
-                </Link>
+                <Button variant="primary" url="/app/pricing">
+                  See pricing
+                </Button>
               </div>
             </BlockStack>
           </Banner>
@@ -891,7 +851,7 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
                       {p.title}
                     </Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Last mentioned {relativeTime(p.lastMentionedAt)}
+                      Last mentioned {timeAgo(p.lastMentionedAt)}
                     </Text>
                   </InlineStack>
                   <InlineStack gap="200" wrap blockAlign="center">
@@ -904,7 +864,7 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
                       Object.entries(p.byPlatform) as [AiPlatform, number][]
                     ).map(([platform, count]) => (
                       <Badge key={platform} tone="info">
-                        {`${PLATFORM_LABELS[platform] ?? platform}: ${count}`}
+                        {`${platformLabel(platform)}: ${count}`}
                       </Badge>
                     ))}
                     {!p.inCatalog && (
@@ -935,7 +895,9 @@ interface PromptCardProps {
 
 function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptCardProps) {
   const canSchedule = plan !== "FREE";
+  const canRun = plan !== "FREE";
   const [expanded, setExpanded] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const isRunningThis =
     isWorking &&
     currentIntent?.intent === "runCheck" &&
@@ -978,7 +940,7 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                 <Badge tone="info">{prompt.category}</Badge>
               )}
               <Text as="span" variant="bodySm" tone="subdued">
-                Last checked: {relativeTime(prompt.lastCheckedAt)}
+                Last checked: {timeAgo(prompt.lastCheckedAt)}
               </Text>
               {citedRate !== null && (
                 <Text as="span" variant="bodySm" tone="subdued">
@@ -1020,34 +982,67 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
             </InlineStack>
           </BlockStack>
 
-          <ButtonGroup>
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="runCheck" />
-              <input type="hidden" name="promptId" value={prompt.id} />
+          <BlockStack gap="100" inlineAlign="end">
+            <ButtonGroup>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="runCheck" />
+                <input type="hidden" name="promptId" value={prompt.id} />
+                <Button
+                  submit
+                  variant="primary"
+                  loading={isRunningThis}
+                  disabled={!canRun || (isWorking && !isRunningThis)}
+                >
+                  {isRunningThis ? "Checking…" : "Run check"}
+                </Button>
+              </fetcher.Form>
               <Button
-                submit
-                variant="primary"
-                loading={isRunningThis}
-                disabled={isWorking && !isRunningThis}
-              >
-                {isRunningThis ? "Checking…" : "Run check"}
-              </Button>
-            </fetcher.Form>
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="deletePrompt" />
-              <input type="hidden" name="promptId" value={prompt.id} />
-              <Button
-                submit
                 tone="critical"
                 variant="plain"
                 loading={isDeletingThis}
                 disabled={isWorking && !isDeletingThis}
+                onClick={() => setShowDeleteModal(true)}
               >
                 Delete
               </Button>
-            </fetcher.Form>
-          </ButtonGroup>
+            </ButtonGroup>
+            {!canRun && (
+              <Text as="span" variant="bodySm" tone="subdued">
+                Upgrade to run checks
+              </Text>
+            )}
+          </BlockStack>
         </InlineStack>
+
+        <Modal
+          open={showDeleteModal}
+          onClose={() => setShowDeleteModal(false)}
+          title="Delete tracking prompt?"
+          primaryAction={{
+            content: "Delete prompt",
+            destructive: true,
+            onAction: () => {
+              setShowDeleteModal(false);
+              fetcher.submit(
+                { intent: "deletePrompt", promptId: prompt.id },
+                { method: "POST" }
+              );
+            },
+          }}
+          secondaryActions={[
+            {
+              content: "Keep it",
+              onAction: () => setShowDeleteModal(false),
+            },
+          ]}
+        >
+          <Modal.Section>
+            <Text as="p" variant="bodyMd">
+              This removes the prompt and its trend history of past checks.
+              This can't be undone.
+            </Text>
+          </Modal.Section>
+        </Modal>
 
         {prompt.latestCitation && (
           <>
@@ -1058,13 +1053,13 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                   Latest result
                 </Text>
                 <Text as="span" variant="bodySm" tone="subdued">
-                  {relativeTime(prompt.latestCitation.checkedAt)}
+                  {timeAgo(prompt.latestCitation.checkedAt)}
                 </Text>
-                <Badge tone={prompt.latestCitation.cited ? "success" : "critical"}>
+                <Badge tone={prompt.latestCitation.cited ? "success" : undefined}>
                   {prompt.latestCitation.cited ? "Cited" : "Not cited"}
                 </Badge>
                 <Badge tone="info">
-                  {`on ${PLATFORM_LABELS[prompt.latestCitation.platform] ?? prompt.latestCitation.platform}`}
+                  {`on ${platformLabel(prompt.latestCitation.platform)}`}
                 </Badge>
                 {prompt.latestCitation.position != null && (
                   <Badge tone="info">
@@ -1097,7 +1092,7 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                       key={pb.platform}
                       tone={pb.cited ? "success" : undefined}
                     >
-                      {`${PLATFORM_LABELS[pb.platform] ?? pb.platform}: ${
+                      {`${platformLabel(pb.platform)}: ${
                         pb.cited ? "cited" : "not cited"
                       }`}
                     </Badge>
@@ -1142,6 +1137,9 @@ function PromptCard({ prompt, plan, isWorking, currentIntent, fetcher }: PromptC
                         {domain}
                       </Badge>
                     ))}
+                  <Button variant="plain" url="/app/competitors">
+                    Track these in Competitors
+                  </Button>
                 </InlineStack>
               )}
 

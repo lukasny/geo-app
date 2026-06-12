@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData, Link } from "@remix-run/react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -29,6 +29,7 @@ import {
   runFullAudit,
 } from "~/services/audit-engine.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
+import { severityTone, severityLabel } from "~/utils/severity";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -145,23 +146,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function severityTone(s: ActionItem["severity"]): "critical" | "warning" | "attention" | "info" {
-  switch (s) {
-    case "CRITICAL":
-      return "critical";
-    case "HIGH":
-      return "warning";
-    case "MEDIUM":
-      return "attention";
-    default:
-      return "info";
-  }
-}
-
-function severityLabel(s: ActionItem["severity"]): string {
-  return s.charAt(0) + s.slice(1).toLowerCase();
-}
-
 const CATEGORY_LABEL: Record<string, string> = {
   CONTENT: "Content",
   META: "SEO / Meta",
@@ -255,6 +239,9 @@ export default function ActionPlanPage() {
   };
 
   const handleAudit = () => {
+    // Guard against double submit: a second click would abort the first
+    // run's client handling through the shared fetcher.
+    if (isWorking) return;
     fetcher.submit({ intent: "runAudit" }, { method: "POST" });
   };
 
@@ -270,7 +257,7 @@ export default function ActionPlanPage() {
               content: "Run AI Readiness Audit",
               url: "/app/audit",
             }}
-            image=""
+            image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
           >
             <Text as="p" variant="bodyMd">
               Your action plan is generated from the issues your audit finds.
@@ -287,25 +274,41 @@ export default function ActionPlanPage() {
     return (
       <Page>
         <TitleBar title="Action Plan" />
-        <Card>
-          <EmptyState
-            heading="Nothing to fix - your store is in great shape"
-            action={{
-              content: "Re-run audit",
-              onAction: handleAudit,
-            }}
-            image=""
-          >
-            <Text as="p" variant="bodyMd">
-              Your last audit found no unfixed issues. Re-run the audit
-              periodically (or set up AI tracking to monitor drift over time).
-              Current GEO score: <strong>{storeScore}/100</strong>.
-            </Text>
-          </EmptyState>
-        </Card>
+        <BlockStack gap="500">
+          {isAuditing && (
+            <Banner tone="info">
+              <InlineStack gap="200" blockAlign="center">
+                <Spinner size="small" />
+                <Text as="span" variant="bodyMd">
+                  Re-running your audit… this may take a minute for large
+                  catalogs.
+                </Text>
+              </InlineStack>
+            </Banner>
+          )}
+          <Card>
+            <EmptyState
+              heading="Nothing to fix - your store is in great shape"
+              action={{
+                content: isAuditing ? "Re-running audit…" : "Re-run audit",
+                onAction: handleAudit,
+              }}
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            >
+              <Text as="p" variant="bodyMd">
+                Your last audit found no unfixed issues. Re-run the audit
+                periodically (or set up AI tracking to monitor drift over
+                time). Current GEO score: <strong>{storeScore}/100</strong>.
+              </Text>
+            </EmptyState>
+          </Card>
+        </BlockStack>
       </Page>
     );
   }
+
+  const remainingIssues =
+    totalUnfixed - actions.reduce((sum, a) => sum + a.count, 0);
 
   return (
     <Page>
@@ -322,12 +325,13 @@ export default function ActionPlanPage() {
         <Banner tone="info">
           <Text as="p" variant="bodyMd">
             Your top <strong>{actions.length}</strong> actions, ranked by
-            impact. Click <em>Auto-fix</em> on any card to burn down that
-            bucket - we&apos;ll skip anything you&apos;ve already fixed
-            manually. {totalUnfixed > actions.length ? (
+            impact. Click <em>Auto-fix</em> on any card to fix that group of
+            issues; we&apos;ll skip anything you&apos;ve already fixed
+            manually.{" "}
+            {remainingIssues > 0 ? (
               <>
-                {totalUnfixed - actions.reduce((sum, a) => sum + a.count, 0)} smaller issues sit below this list; they&apos;ll bubble up
-                as you knock out the top ones.
+                {remainingIssues} smaller issues sit below this list;
+                they&apos;ll bubble up as you knock out the top ones.
               </>
             ) : null}
           </Text>
@@ -389,8 +393,8 @@ export default function ActionPlanPage() {
 
         <Box paddingBlockEnd="500">
           <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-            Score this audit: <strong>{storeScore}/100</strong>.
-            Re-run audit after fixing a batch to see your new score.
+            GEO score from your last audit: <strong>{storeScore}/100</strong>.
+            Re-run the audit after fixing a batch to see your new score.
           </Text>
         </Box>
       </BlockStack>
@@ -453,9 +457,7 @@ function ActionCard({ action, rank, onAutoFix, isFixing, anyInFlight }: ActionCa
                 </Button>
               </ButtonGroup>
             ) : (
-              <Link to="/app/audit">
-                <Button>View affected products</Button>
-              </Link>
+              <Button url="/app/audit">View affected products</Button>
             )}
             {timeHint && (
               <Text as="span" variant="bodySm" tone="subdued" alignment="end">

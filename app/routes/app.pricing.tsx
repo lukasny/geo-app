@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
@@ -13,6 +13,7 @@ import {
   Banner,
   Box,
   Divider,
+  Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
@@ -150,8 +151,13 @@ const FEATURES: FeatureRow[] = [
   { label: "Weekly insight emails",   free: false, growth: true, pro: true, enterprise: true },
   { label: "Competitor monitoring",   free: false, growth: false, pro: true, enterprise: true },
   { label: "AI revenue attribution",  free: false, growth: false, pro: true, enterprise: true },
-  { label: "Content engine",          free: false, growth: false, pro: true, enterprise: true },
-  { label: "EU compliance module",    free: false, growth: false, pro: true, enterprise: true },
+  {
+    label: "AI blog posts per month",
+    free: String(PLAN_LIMITS.FREE.maxBlogPostsPerMonth),
+    growth: String(PLAN_LIMITS.GROWTH.maxBlogPostsPerMonth),
+    pro: String(PLAN_LIMITS.PRO.maxBlogPostsPerMonth),
+    enterprise: String(PLAN_LIMITS.ENTERPRISE.maxBlogPostsPerMonth),
+  },
   { label: "Shopify Flow integration",free: false, growth: false, pro: false, enterprise: true },
   { label: "Priority support",        free: false, growth: false, pro: true, enterprise: true },
 ];
@@ -178,40 +184,29 @@ function FeatureCell({ value }: { value: FeatureValue }) {
 
 // ─── Plan Card ────────────────────────────────────────────────────────────────
 
+type PricingFetcher = ReturnType<typeof useFetcher<typeof action>>;
+
 interface PlanCardProps {
   planKey: PlanKey;
   currentPlan: PlanKey;
   shopifySubId: string | null;
   trialEndsAt: string | null;
+  fetcher: PricingFetcher;
 }
 
 const PLAN_ORDER: PlanKey[] = ["FREE", "GROWTH", "PRO", "ENTERPRISE"];
 
-function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
-  const fetcher = useFetcher<typeof action>();
-  const isLoading = fetcher.state !== "idle";
+function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps) {
+  const [showCancelModal, setShowCancelModal] = useState(false);
   const def = PLAN_DEFINITIONS[planKey];
   const limits = PLAN_LIMITS[planKey];
 
-  // When the action returns a Shopify billing confirmationUrl, escape the
-  // embedded-app iframe by navigating the top window directly. Setting
-  // window.top.location.href is allowed by Shopify's iframe sandbox under
-  // allow-top-navigation-by-user-activation as long as the user clicked
-  // recently.
-  useEffect(() => {
-    const data = fetcher.data as { confirmationUrl?: string } | undefined;
-    if (data?.confirmationUrl && fetcher.state === "idle") {
-      try {
-        if (window.top) {
-          window.top.location.href = data.confirmationUrl;
-        } else {
-          window.location.href = data.confirmationUrl;
-        }
-      } catch {
-        open(data.confirmationUrl, "_top");
-      }
-    }
-  }, [fetcher.data, fetcher.state]);
+  // One fetcher is shared by all plan cards so only a single subscribe/cancel
+  // request can be in flight at a time. The submitted `plan` field identifies
+  // which card initiated the request; siblings disable their CTAs meanwhile.
+  const anySubmitting = fetcher.state !== "idle";
+  const isLoading = anySubmitting && fetcher.formData?.get("plan") === planKey;
+  const siblingSubmitting = anySubmitting && !isLoading;
 
   const isCurrent = planKey === currentPlan;
   const currentRank = PLAN_ORDER.indexOf(currentPlan);
@@ -245,8 +240,7 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
     limits.insightEmails,
     limits.competitorMonitoring,
     limits.revenueAttribution,
-    limits.contentEngine,
-    limits.euComplianceModule,
+    String(limits.maxBlogPostsPerMonth),
     limits.shopifyFlowIntegration,
     limits.prioritySupport,
   ];
@@ -297,7 +291,7 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
               )}
             </InlineStack>
             {def.trialDays > 0 && !isCurrent && isUpgrade && (
-              <Badge tone="success">7-day free trial</Badge>
+              <Badge tone="success">{`${def.trialDays}-day free trial`}</Badge>
             )}
           </BlockStack>
 
@@ -306,20 +300,54 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
             <>
               <Button disabled fullWidth>Current plan</Button>
               {planKey !== "FREE" && shopifySubId && (
-                <Button
-                  variant="plain"
-                  tone="critical"
-                  loading={isLoading}
-                  fullWidth
-                  onClick={() => {
-                    fetcher.submit(
-                      { intent: "cancel", subscriptionId: shopifySubId },
-                      { method: "POST" }
-                    );
-                  }}
-                >
-                  Cancel plan
-                </Button>
+                <>
+                  <Button
+                    variant="plain"
+                    tone="critical"
+                    loading={isLoading}
+                    disabled={siblingSubmitting}
+                    fullWidth
+                    onClick={() => setShowCancelModal(true)}
+                  >
+                    Cancel plan
+                  </Button>
+                  <Modal
+                    open={showCancelModal}
+                    onClose={() => setShowCancelModal(false)}
+                    title={`Cancel your ${def.name} plan?`}
+                    primaryAction={{
+                      content: "Cancel plan",
+                      destructive: true,
+                      loading: isLoading,
+                      onAction: () => {
+                        fetcher.submit(
+                          {
+                            intent: "cancel",
+                            subscriptionId: shopifySubId,
+                            plan: planKey,
+                          },
+                          { method: "POST" }
+                        );
+                        setShowCancelModal(false);
+                      },
+                    }}
+                    secondaryActions={[
+                      {
+                        content: "Keep my plan",
+                        onAction: () => setShowCancelModal(false),
+                      },
+                    ]}
+                  >
+                    <Modal.Section>
+                      <Text as="p" variant="bodyMd">
+                        You'll move to the Free plan immediately. Your data
+                        stays, but paid features like AI tracking, bulk
+                        optimization, and weekly insight emails lock until you
+                        upgrade again.
+                      </Text>
+                    </Modal.Section>
+                  </Modal>
+                </>
               )}
             </>
           ) : isEnterprise ? (
@@ -328,6 +356,7 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
             <Button
               variant="primary"
               loading={isLoading}
+              disabled={siblingSubmitting}
               fullWidth
               onClick={() => {
                 fetcher.submit(
@@ -336,16 +365,21 @@ function PlanCard({ planKey, currentPlan, shopifySubId }: PlanCardProps) {
                 );
               }}
             >
-              Start 7-day free trial
+              {`Start ${def.trialDays}-day free trial`}
             </Button>
           ) : isDowngrade ? (
             <Button
               variant="plain"
               loading={isLoading}
+              disabled={siblingSubmitting}
               fullWidth
               onClick={() => {
                 fetcher.submit(
-                  { intent: "cancel", subscriptionId: shopifySubId ?? "" },
+                  {
+                    intent: "cancel",
+                    subscriptionId: shopifySubId ?? "",
+                    plan: planKey,
+                  },
                   { method: "POST" }
                 );
               }}
@@ -388,7 +422,7 @@ const FAQ = [
   },
   {
     q: "Do I get charged during the trial?",
-    a: "No. Your 7-day trial is completely free. You only get charged after it ends, and only if you don't cancel.",
+    a: `No. Your ${PLAN_DEFINITIONS.GROWTH.trialDays}-day trial is completely free. You only get charged after it ends, and only if you don't cancel.`,
   },
   {
     q: "Is this billed through Shopify?",
@@ -420,20 +454,40 @@ export default function PricingPage() {
     }
   }, [fetcher.data, fetcher.state, shopify]);
 
+  // When the action returns a Shopify billing confirmationUrl, escape the
+  // embedded-app iframe by navigating the top window directly. Setting
+  // window.top.location.href is allowed by Shopify's iframe sandbox under
+  // allow-top-navigation-by-user-activation as long as the user clicked
+  // recently.
+  useEffect(() => {
+    const data = fetcher.data as { confirmationUrl?: string } | undefined;
+    if (data?.confirmationUrl && fetcher.state === "idle") {
+      try {
+        if (window.top) {
+          window.top.location.href = data.confirmationUrl;
+        } else {
+          window.location.href = data.confirmationUrl;
+        }
+      } catch {
+        open(data.confirmationUrl, "_top");
+      }
+    }
+  }, [fetcher.data, fetcher.state]);
+
   const isOnPaidPlan = currentPlan !== "FREE";
 
   return (
     <Page>
-      <TitleBar title="Plans & Pricing" />
+      <TitleBar title="Pricing" />
 
-      <BlockStack gap="600">
+      <BlockStack gap="500">
         {/* Hero */}
         <BlockStack gap="200">
           <Text as="h1" variant="headingXl" alignment="center">
             Choose your GEO Rise plan
           </Text>
           <Text as="p" variant="bodyMd" tone="subdued" alignment="center">
-            All paid plans start with a 7-day free trial. Billed through your Shopify account.
+            All paid plans start with a {PLAN_DEFINITIONS.GROWTH.trialDays}-day free trial. Billed through your Shopify account.
           </Text>
         </BlockStack>
 
@@ -469,6 +523,7 @@ export default function PricingPage() {
               currentPlan={currentPlan}
               shopifySubId={shopifySubId}
               trialEndsAt={trialEndsAt}
+              fetcher={fetcher}
             />
           ))}
         </div>

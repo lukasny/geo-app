@@ -29,6 +29,7 @@ import {
 } from "~/services/bulk-edit.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
+import { ScorePill } from "~/components/ScorePill";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -118,7 +119,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const limits = PLAN_LIMITS[store.plan as PlanKey] ?? PLAN_LIMITS.FREE;
   if (!limits.bulkOptimization) {
     return {
-      error: "Bulk editing is a Growth, Pro and Enterprise feature.",
+      error:
+        "Bulk editing is available on Growth and higher plans. See pricing to upgrade.",
     };
   }
 
@@ -291,7 +293,7 @@ export default function BulkEditPage() {
   if (!planAllowsFeature) {
     return (
       <Page>
-        <TitleBar title="Bulk Edit" />
+        <TitleBar title="Bulk edit" />
         <Banner
           tone="warning"
           title={`${PLAN_DEFINITIONS[plan].name} plan doesn't include bulk editing`}
@@ -315,7 +317,7 @@ export default function BulkEditPage() {
 
   return (
     <Page>
-      <TitleBar title="Bulk Edit" />
+      <TitleBar title="Bulk edit" />
 
       <BlockStack gap="500">
         <Banner tone="info">
@@ -408,7 +410,7 @@ export default function BulkEditPage() {
               </Text>
               <Box paddingBlockStart="300">
                 <Link to="/app/audit">
-                  <Button variant="primary">Go to AI Audit</Button>
+                  <Button variant="primary">Go to AI audit</Button>
                 </Link>
               </Box>
             </EmptyState>
@@ -469,7 +471,7 @@ export default function BulkEditPage() {
                 { title: "Meta description" },
                 { title: "Alt text" },
                 { title: "Images" },
-                { title: "AI Score" },
+                { title: "AI score" },
               ]}
               pagination={{
                 hasPrevious: currentPage > 0,
@@ -493,7 +495,7 @@ export default function BulkEditPage() {
                       </Text>
                     </IndexTable.Cell>
                     <IndexTable.Cell>
-                      {statusBadge(product.hasMetaTitle, "Custom", "Default")}
+                      {statusBadge(product.hasMetaTitle, "Set", "Missing")}
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       {statusBadge(product.hasMetaDescription, "Set", "Missing")}
@@ -504,11 +506,13 @@ export default function BulkEditPage() {
                           No images
                         </Text>
                       ) : (
-                        statusBadge(product.hasAltText, "All set", "Missing")
+                        statusBadge(product.hasAltText, "Set", "Missing")
                       )}
                     </IndexTable.Cell>
                     <IndexTable.Cell>{product.imageCount}</IndexTable.Cell>
-                    <IndexTable.Cell>{product.aiReadinessScore}</IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <ScorePill score={product.aiReadinessScore} />
+                    </IndexTable.Cell>
                   </IndexTable.Row>
                 );
               })}

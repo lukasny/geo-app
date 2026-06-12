@@ -14,6 +14,7 @@ import {
   Box,
   EmptyState,
   ButtonGroup,
+  Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
@@ -28,6 +29,8 @@ import {
 } from "~/services/competitor-monitoring.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
+import { timeAgo } from "~/utils/time";
+import { platformLabel } from "~/utils/platforms";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -154,29 +157,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { error: "Unknown action." };
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function relativeTime(iso: string | null): string {
-  if (!iso) return "Never";
-  const then = new Date(iso).getTime();
-  const mins = Math.round((Date.now() - then) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  return `${days}d ago`;
-}
-
-const PLATFORM_LABELS: Record<string, string> = {
-  CLAUDE: "Claude",
-  CHATGPT: "ChatGPT",
-  PERPLEXITY: "Perplexity",
-  GEMINI: "Gemini",
-  GROK: "Grok",
-  GOOGLE_AI_OVERVIEW: "Google AI",
-};
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function CompetitorsPage() {
@@ -195,6 +175,11 @@ export default function CompetitorsPage() {
   // when added (without re-running the expensive auto-discovery).
   const [visibleSuggestions, setVisibleSuggestions] =
     useState<SuggestedCompetitor[]>(suggestions);
+  // Competitor pending removal confirmation (null = modal closed).
+  const [removeTarget, setRemoveTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   // Keep visibleSuggestions in sync if the loader returns a fresh set
   // (e.g. after navigating away and back).
@@ -253,16 +238,18 @@ export default function CompetitorsPage() {
     );
   };
 
-  const handleDelete = (competitorId: string) => {
+  const handleConfirmRemove = () => {
+    if (!removeTarget) return;
     fetcher.submit(
-      { intent: "deleteCompetitor", competitorId },
+      { intent: "deleteCompetitor", competitorId: removeTarget.id },
       { method: "POST" }
     );
+    setRemoveTarget(null);
   };
 
   return (
     <Page>
-      <TitleBar title="Competitor Monitoring" />
+      <TitleBar title="Competitors" />
 
       <BlockStack gap="500">
         <Banner tone="info">
@@ -289,9 +276,9 @@ export default function CompetitorsPage() {
                 {PLAN_LIMITS.PRO.maxCompetitors}.
               </Text>
               <div>
-                <Link to="/app/pricing">
-                  <Button variant="primary">See pricing</Button>
-                </Link>
+                <Button variant="primary" url="/app/pricing">
+                  See pricing
+                </Button>
               </div>
             </BlockStack>
           </Banner>
@@ -513,7 +500,12 @@ export default function CompetitorsPage() {
               key={c.competitor.id}
               stats={c}
               totalChecks={overview.totalChecks}
-              onDelete={handleDelete}
+              onRequestRemove={() =>
+                setRemoveTarget({
+                  id: c.competitor.id,
+                  name: c.competitor.name,
+                })
+              }
               isDeleting={
                 isWorking &&
                 fetcher.formData?.get("intent") === "deleteCompetitor" &&
@@ -522,6 +514,27 @@ export default function CompetitorsPage() {
             />
           ))}
       </BlockStack>
+
+      <Modal
+        open={removeTarget !== null}
+        onClose={() => setRemoveTarget(null)}
+        title={removeTarget ? `Stop tracking ${removeTarget.name}?` : ""}
+        primaryAction={{
+          content: "Remove competitor",
+          destructive: true,
+          onAction: handleConfirmRemove,
+        }}
+        secondaryActions={[
+          { content: "Cancel", onAction: () => setRemoveTarget(null) },
+        ]}
+      >
+        <Modal.Section>
+          <Text as="p" variant="bodyMd">
+            Their citation history stays in your raw tracking data, but this
+            card and its notes will be removed. This can&apos;t be undone.
+          </Text>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }
@@ -531,14 +544,14 @@ export default function CompetitorsPage() {
 interface CompetitorCardProps {
   stats: CompetitorOverview["competitors"][number];
   totalChecks: number;
-  onDelete: (id: string) => void;
+  onRequestRemove: () => void;
   isDeleting: boolean;
 }
 
 function CompetitorCard({
   stats,
   totalChecks,
-  onDelete,
+  onRequestRemove,
   isDeleting,
 }: CompetitorCardProps) {
   const { competitor, citedCount, lastCitedAt, byPlatform, storeCitedSameQueries } =
@@ -569,7 +582,7 @@ function CompetitorCard({
             <Button
               tone="critical"
               variant="plain"
-              onClick={() => onDelete(competitor.id)}
+              onClick={onRequestRemove}
               loading={isDeleting}
             >
               Remove
@@ -632,7 +645,7 @@ function CompetitorCard({
                   Last cited
                 </Text>
                 <Text as="span" variant="bodyMd">
-                  {relativeTime(lastCitedAt)}
+                  {timeAgo(lastCitedAt)}
                 </Text>
               </BlockStack>
             </Box>
@@ -646,7 +659,7 @@ function CompetitorCard({
             </Text>
             {platformBadges.map(([platform, n]) => (
               <Badge key={platform} tone="info">
-                {`${PLATFORM_LABELS[platform] ?? platform}: ${n}`}
+                {`${platformLabel(platform)}: ${n}`}
               </Badge>
             ))}
           </InlineStack>

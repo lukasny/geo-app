@@ -16,6 +16,7 @@ import {
   EmptyState,
   ButtonGroup,
   Divider,
+  Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
@@ -53,6 +54,7 @@ interface LoaderPost {
 
 interface LoaderData {
   plan: PlanKey;
+  shopifyDomain: string;
   posts: LoaderPost[];
   postsThisMonth: number;
   /** null = unlimited posts on this plan. */
@@ -73,6 +75,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!store) {
     return {
       plan: "FREE" as PlanKey,
+      shopifyDomain: session.shop,
       posts: [],
       postsThisMonth: 0,
       monthlyCap: 0,
@@ -116,6 +119,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     plan: planKey,
+    shopifyDomain: session.shop,
     posts: loaderPosts,
     postsThisMonth,
     monthlyCap: monthlyCap === Infinity ? null : monthlyCap,
@@ -292,13 +296,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const postId = (formData.get("postId") as string) ?? "";
     if (!postId) return { error: "Missing post ID." };
 
+    const existing = await prisma.blogPost.findFirst({
+      where: { id: postId, storeId: store.id },
+      select: { status: true },
+    });
+
     // Soft delete to preserve monthly usage counts. The merchant can clear
-    // a botched draft without resetting their quota.
+    // a botched draft without resetting their quota. For published posts
+    // this only removes the row here; the live Shopify article is untouched.
     await prisma.blogPost.updateMany({
       where: { id: postId, storeId: store.id },
       data: { status: "deleted" },
     });
-    return { success: true, intent };
+    return {
+      success: true,
+      intent,
+      wasPublished: existing?.status === "published",
+    };
   }
 
   return { error: "Unknown action." };
@@ -329,7 +343,7 @@ const TONE_LABEL: Record<string, string> = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BlogGeneratorPage() {
-  const { plan, posts, postsThisMonth, monthlyCap, capRemaining } =
+  const { plan, shopifyDomain, posts, postsThisMonth, monthlyCap, capRemaining } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -339,6 +353,7 @@ export default function BlogGeneratorPage() {
   const [keywordsDraft, setKeywordsDraft] = useState("");
   const [toneDraft, setToneDraft] = useState<string>("informative");
   const [lengthDraft, setLengthDraft] = useState<string>("medium");
+  const [deleteTarget, setDeleteTarget] = useState<LoaderPost | null>(null);
 
   // Track which post's "Publish" button was clicked so the spinner lands
   // on the right card.
@@ -363,7 +378,11 @@ export default function BlogGeneratorPage() {
     } else if (data.success && data.intent === "publishPost") {
       shopify.toast.show("Published to your Shopify blog");
     } else if (data.success && data.intent === "deletePost") {
-      shopify.toast.show("Draft deleted");
+      shopify.toast.show(
+        data.wasPublished
+          ? "Removed from GEO Rise. The article is still live on your Shopify blog."
+          : "Draft deleted",
+      );
     }
   }, [fetcher.data, fetcher.state, shopify]);
 
@@ -376,7 +395,7 @@ export default function BlogGeneratorPage() {
   if (!canGenerate) {
     return (
       <Page>
-        <TitleBar title="AI Blog Post Generator" />
+        <TitleBar title="Blog Generator" />
         <BlockStack gap="500">
           <Banner
             tone="warning"
@@ -407,9 +426,19 @@ export default function BlogGeneratorPage() {
     );
   }
 
+  const deleteTargetPublished = deleteTarget?.status === "published";
+  const confirmDelete = () => {
+    if (!deleteTarget) return;
+    fetcher.submit(
+      { intent: "deletePost", postId: deleteTarget.id },
+      { method: "POST" },
+    );
+    setDeleteTarget(null);
+  };
+
   return (
     <Page>
-      <TitleBar title="AI Blog Post Generator" />
+      <TitleBar title="Blog Generator" />
 
       <BlockStack gap="500">
         <Banner tone="info">
@@ -515,6 +544,8 @@ export default function BlogGeneratorPage() {
               key={post.id}
               post={post}
               fetcher={fetcher}
+              shopifyDomain={shopifyDomain}
+              onRequestDelete={setDeleteTarget}
               isPublishing={
                 inFlightPostId === post.id &&
                 fetcher.formData?.get("intent") === "publishPost"
@@ -528,6 +559,28 @@ export default function BlogGeneratorPage() {
           ))
         )}
       </BlockStack>
+
+      <Modal
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title={deleteTargetPublished ? "Remove from list?" : "Delete draft?"}
+        primaryAction={{
+          content: deleteTargetPublished ? "Remove from list" : "Delete draft",
+          destructive: true,
+          onAction: confirmDelete,
+        }}
+        secondaryActions={[
+          { content: "Cancel", onAction: () => setDeleteTarget(null) },
+        ]}
+      >
+        <Modal.Section>
+          <Text as="p" variant="bodyMd">
+            {deleteTargetPublished
+              ? "This removes the post from GEO Rise only. The article stays live on your Shopify blog; manage it under Online Store > Blog posts."
+              : "This deletes the draft from GEO Rise. It still counts toward your monthly post quota."}
+          </Text>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }
@@ -537,6 +590,8 @@ export default function BlogGeneratorPage() {
 interface BlogPostCardProps {
   post: LoaderPost;
   fetcher: ReturnType<typeof useFetcher>;
+  shopifyDomain: string;
+  onRequestDelete: (post: LoaderPost) => void;
   isPublishing: boolean;
   isDeleting: boolean;
   anyInFlight: boolean;
@@ -545,12 +600,15 @@ interface BlogPostCardProps {
 function BlogPostCard({
   post,
   fetcher,
+  shopifyDomain,
+  onRequestDelete,
   isPublishing,
   isDeleting,
   anyInFlight,
 }: BlogPostCardProps) {
   const [expanded, setExpanded] = useState(false);
   const isPublished = post.status === "published";
+  const articleNumericId = post.shopifyArticleId?.split("/").pop() ?? null;
 
   return (
     <Card>
@@ -608,19 +666,24 @@ function BlogPostCard({
                 </Button>
               </fetcher.Form>
             )}
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="deletePost" />
-              <input type="hidden" name="postId" value={post.id} />
+            {isPublished && articleNumericId && (
               <Button
-                submit
-                tone="critical"
+                url={`https://${shopifyDomain}/admin/articles/${articleNumericId}`}
+                target="_blank"
                 variant="plain"
-                loading={isDeleting}
-                disabled={anyInFlight && !isDeleting}
               >
-                Delete
+                View in Shopify
               </Button>
-            </fetcher.Form>
+            )}
+            <Button
+              tone="critical"
+              variant="plain"
+              loading={isDeleting}
+              disabled={anyInFlight && !isDeleting}
+              onClick={() => onRequestDelete(post)}
+            >
+              {isPublished ? "Remove from list" : "Delete draft"}
+            </Button>
           </ButtonGroup>
         </InlineStack>
 

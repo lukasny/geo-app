@@ -17,6 +17,9 @@ import {
   Badge,
   Collapsible,
   CalloutCard,
+  InlineGrid,
+  Link,
+  Spinner,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
@@ -27,6 +30,7 @@ import {
 } from "~/services/llms-generator.server";
 import { listMarkets } from "~/services/markets.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
+import { timeAgo } from "~/utils/time";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -273,7 +277,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   ) {
     return {
       error:
-        "Multi-market llms.txt requires the Growth plan or higher. Upgrade on the Plans page to generate market files.",
+        "Multi-market llms.txt requires the Growth plan or higher. Upgrade on the Pricing page to generate market files.",
     };
   }
 
@@ -484,7 +488,8 @@ export default function LlmsTxtPage() {
     : "";
 
   const isFreePlanLimited =
-    store?.plan === "FREE" && (store?.totalProducts ?? 0) > 25;
+    store?.plan === "FREE" &&
+    (store?.totalProducts ?? 0) > PLAN_LIMITS.FREE.maxProductsInLlmsTxt;
 
   return (
     <Page>
@@ -504,13 +509,24 @@ export default function LlmsTxtPage() {
 
       <BlockStack gap="500">
         {/* ── Status Banner ── */}
+        {isGenerating && (
+          <Banner tone="info">
+            <InlineStack gap="200" blockAlign="center">
+              <Spinner size="small" />
+              <Text as="p" variant="bodyMd">
+                Generating llms.txt from your live catalog… this takes about
+                30 seconds.
+              </Text>
+            </InlineStack>
+          </Banner>
+        )}
         {hasFile && !isStale && (
           <Banner tone="success">
             <Text as="p" variant="bodyMd">
               Your llms.txt is live at{" "}
-              <a href={proxyUrl} target="_blank" rel="noreferrer">
+              <Link url={proxyUrl} target="_blank">
                 {proxyUrl}
-              </a>
+              </Link>
             </Text>
           </Banner>
         )}
@@ -525,8 +541,10 @@ export default function LlmsTxtPage() {
         {!hasFile && (
           <Banner tone="info">
             <Text as="p" variant="bodyMd">
-              Generate your first llms.txt to get discovered by ChatGPT,
-              Gemini, and Perplexity.
+              llms.txt is a simple text file on your store that tells AI
+              search engines what you sell. Generate yours so ChatGPT,
+              Gemini, and Perplexity can discover and recommend your
+              products.
             </Text>
           </Banner>
         )}
@@ -621,12 +639,12 @@ export default function LlmsTxtPage() {
         )}
 
         {/* ── Stats Cards ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+        <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
           {[
             { label: "Products", value: llmsFile?.productCount ?? 0 },
             { label: "Collections", value: llmsFile?.collectionCount ?? 0 },
-            { label: "Blog Posts", value: llmsFile?.blogPostCount ?? 0 },
-            { label: "File Size", value: formatBytes(llmsFile?.fileSizeBytes ?? 0) },
+            { label: "Blog posts", value: llmsFile?.blogPostCount ?? 0 },
+            { label: "File size", value: formatBytes(llmsFile?.fileSizeBytes ?? 0) },
           ].map(({ label, value }) => (
             <Card key={label}>
               <BlockStack gap="100">
@@ -635,7 +653,7 @@ export default function LlmsTxtPage() {
               </BlockStack>
             </Card>
           ))}
-        </div>
+        </InlineGrid>
 
         {/* ── Settings + Bot Access ── */}
         <Layout>
@@ -643,7 +661,7 @@ export default function LlmsTxtPage() {
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">
-                  Content Settings
+                  Content settings
                 </Text>
                 <BlockStack gap="300">
                   <Checkbox
@@ -694,7 +712,7 @@ export default function LlmsTxtPage() {
               <BlockStack gap="400">
                 <BlockStack gap="100">
                   <Text as="h2" variant="headingMd">
-                    AI Bot Access Control
+                    AI bot access
                   </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     Choose which AI engines can read your store data
@@ -748,6 +766,12 @@ export default function LlmsTxtPage() {
                     onClick={() =>
                       navigator.clipboard.writeText(llmsFile!.content)
                         .then(() => shopify.toast.show("Copied to clipboard!"))
+                        .catch(() =>
+                          shopify.toast.show(
+                            "Couldn't copy. Use Download .txt instead.",
+                            { isError: true }
+                          )
+                        )
                     }
                   >
                     Copy full file
@@ -812,14 +836,13 @@ export default function LlmsTxtPage() {
                   <Badge tone="success">Live</Badge>
                   <Text as="p" variant="bodySm" tone="subdued">
                     Served at{" "}
-                    <a href={proxyUrl} target="_blank" rel="noreferrer">
+                    <Link url={proxyUrl} target="_blank">
                       {proxyUrl}
-                    </a>
+                    </Link>
                   </Text>
                   {llmsFile?.lastGeneratedAt && (
                     <Text as="p" variant="bodySm" tone="subdued">
-                      · Last generated {daysSince(llmsFile.lastGeneratedAt)}{" "}
-                      {daysSince(llmsFile.lastGeneratedAt) === 1 ? "day" : "days"} ago
+                      · Last generated {timeAgo(llmsFile.lastGeneratedAt)}
                     </Text>
                   )}
                 </InlineStack>
@@ -839,9 +862,10 @@ export default function LlmsTxtPage() {
             }}
           >
             <Text as="p" variant="bodyMd">
-              Your free plan includes 25 products in llms.txt. Upgrade to
-              Growth to include all {store?.totalProducts} products and get
-              discovered by more AI search engines.
+              Your free plan includes {PLAN_LIMITS.FREE.maxProductsInLlmsTxt}{" "}
+              products in llms.txt. Upgrade to Growth to include all{" "}
+              {store?.totalProducts} products and get discovered by more AI
+              search engines.
             </Text>
           </CalloutCard>
         )}

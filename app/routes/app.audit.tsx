@@ -17,12 +17,16 @@ import {
   Box,
   ChoiceList,
   Filters,
+  InlineGrid,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { runFullAudit, autoFixIssues } from "~/services/audit-engine.server";
 import { timeAgo as timeAgoUtil } from "~/utils/time";
+import { PLAN_LIMITS } from "~/services/billing.shared";
+import { severityTone, severityLabel } from "~/utils/severity";
+import { ScorePill, scoreColor } from "~/components/ScorePill";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,23 +89,6 @@ interface LoaderData {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function scoreColor(score: number): string {
-  if (score < 40) return "#E24B4A";
-  if (score < 70) return "#EF9F27";
-  return "#1D9E75";
-}
-
-function severityTone(
-  severity: Severity
-): "critical" | "warning" | "attention" | "info" {
-  switch (severity) {
-    case "CRITICAL": return "critical";
-    case "HIGH": return "warning";
-    case "MEDIUM": return "attention";
-    default: return "info";
-  }
-}
-
 // Local wrapper keeps the "N minute(s) / hour(s) / day(s) ago" word form
 // this page used (the shared util uses "Nm / Nh / Nd" compact form).
 // Delegates to the shared util for the actual edge-case handling (clock
@@ -117,7 +104,7 @@ function timeAgo(dateStr: string): string {
   return `${n} ${word}${n !== 1 ? "s" : ""} ago`;
 }
 
-const FREE_PLAN_LIMIT = 3;
+const FREE_PLAN_LIMIT = PLAN_LIMITS.FREE.maxAuditProducts;
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
@@ -152,7 +139,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // returned every product + every audit result and the UI just visually
   // locked the locked rows - but a savvy merchant could inspect the network
   // payload and see all of it. Server-side filtering plugs that gap.
-  const { PLAN_LIMITS } = await import("~/services/billing.shared");
   const planLimits =
     PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
   const productLimit = Number.isFinite(planLimits.maxAuditProducts)
@@ -276,7 +262,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // bypassed by any route. For Free (cap=3 on 2026-05-17), this means a
       // store with 20 products gets the first 3 audited rather than the
       // whole audit blocked; the UI surfaces "audited X of Y" + upgrade CTA.
-      const { PLAN_LIMITS } = await import("~/services/billing.shared");
       const planLimits =
         PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
       const summary = await runFullAudit(store.id, admin, {
@@ -315,34 +300,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-
-function ScorePill({ score }: { score: number }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 10px",
-        borderRadius: "12px",
-        backgroundColor: scoreColor(score),
-        color: "#fff",
-        fontWeight: 600,
-        fontSize: "13px",
-        minWidth: "36px",
-        textAlign: "center",
-      }}
-    >
-      {score}
-    </span>
-  );
-}
-
-function CheckOrX({ value }: { value: boolean }) {
-  return (
-    <Text as="span" tone={value ? "success" : "critical"} variant="bodyMd">
-      {value ? "✓" : "✗"}
-    </Text>
-  );
-}
 
 function ProductDetailModal({
   product,
@@ -390,7 +347,7 @@ function ProductDetailModal({
           <BlockStack gap="200">
             <InlineStack gap="200" blockAlign="center">
               <Badge tone={severityTone(issue.severity)}>
-                {issue.severity}
+                {severityLabel(issue.severity)}
               </Badge>
               {issue.autoFixable && !issue.fixed && (
                 <Badge tone="info">Auto-fixable</Badge>
@@ -569,37 +526,28 @@ export default function AuditPage() {
     : [];
 
   // ── IndexTable rows ──
+  // Note: the loader already caps what capped plans receive, so every row
+  // we have is fully visible - no client-side "locked row" rendering needed.
   const tableRows = paginated.map((product, index) => {
     const absIndex = currentPage * PAGE_SIZE + index;
-    const locked = isFreePlan && absIndex >= FREE_PLAN_LIMIT;
 
     return (
       <IndexTable.Row id={product.id} key={product.id} position={absIndex}>
         <IndexTable.Cell>
-          {locked ? (
-            <span style={{ filter: "blur(4px)", userSelect: "none" }}>
-              Locked product
-            </span>
-          ) : (
-            <Text as="span" variant="bodyMd" fontWeight="semibold">
-              {product.title}
-            </Text>
-          )}
+          <Text as="span" variant="bodyMd" fontWeight="semibold">
+            {product.title}
+          </Text>
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? (
-            <Badge>Locked</Badge>
-          ) : (
-            <ScorePill score={product.aiReadinessScore} />
-          )}
+          <ScorePill score={product.aiReadinessScore} />
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? null : product.topIssue ? (
+          {product.topIssue ? (
             <InlineStack gap="100" blockAlign="center">
               <Badge tone={severityTone(product.topIssue.severity)}>
-                {product.topIssue.severity}
+                {severityLabel(product.topIssue.severity)}
               </Badge>
               <Text as="span" variant="bodySm">
                 {product.topIssue.title}
@@ -613,51 +561,43 @@ export default function AuditPage() {
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? null : (
-            <Text
-              as="span"
-              variant="bodySm"
-              tone={product.descriptionWordCount < 50 ? "critical" : undefined}
-            >
-              {product.descriptionWordCount} words
-            </Text>
-          )}
+          <Text
+            as="span"
+            variant="bodySm"
+            tone={product.descriptionWordCount < 50 ? "critical" : undefined}
+          >
+            {product.descriptionWordCount} words
+          </Text>
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? null : (
-            <Text as="span" variant="bodySm">
-              {product.hasAltText ? "✓" : "✗"} alt / {product.imageCount} imgs
-            </Text>
-          )}
+          <Text as="span" variant="bodySm">
+            {product.imageCount}{" "}
+            {product.imageCount === 1 ? "image" : "images"}, alt text{" "}
+            {product.hasAltText ? "set" : "missing"}
+          </Text>
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? null : (
-            <InlineStack gap="100">
-              <CheckOrX value={product.hasMetaTitle} />
-              <CheckOrX value={product.hasMetaDescription} />
-            </InlineStack>
-          )}
+          <InlineStack gap="100">
+            <Badge tone={product.hasMetaTitle ? "success" : "attention"}>
+              {product.hasMetaTitle ? "Set" : "Missing"}
+            </Badge>
+            <Badge
+              tone={product.hasMetaDescription ? "success" : "attention"}
+            >
+              {product.hasMetaDescription ? "Set" : "Missing"}
+            </Badge>
+          </InlineStack>
         </IndexTable.Cell>
 
         <IndexTable.Cell>
-          {locked ? (
-            <Button
-              size="slim"
-              url="/app/pricing"
-              variant="primary"
-            >
-              Upgrade
-            </Button>
-          ) : (
-            <Button
-              size="slim"
-              onClick={() => setSelectedProduct(product)}
-            >
-              View details
-            </Button>
-          )}
+          <Button
+            size="slim"
+            onClick={() => setSelectedProduct(product)}
+          >
+            View details
+          </Button>
         </IndexTable.Cell>
       </IndexTable.Row>
     );
@@ -665,26 +605,26 @@ export default function AuditPage() {
 
   return (
     <Page>
-      <TitleBar title="AI Readiness Audit">
+      <TitleBar title="AI Audit">
         <button
           variant="primary"
           onClick={() => submit("runAudit")}
-          disabled={isRunningAudit}
+          disabled={isRunningAudit || isAutoFixing}
         >
           {isRunningAudit
             ? "Running audit…"
             : hasRunAudit
-            ? "Re-run Audit"
-            : "Run First Audit"}
+            ? "Re-run audit"
+            : "Run first audit"}
         </button>
         {issueCounts.autoFixable > 0 && (
           <button
             onClick={() => setShowAutoFixConfirm(true)}
-            disabled={isAutoFixing}
+            disabled={isRunningAudit || isAutoFixing}
           >
             {isAutoFixing
               ? "Fixing…"
-              : `Auto-fix All (${issueCounts.autoFixable})`}
+              : `Auto-fix all (${issueCounts.autoFixable})`}
           </button>
         )}
       </TitleBar>
@@ -737,7 +677,7 @@ export default function AuditPage() {
                       return parts.join(" ");
                     })()}
               </Text>
-              <div>
+              <InlineStack gap="200">
                 <Button
                   variant="primary"
                   onClick={() => {
@@ -748,7 +688,10 @@ export default function AuditPage() {
                 >
                   Re-run audit to update your score
                 </Button>
-              </div>
+                <Button url="/app/action-plan">
+                  See remaining fixes in Action Plan
+                </Button>
+              </InlineStack>
             </BlockStack>
           </Banner>
         )}
@@ -784,28 +727,28 @@ export default function AuditPage() {
             <EmptyState
               heading="Ready to see how AI sees your store?"
               action={{
-                content: "Run First Audit",
+                content: "Run first audit",
                 onAction: () => submit("runAudit"),
               }}
-              image=""
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
               <Text as="p" variant="bodyMd">
                 Run your first audit to get a detailed AI readiness score for
-                every product. We check descriptions, images, meta data,
-                structured data, and more - then tell you exactly what to fix.
+                every product. We check descriptions, images, search listing
+                text, and more, then tell you exactly what to fix.
               </Text>
             </EmptyState>
           </Card>
         )}
 
-        {/* ── GEO Score hero ── */}
+        {/* ── GEO score hero ── */}
         {hasRunAudit && store && (
           <Card>
             <BlockStack gap="400">
               <InlineStack align="space-between" blockAlign="start">
                 <BlockStack gap="200">
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Store GEO Score
+                    Store GEO score
                   </Text>
                   <span
                     style={{
@@ -849,41 +792,56 @@ export default function AuditPage() {
 
         {/* ── Issue summary cards ── */}
         {hasRunAudit && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
-            {[
-              { label: "Critical", count: issueCounts.critical, tone: "critical" as const },
-              { label: "High", count: issueCounts.high, tone: "warning" as const },
-              { label: "Medium", count: issueCounts.medium, tone: "attention" as const },
-              {
-                label: "Auto-fixable",
-                count: issueCounts.autoFixable,
-                tone: "info" as const,
-                action:
-                  issueCounts.autoFixable > 0
-                    ? () => setShowAutoFixConfirm(true)
-                    : undefined,
-              },
-            ].map(({ label, count, tone, action: onAction }) => (
-              <Card key={label}>
-                <BlockStack gap="200">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="p" variant="bodySm" tone="subdued">{label}</Text>
-                    <Badge tone={tone}>{String(count)}</Badge>
-                  </InlineStack>
-                  <Text as="p" variant="headingLg">{count}</Text>
-                  {onAction && count > 0 && (
-                    <Button size="slim" variant="plain" onClick={onAction} loading={isAutoFixing}>
-                      Fix all
-                    </Button>
-                  )}
-                </BlockStack>
-              </Card>
-            ))}
-          </div>
+          <BlockStack gap="200">
+            <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
+              {[
+                { label: "Critical", count: issueCounts.critical, tone: "critical" as const },
+                { label: "High", count: issueCounts.high, tone: "warning" as const },
+                { label: "Medium", count: issueCounts.medium, tone: "attention" as const },
+                {
+                  label: "Auto-fixable",
+                  count: issueCounts.autoFixable,
+                  tone: "info" as const,
+                  action:
+                    issueCounts.autoFixable > 0
+                      ? () => setShowAutoFixConfirm(true)
+                      : undefined,
+                },
+              ].map(({ label, count, tone, action: onAction }) => (
+                <Card key={label}>
+                  <BlockStack gap="200">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <Text as="p" variant="bodySm" tone="subdued">{label}</Text>
+                      <Badge tone={tone}>{String(count)}</Badge>
+                    </InlineStack>
+                    <Text as="p" variant="headingLg">{count}</Text>
+                    {onAction && count > 0 && (
+                      <Button size="slim" variant="plain" onClick={onAction} loading={isAutoFixing}>
+                        Fix all
+                      </Button>
+                    )}
+                  </BlockStack>
+                </Card>
+              ))}
+            </InlineGrid>
+            <InlineStack gap="100" blockAlign="center">
+              <Text as="p" variant="bodySm" tone="subdued">
+                Missing meta titles or alt text across many products?
+              </Text>
+              <Button variant="plain" url="/app/bulk-edit">
+                Fix them in one pass in Bulk Edit
+              </Button>
+            </InlineStack>
+          </BlockStack>
         )}
 
         {/* ── Free plan upgrade banner ── */}
-        {isFreePlan && hasRunAudit && products.length > FREE_PLAN_LIMIT && (
+        {/* Gate on the store's real catalog size, not the truncated loader
+            payload: the loader caps products at FREE_PLAN_LIMIT for Free
+            stores, so products.length can never exceed the limit. */}
+        {isFreePlan &&
+          hasRunAudit &&
+          (store?.totalProducts ?? 0) > FREE_PLAN_LIMIT && (
           <Banner
             title="You're on the Free plan"
             tone="warning"
@@ -950,11 +908,11 @@ export default function AuditPage() {
               itemCount={filteredProducts.length}
               headings={[
                 { title: "Product" },
-                { title: "AI Score" },
-                { title: "Top Issue" },
+                { title: "AI score" },
+                { title: "Top issue" },
                 { title: "Description" },
                 { title: "Images" },
-                { title: "Meta T/D" },
+                { title: "Meta title / description" },
                 { title: "" },
               ]}
               selectable={false}
@@ -979,13 +937,13 @@ export default function AuditPage() {
       />
 
       {/* ── Auto-fix confirmation modal ── */}
-      {/* Shown before submitting "Auto-fix All" so the merchant sees exactly
+      {/* Shown before submitting "Auto-fix all" so the merchant sees exactly
           what's about to be written + estimated time. Stops the surprise of
           "clicked the button, 90 seconds passed, products rewritten." */}
       <Modal
         open={showAutoFixConfirm}
         onClose={() => setShowAutoFixConfirm(false)}
-        title="Start Auto-fix?"
+        title="Start auto-fix?"
         primaryAction={{
           content: `Auto-fix ${autoFixBreakdown.total} issue${
             autoFixBreakdown.total !== 1 ? "s" : ""

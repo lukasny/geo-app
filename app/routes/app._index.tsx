@@ -14,6 +14,7 @@ import {
   ProgressBar,
   Banner,
   CalloutCard,
+  InlineGrid,
   ResourceList,
   ResourceItem,
   Box,
@@ -29,6 +30,8 @@ import { getRevenueAttribution } from "~/services/revenue-attribution.server";
 import type { RevenueSummary } from "~/services/revenue-attribution.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
+import { formatMoney } from "~/utils/money";
+import { platformLabel } from "~/utils/platforms";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -264,7 +267,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: session.shop },
   });
-  if (!store) return { error: "Store not found." };
+  if (!store) return { error: "Store not found.", intent };
 
   if (intent === "generateLlms") {
     try {
@@ -285,7 +288,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         productCount: result.defaultResult.productCount,
       };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : "Generation failed." };
+      return {
+        error: err instanceof Error ? err.message : "Generation failed.",
+        intent,
+      };
     }
   }
 
@@ -302,7 +308,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : "Audit failed." };
+      return {
+        error: err instanceof Error ? err.message : "Audit failed.",
+        intent,
+      };
     }
   }
 
@@ -314,7 +323,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const summary = await runFullAudit(store.id, admin, { maxProducts: 5 });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : "Audit failed." };
+      return {
+        error: err instanceof Error ? err.message : "Audit failed.",
+        intent,
+      };
     }
   }
 
@@ -333,7 +345,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         afterScore: audit.storeScore,
       };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : "Auto-fix failed." };
+      return {
+        error: err instanceof Error ? err.message : "Auto-fix failed.",
+        intent,
+      };
     }
   }
 
@@ -427,7 +442,7 @@ function nextSendHint(lastSentIso: string): string {
   const lastSent = new Date(lastSentIso).getTime();
   const nextEligible = lastSent + 6.5 * 24 * 60 * 60 * 1000;
   const diffMs = nextEligible - Date.now();
-  if (diffMs <= 0) return "scheduled for the next daily cron tick";
+  if (diffMs <= 0) return "due within the next day";
   const hrs = Math.round(diffMs / 3600000);
   if (hrs < 24) return `scheduled in ~${hrs}h`;
   const days = Math.round(hrs / 24);
@@ -447,7 +462,7 @@ function GeoScoreRing({ score }: { score: number }) {
       width="160"
       height="160"
       viewBox="0 0 160 160"
-      aria-label={`GEO Score: ${score} out of 100`}
+      aria-label={`GEO score: ${score} out of 100`}
       style={{ display: "block", margin: "0 auto" }}
     >
       <circle cx="80" cy="80" r={r} fill="none" stroke="#E4E5E7" strokeWidth="14" />
@@ -646,7 +661,9 @@ function Step2({
     }
   }, [fetcher, hasFiredAudit, hasFiredLlms]);
 
-  if (auditError) {
+  // Don't show the stale error while a retry submission is in flight -
+  // `data` still holds the previous failure until the new response lands.
+  if (auditError && !isAuditing) {
     return (
       <BlockStack gap="400">
         <BlockStack gap="100">
@@ -709,7 +726,7 @@ function Step2({
         <BlockStack gap="200" align="center">
           <GeoScoreRing score={score} />
           <Text as="p" variant="headingMd" alignment="center">
-            Your starting GEO Score: {score} of 100
+            Your starting GEO score: {score} of 100
           </Text>
           {/* Wizard-specific message that primes the next step (auto-fix).
               The generic scoreLabel() copy used elsewhere ends with "Run an
@@ -820,7 +837,7 @@ function Step3({
           <BlockStack gap="200" align="center">
             <GeoScoreRing score={beforeScore} />
             <Text as="p" variant="headingMd" alignment="center">
-              Your starting GEO Score: {beforeScore} of 100
+              Your starting GEO score: {beforeScore} of 100
             </Text>
           </BlockStack>
         </Box>
@@ -866,7 +883,7 @@ function Step3({
         <BlockStack gap="200" align="center">
           <GeoScoreRing score={animatedScore} />
           <Text as="p" variant="headingMd" alignment="center">
-            Your GEO Score: {beforeScore} to {afterScore}
+            Your GEO score went from {beforeScore} to {afterScore}
           </Text>
           <Text as="p" variant="bodySm" tone="subdued" alignment="center">
             We just auto-fixed {fixedCount}{" "}
@@ -962,16 +979,17 @@ function DiscoveryCardSchema({
   return (
     <BlockStack gap="200">
       <Text as="h3" variant="headingSm">
-        Enable AI Schema Injection
+        Turn on GEO Rise Schema
       </Text>
       <Text as="p" variant="bodySm" tone="subdued">
         Add structured data to your product pages so ChatGPT, Gemini, and
-        Perplexity can fully understand what you sell. Takes 30 seconds in
-        your Shopify theme editor.
+        Perplexity can fully understand what you sell. Takes 30 seconds:
+        toggle on the &quot;GEO Rise Schema&quot; app embed in your Shopify
+        theme editor.
       </Text>
       <InlineStack gap="200">
-        <Button variant="primary" url={themeEditorUrl} target="_blank">
-          Open Theme Editor
+        <Button url={themeEditorUrl} target="_blank">
+          Open theme editor
         </Button>
         <Button
           variant="plain"
@@ -994,14 +1012,14 @@ function DiscoveryCardTracking() {
   return (
     <BlockStack gap="200">
       <Text as="h3" variant="headingSm">
-        Set up AI Tracking
+        Set up AI tracking
       </Text>
       <Text as="p" variant="bodySm" tone="subdued">
         See when ChatGPT, Claude, and Perplexity mention your products. We can
         suggest prompts based on your catalog.
       </Text>
-      <Button variant="primary" url="/app/tracking">
-        Go to AI Tracking
+      <Button url="/app/tracking">
+        Go to AI tracking
       </Button>
     </BlockStack>
   );
@@ -1016,8 +1034,8 @@ function DiscoveryCardCompetitors() {
       <Text as="p" variant="bodySm" tone="subdued">
         Compare your AI visibility head-to-head with rivals in your niche.
       </Text>
-      <Button variant="primary" url="/app/competitors">
-        Go to Competitors
+      <Button url="/app/competitors">
+        Go to competitors
       </Button>
     </BlockStack>
   );
@@ -1033,8 +1051,8 @@ function DiscoveryCardBlog() {
         AI-written posts grounded in your real catalog, structured for ChatGPT
         to cite. Publish to your Shopify blog with one click.
       </Text>
-      <Button variant="primary" url="/app/blog-generator">
-        Go to Blog Generator
+      <Button url="/app/blog-generator">
+        Go to blog generator
       </Button>
     </BlockStack>
   );
@@ -1044,14 +1062,14 @@ function DiscoveryCardSimulator() {
   return (
     <BlockStack gap="200">
       <Text as="h3" variant="headingSm">
-        Run AI Simulator
+        Run the AI simulator
       </Text>
       <Text as="p" variant="bodySm" tone="subdued">
         See exactly what ChatGPT and Claude extract from any product page on
         your store.
       </Text>
-      <Button variant="primary" url="/app/simulator">
-        Go to AI Simulator
+      <Button url="/app/simulator">
+        Go to AI simulator
       </Button>
     </BlockStack>
   );
@@ -1071,10 +1089,9 @@ function DiscoveryCardWeeklyEmail({
       </Text>
       <Text as="p" variant="bodySm" tone="subdued">
         A weekly digest of your GEO score, top actions, competitor citation
-        rates, and AI mentions. Lands in your inbox every Monday.
+        rates, and AI mentions. Lands in your inbox about once a week.
       </Text>
       <Button
-        variant="primary"
         loading={isWorking}
         onClick={() => {
           const formData = new FormData();
@@ -1130,15 +1147,15 @@ function AiRevenueCard({
         <BlockStack gap="200">
           <InlineStack align="space-between" blockAlign="center">
             <Text as="h2" variant="headingMd">
-              AI Revenue
+              AI revenue
             </Text>
             <Button url="/app/revenue" variant="plain">
               View full report
             </Button>
           </InlineStack>
           <Text as="p" variant="bodySm" tone="subdued">
-            No AI-attributed revenue yet. Make sure the AI Schema Injection
-            theme app embed is enabled, then any shopper who reaches you via
+            No AI-attributed revenue yet. Make sure the GEO Rise Schema theme
+            app embed is enabled, then any shopper who reaches you via
             ChatGPT, Perplexity, Claude, or Gemini will show up here.
           </Text>
         </BlockStack>
@@ -1154,7 +1171,7 @@ function AiRevenueCard({
       <BlockStack gap="300">
         <InlineStack align="space-between" blockAlign="center">
           <Text as="h2" variant="headingMd">
-            AI Revenue
+            AI revenue
           </Text>
           <Button url="/app/revenue" variant="plain">
             View full report
@@ -1162,7 +1179,7 @@ function AiRevenueCard({
         </InlineStack>
         <BlockStack gap="100">
           <Text as="p" variant="heading2xl">
-            {formatRevenueMoney(dominant.amount, dominant.currency)}
+            {formatMoney(dominant.amount, dominant.currency)}
           </Text>
           <Text as="p" variant="bodySm" tone="subdued">
             AI-attributed revenue, last 30 days, {dominant.orderCount}{" "}
@@ -1176,8 +1193,8 @@ function AiRevenueCard({
           <InlineStack gap="200" wrap>
             {summary!.byPlatform.map((p) => (
               <Text as="span" variant="bodySm" tone="subdued" key={p.platform}>
-                {platformDisplayName(p.platform)}{" "}
-                <strong>{formatRevenueMoney(p.amount, p.currency)}</strong>
+                {platformLabel(p.platform)}{" "}
+                <strong>{formatMoney(p.amount, p.currency)}</strong>
               </Text>
             ))}
           </InlineStack>
@@ -1185,37 +1202,6 @@ function AiRevenueCard({
       </BlockStack>
     </Card>
   );
-}
-
-function formatRevenueMoney(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
-    }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
-
-function platformDisplayName(platform: string): string {
-  switch (platform) {
-    case "CHATGPT":
-      return "ChatGPT";
-    case "PERPLEXITY":
-      return "Perplexity";
-    case "CLAUDE":
-      return "Claude";
-    case "GEMINI":
-      return "Gemini";
-    case "GROK":
-      return "Grok";
-    case "GOOGLE_AI_OVERVIEW":
-      return "Google AI Overview";
-    default:
-      return platform;
-  }
 }
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
@@ -1274,7 +1260,7 @@ export default function Index() {
     <Page>
       <TitleBar title={`GEO Rise - ${store.shopName}`} />
 
-      <BlockStack gap="600">
+      <BlockStack gap="500">
         {/* ── ROW 1: GEO Score ── */}
         <Card>
           <Layout>
@@ -1283,7 +1269,7 @@ export default function Index() {
                 <div style={{ textAlign: "center" }}>
                   <GeoScoreRing score={store.geoScore} />
                   <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-                    GEO Score
+                    GEO score
                   </Text>
                 </div>
               </Box>
@@ -1321,7 +1307,7 @@ export default function Index() {
                   </InlineStack>
 
                   <Button variant="primary" url="/app/audit">
-                    {hasAudit ? "View Full Audit Report" : "Run First Audit"}
+                    {hasAudit ? "View full audit report" : "Run first audit"}
                   </Button>
                 </BlockStack>
               </Box>
@@ -1330,7 +1316,7 @@ export default function Index() {
         </Card>
 
         {/* ── ROW 2: Stats grid ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+        <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
           <Card>
             <BlockStack gap="200">
               <Text as="p" variant="bodySm" tone="subdued">Audited</Text>
@@ -1348,14 +1334,19 @@ export default function Index() {
 
           <Card>
             <BlockStack gap="200">
-              <Text as="p" variant="bodySm" tone="subdued">AI Citations</Text>
+              <Text as="p" variant="bodySm" tone="subdued">AI citations, last 30 days</Text>
               {isFreePlan ? (
                 <BlockStack gap="100">
-                  <Text as="p" variant="headingLg">🔒</Text>
+                  <InlineStack>
+                    <Badge>Locked</Badge>
+                  </InlineStack>
                   <Button size="slim" url="/app/pricing" variant="plain">Upgrade to track</Button>
                 </BlockStack>
               ) : (
-                <Text as="p" variant="headingLg">{citationCount}</Text>
+                <BlockStack gap="100">
+                  <Text as="p" variant="headingLg">{citationCount}</Text>
+                  <Button size="slim" url="/app/tracking" variant="plain">View tracking</Button>
+                </BlockStack>
               )}
             </BlockStack>
           </Card>
@@ -1367,6 +1358,7 @@ export default function Index() {
               <Text as="p" variant="bodySm" tone="critical">
                 {issueCounts.critical} critical, {issueCounts.high} high
               </Text>
+              <Button size="slim" url="/app/action-plan" variant="plain">See action plan</Button>
             </BlockStack>
           </Card>
 
@@ -1374,16 +1366,17 @@ export default function Index() {
             <BlockStack gap="200">
               <Text as="p" variant="bodySm" tone="subdued">llms.txt</Text>
               <Badge tone={hasLlms ? "success" : "attention"}>
-                {hasLlms ? "Active" : "Not Generated"}
+                {hasLlms ? "Active" : "Not generated"}
               </Badge>
               {llmsFile?.lastGeneratedAt && (
                 <Text as="p" variant="bodySm" tone="subdued">
                   Updated {timeAgo(llmsFile.lastGeneratedAt)}
                 </Text>
               )}
+              <Button size="slim" url="/app/llms-txt" variant="plain">Manage</Button>
             </BlockStack>
           </Card>
-        </div>
+        </InlineGrid>
 
         {/* ── ROW 2.5: AI Revenue card ── */}
         <AiRevenueCard
@@ -1397,12 +1390,13 @@ export default function Index() {
         {/* ── ROW 3: Quick actions ── */}
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Quick Actions</Text>
+            <Text as="h2" variant="headingMd">Quick actions</Text>
             <ButtonGroup>
               <Button
                 variant={hasLlms ? "secondary" : "primary"}
                 onClick={() => submit("generateLlms")}
                 loading={isLoading && lastIntent === "generateLlms"}
+                disabled={isLoading && lastIntent !== "generateLlms"}
               >
                 {hasLlms ? "Regenerate llms.txt" : "Generate llms.txt"}
               </Button>
@@ -1410,32 +1404,40 @@ export default function Index() {
                 variant={hasAudit ? "secondary" : "primary"}
                 onClick={() => submit("runAudit")}
                 loading={isLoading && lastIntent === "runAudit"}
+                disabled={isLoading && lastIntent !== "runAudit"}
               >
-                {hasAudit ? "Re-run AI Audit" : "Run AI Audit"}
+                {hasAudit ? "Re-run AI audit" : "Run AI audit"}
               </Button>
               {hasAudit && (
-                <Button url="/app/action-plan">See Action Plan</Button>
+                <Button url="/app/action-plan">See action plan</Button>
               )}
-              <Button url="/app/simulator">Try AI Simulation</Button>
+              <Button url="/app/simulator">Try AI simulation</Button>
               {!isFreePlan && (
-                <Button url="/app/tracking">AI Visibility Tracking</Button>
+                <Button url="/app/tracking">AI visibility tracking</Button>
               )}
               {!isFreePlan && (
-                <Button url="/app/blog-generator">Blog Generator</Button>
+                <Button url="/app/bulk-edit">Bulk edit</Button>
               )}
-              <Button url="/app/llms-txt">llms.txt Manager</Button>
-              {!isFreePlan && <Button url="/app/pricing">View Plan</Button>}
+              {!isFreePlan && (
+                <Button url="/app/competitors">Competitors</Button>
+              )}
+              {!isFreePlan && (
+                <Button url="/app/blog-generator">Blog generator</Button>
+              )}
+              <Button url="/app/llms-txt">llms.txt manager</Button>
+              <Button url="/app/pricing">View plans</Button>
             </ButtonGroup>
-            {isLoading && (
-              <InlineStack gap="200" blockAlign="center">
-                <Spinner size="small" />
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {lastIntent === "generateLlms"
-                    ? "Generating llms.txt… this takes about 30 seconds."
-                    : "Running audit… this may take a minute for large catalogs."}
-                </Text>
-              </InlineStack>
-            )}
+            {isLoading &&
+              (lastIntent === "generateLlms" || lastIntent === "runAudit") && (
+                <InlineStack gap="200" blockAlign="center">
+                  <Spinner size="small" />
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {lastIntent === "generateLlms"
+                      ? "Generating llms.txt… this takes about 30 seconds."
+                      : "Running audit… this may take a minute for large catalogs."}
+                  </Text>
+                </InlineStack>
+              )}
           </BlockStack>
         </Card>
 
@@ -1480,8 +1482,8 @@ export default function Index() {
                     </>
                   ) : store.weeklyInsightEnabled ? (
                     <>
-                      Nothing sent yet, but the next scheduled cron tick will
-                      pick this store up.
+                      Nothing sent yet. Your first digest should arrive within
+                      the next day.
                     </>
                   ) : (
                     <>No emails sent yet.</>
@@ -1538,8 +1540,8 @@ export default function Index() {
         {isFreePlan ? (
           <CalloutCard
             title="Unlock the full GEO Rise experience"
-            illustration=""
-            primaryAction={{ content: "Start 7-day free trial →", url: "/app/pricing" }}
+            illustration="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be5a34ec20c05b94298cb8ept14702f09612f04cf1c04049e5a42f98c.png"
+            primaryAction={{ content: "Start 7-day free trial", url: "/app/pricing" }}
           >
             <Text as="p" variant="bodyMd">
               You&apos;re on the Free plan. Upgrade to{" "}
@@ -1558,13 +1560,14 @@ export default function Index() {
             action={{ content: `Upgrade to ${PLAN_DEFINITIONS.PRO.name}`, url: "/app/pricing" }}
           >
             <Text as="p" variant="bodyMd">
-              Tracking up to {PLAN_LIMITS.GROWTH.maxTrackingPrompts} prompts on
-              Growth - upgrade to{" "}
+              Tracking up to {PLAN_LIMITS.GROWTH.maxTrackingPrompts} prompts on{" "}
+              {PLAN_DEFINITIONS.GROWTH.name}. Upgrade to{" "}
               <strong>
                 {PLAN_DEFINITIONS.PRO.name} (${PLAN_DEFINITIONS.PRO.price}/mo)
               </strong>{" "}
-              for {PLAN_LIMITS.PRO.maxTrackingPrompts} prompts and scheduled
-              daily/weekly checks.
+              for {PLAN_LIMITS.PRO.maxTrackingPrompts} prompts,{" "}
+              {PLAN_LIMITS.PRO.maxCompetitors} competitor slots, and AI revenue
+              attribution.
             </Text>
           </Banner>
         ) : null}
@@ -1573,7 +1576,7 @@ export default function Index() {
         {recentActivity.length > 0 && (
           <Card>
             <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Recent Activity</Text>
+              <Text as="h2" variant="headingMd">Recent activity</Text>
               <ResourceList
                 resourceName={{ singular: "event", plural: "events" }}
                 items={recentActivity}

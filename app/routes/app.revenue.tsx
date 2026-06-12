@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { Link, useLoaderData } from "@remix-run/react";
+import { useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -7,10 +7,12 @@ import {
   Button,
   BlockStack,
   InlineStack,
+  InlineGrid,
   Badge,
   Banner,
   EmptyState,
   IndexTable,
+  Link,
   useIndexResourceState,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
@@ -25,6 +27,8 @@ import type {
   RevenueSummary,
 } from "~/services/revenue-attribution.server";
 import { timeAgo } from "~/utils/time";
+import { formatMoney } from "~/utils/money";
+import { platformLabel } from "~/utils/platforms";
 
 interface LoaderData {
   plan: PlanKey;
@@ -73,37 +77,6 @@ const PLATFORM_COLORS: Record<AiPlatform, string> = {
   GOOGLE_AI_OVERVIEW: "#9E9E9E",
 };
 
-function platformLabel(platform: string): string {
-  switch (platform) {
-    case "CHATGPT":
-      return "ChatGPT";
-    case "PERPLEXITY":
-      return "Perplexity";
-    case "CLAUDE":
-      return "Claude";
-    case "GEMINI":
-      return "Gemini";
-    case "GROK":
-      return "Grok";
-    case "GOOGLE_AI_OVERVIEW":
-      return "Google AI Overview";
-    default:
-      return platform;
-  }
-}
-
-function formatMoney(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
-    }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
-
 export default function RevenuePage() {
   const { plan, shopifyDomain, planAllowsFeature, summary } =
     useLoaderData<LoaderData>();
@@ -123,9 +96,9 @@ export default function RevenuePage() {
               {PLAN_DEFINITIONS.PRO.price}/mo) and Enterprise.
             </Text>
             <div>
-              <Link to="/app/pricing">
-                <Button variant="primary">See pricing</Button>
-              </Link>
+              <Button variant="primary" url="/app/pricing">
+                See pricing
+              </Button>
             </div>
           </BlockStack>
         </Banner>
@@ -133,7 +106,9 @@ export default function RevenuePage() {
     );
   }
 
-  const hasData = summary !== null && summary.byCurrency.length > 0;
+  const hasData =
+    summary !== null &&
+    (summary.byCurrency.length > 0 || summary.allTimeTotal !== null);
 
   if (!hasData) {
     return (
@@ -143,12 +118,17 @@ export default function RevenuePage() {
           <EmptyState
             heading="No AI-attributed revenue yet"
             image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            action={{
+              content: "Open theme editor",
+              url: `https://${shopifyDomain}/admin/themes/current/editor?context=apps`,
+              external: true,
+            }}
           >
             <Text as="p" variant="bodyMd">
               Once a shopper reaches your store from ChatGPT, Perplexity,
               Claude, Gemini, or Grok and places an order, it&apos;ll appear
-              here. Make sure the AI Schema Injection theme app embed is
-              enabled so the tracker can detect AI referrals.
+              here. Make sure the GEO Rise Schema app embed is enabled so the
+              tracker can detect AI referrals.
             </Text>
           </EmptyState>
         </Card>
@@ -156,19 +136,17 @@ export default function RevenuePage() {
     );
   }
 
-  const dominant = summary!.byCurrency[0];
+  const dominant = summary!.byCurrency[0] ?? {
+    currency: summary!.allTimeTotal?.currency ?? "USD",
+    amount: 0,
+    orderCount: 0,
+  };
 
   return (
     <Page>
       <TitleBar title="AI Revenue" />
       <BlockStack gap="500">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: "16px",
-          }}
-        >
+        <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
           <Card>
             <BlockStack gap="100">
               <Text as="p" variant="bodySm" tone="subdued">
@@ -216,7 +194,14 @@ export default function RevenuePage() {
               </Text>
             </BlockStack>
           </Card>
-        </div>
+        </InlineGrid>
+
+        {summary!.byCurrency.length === 0 && (
+          <Text as="p" variant="bodySm" tone="subdued">
+            No AI-attributed orders in the last 30 days. The all-time total and
+            recent orders below reflect older activity.
+          </Text>
+        )}
 
         {summary!.byCurrency.length > 1 && (
           <Banner tone="info">
@@ -394,14 +379,9 @@ function RevenueOrderTable({
           </Text>
         </IndexTable.Cell>
         <IndexTable.Cell>
-          <a
-            href={adminUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: "#005BD3", textDecoration: "none" }}
-          >
+          <Link url={adminUrl} target="_blank" removeUnderline>
             #{numericId}
-          </a>
+          </Link>
         </IndexTable.Cell>
         <IndexTable.Cell>
           <Badge>{platformLabel(order.platform)}</Badge>

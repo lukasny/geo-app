@@ -27,12 +27,12 @@ export default function App() {
         <Link to="/app/audit">AI Audit</Link>
         <Link to="/app/action-plan">Action Plan</Link>
         <Link to="/app/bulk-edit">Bulk Edit</Link>
+        <Link to="/app/blog-generator">Blog Generator</Link>
         <Link to="/app/simulator">AI Simulator</Link>
+        <Link to="/app/llms-txt">llms.txt Manager</Link>
         <Link to="/app/tracking">AI Tracking</Link>
         <Link to="/app/competitors">Competitors</Link>
         <Link to="/app/revenue">AI Revenue</Link>
-        <Link to="/app/blog-generator">Blog Generator</Link>
-        <Link to="/app/llms-txt">llms.txt Manager</Link>
         <Link to="/app/pricing">Pricing</Link>
       </NavMenu>
       <Outlet />

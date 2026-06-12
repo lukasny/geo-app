@@ -31,6 +31,8 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
 import type { FieldComparison, SimulationResult } from "~/services/ai-simulator.server";
+import { PLAN_LIMITS } from "~/services/billing.shared";
+import { severityLabel } from "~/utils/severity";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,7 @@ interface LoaderData {
     shopName: string;
     plan: string;
   } | null;
+  simulationsUsedThisMonth: number;
 }
 
 type ActionData =
@@ -76,7 +79,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   if (!store) {
-    return { products: [], store: null } satisfies LoaderData;
+    return { products: [], store: null, simulationsUsedThisMonth: 0 } satisfies LoaderData;
   }
 
   const dbProducts = await prisma.product.findMany({
@@ -98,7 +101,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     imageUrl: null, // Not stored in DB - fetched via Shopify when simulating
   }));
 
-  return { products, store } satisfies LoaderData;
+  // Same start-of-month window the action uses to enforce the FREE cap,
+  // so the counter the merchant sees matches the limit check exactly.
+  let simulationsUsedThisMonth = 0;
+  if (store.plan === "FREE") {
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    simulationsUsedThisMonth = await prisma.simulationUsage.count({
+      where: { storeId: store.id, createdAt: { gte: startOfMonth } },
+    });
+  }
+
+  return { products, store, simulationsUsedThisMonth } satisfies LoaderData;
 };
 
 // ─── Action ───────────────────────────────────────────────────────────────────
@@ -138,7 +151,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!store) return { error: "Store not found." };
 
   if (store.plan === "FREE") {
-    const { PLAN_LIMITS } = await import("~/services/billing.shared");
     const limit = PLAN_LIMITS.FREE.maxSimulations;
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
     // Count actual simulator runs - the previous code counted AiCitation
@@ -298,7 +310,7 @@ function importanceBadge(importance: FieldComparison["importance"]) {
   };
   return (
     <Badge tone={map[importance]} size="small">
-      {importance.toUpperCase()}
+      {severityLabel(importance)}
     </Badge>
   );
 }
@@ -322,7 +334,7 @@ const FIX_RECOMMENDATIONS: Record<string, string> = {
   structuredDataFound:
     "Enable GEO Rise's JSON-LD Schema Injector in your theme. Go to Online Store → Themes → Customize → App Embeds and turn on 'GEO Rise Schema'.",
   reviewCount:
-    "Install a review app (Judge.me, Loox, or Okendo) and send post-purchase review request emails. Even 3–5 reviews significantly improve AI visibility.",
+    "Install a review app (Judge.me, Loox, or Okendo) and send post-purchase review request emails. Even 3-5 reviews significantly improve AI visibility.",
   rating:
     "Collect customer reviews using a review app. Products with ratings are significantly more likely to be cited by AI search engines.",
   imagesHaveAltText:
@@ -418,7 +430,7 @@ function FieldRow({ field }: { field: FieldComparison }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SimulatorPage() {
-  const { products, store } = useLoaderData<LoaderData>();
+  const { products, store, simulationsUsedThisMonth } = useLoaderData<LoaderData>();
   const fetcher = useFetcher<ActionData>();
 
   const [selectedProductId, setSelectedProductId] = useState(
@@ -463,7 +475,7 @@ export default function SimulatorPage() {
 
   return (
     <Page>
-      <TitleBar title="AI Agent Simulation" />
+      <TitleBar title="AI Simulator" />
 
       <BlockStack gap="500">
         {/* ── Product selector ── */}
@@ -485,7 +497,7 @@ export default function SimulatorPage() {
                   <Banner tone="warning">
                     <Text as="p" variant="bodyMd">
                       Run an audit first to populate your product list.{" "}
-                      <Link url="/app/audit">Go to Audit →</Link>
+                      <Link url="/app/audit">Go to AI Audit</Link>
                     </Text>
                   </Banner>
                 ) : (
@@ -503,20 +515,23 @@ export default function SimulatorPage() {
                 loading={isSimulating}
                 disabled={!selectedProductId || products.length === 0}
               >
-                Simulate AI View
+                Run simulation
               </Button>
             </InlineStack>
 
             {store?.plan === "FREE" && (
               <Text as="p" variant="bodySm" tone="subdued">
-                Free plan: 3 simulations per month.
+                {simulationsUsedThisMonth} of {PLAN_LIMITS.FREE.maxSimulations}{" "}
+                free simulations used this month.
               </Text>
             )}
           </BlockStack>
         </Card>
 
         {/* ── Error ── */}
-        {hasError && (
+        {/* Gated on !isSimulating so a stale failure banner doesn't sit
+            above the loading skeleton while a retry is in flight. */}
+        {hasError && !isSimulating && (
           <Banner tone="critical" title="Simulation failed">
             <Text as="p" variant="bodyMd">
               {(actionData as { error: string }).error}
@@ -537,7 +552,7 @@ export default function SimulatorPage() {
               ? ("critical" as const)
               : result.visibilityScore < 70
               ? ("warning" as const)
-              : ("info" as const);
+              : ("success" as const);
 
           const scoreMessage =
             result.visibilityScore < 40
@@ -695,7 +710,7 @@ export default function SimulatorPage() {
                           external
                           variant="plain"
                         >
-                          Full product page →
+                          View full product page
                         </Button>
                       </Box>
                     </BlockStack>
@@ -776,10 +791,10 @@ export default function SimulatorPage() {
 
                     <InlineStack gap="300">
                       <Button variant="primary" url="/app/audit">
-                        Run Full Audit for All Products →
+                        Run a full audit for all products
                       </Button>
-                      <Button url="/app/audit" onClick={() => {}}>
-                        Auto-fix Available Issues
+                      <Button url="/app/action-plan">
+                        See your action plan
                       </Button>
                     </InlineStack>
                   </BlockStack>
