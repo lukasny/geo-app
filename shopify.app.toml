@@ -14,7 +14,7 @@ subpath = "llms-txt"
 prefix = "a"
 
 [webhooks]
-api_version = "2025-01"
+api_version = "2025-07"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
@@ -63,7 +63,9 @@ api_version = "2025-01"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,read_content,write_content,read_themes,read_orders,read_reports"
+# read_markets + read_translations power multi-market llms.txt. Adding scopes
+# requires `shopify app deploy` and a merchant re-auth before they take effect.
+scopes = "write_products,read_content,write_content,read_themes,read_orders,read_reports,read_markets,read_translations"
 
 [auth]
 redirect_urls = [

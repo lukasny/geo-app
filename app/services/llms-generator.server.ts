@@ -1,8 +1,10 @@
 import prisma from "~/db.server";
+import { getMarketByCode } from "~/services/markets.server";
+import type { StoreMarket } from "~/services/markets.server";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SHOPIFY_API_VERSION = "2025-01";
+const SHOPIFY_API_VERSION = "2025-07";
 const MAX_RETRIES = 3;
 
 // ─── Shopify GraphQL Types ────────────────────────────────────────────────────
@@ -25,6 +27,20 @@ interface ShopifyMetafield {
   value: string;
 }
 
+interface ShopifyTranslation {
+  key: string;
+  value: string | null;
+}
+
+/** GraphQL variables enabling market-specific content. All optional: an
+ *  absent field omits that block from the query entirely, so the default
+ *  market's query stays byte-identical to the original single-market one. */
+interface MarketQueryVars {
+  locale?: string;
+  marketId?: string;
+  country?: string;
+}
+
 interface ShopifyProduct {
   id: string;
   title: string;
@@ -42,6 +58,12 @@ interface ShopifyProduct {
   variants: { edges: { node: ShopifyVariant }[] };
   metafields: { edges: { node: ShopifyMetafield }[] };
   onlineStoreUrl: string | null;
+  /** Present only on market queries (translations(locale:, marketId:)). */
+  translations?: ShopifyTranslation[];
+  /** Present only on market queries with a representative country. */
+  contextualPricing?: {
+    minVariantPrice: { amount: string; currencyCode: string };
+  } | null;
 }
 
 interface ShopifyCollection {
@@ -50,6 +72,7 @@ interface ShopifyCollection {
   description: string;
   handle: string;
   productsCount: { count: number };
+  translations?: ShopifyTranslation[];
 }
 
 interface ShopifyArticle {
@@ -59,6 +82,7 @@ interface ShopifyArticle {
   handle: string;
   publishedAt: string;
   blog: { title: string; handle: string };
+  translations?: ShopifyTranslation[];
 }
 
 interface GenerateResult {
@@ -158,8 +182,36 @@ async function shopifyGraphql<T>(
 
 // ─── Shopify Data Fetchers ────────────────────────────────────────────────────
 
-const PRODUCTS_QUERY = `
-  query GetProducts($first: Int!, $after: String) {
+/** Variable declarations and field blocks shared by the market-aware query
+ *  builders. When `vars` is empty both helpers return empty strings and the
+ *  queries behave exactly as the original single-market versions. */
+function translationDecls(vars: MarketQueryVars): string {
+  return vars.locale ? ", $locale: String!, $marketId: ID" : "";
+}
+
+function translationField(vars: MarketQueryVars): string {
+  return vars.locale
+    ? "translations(locale: $locale, marketId: $marketId) { key value }"
+    : "";
+}
+
+function marketVariables(vars: MarketQueryVars): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (vars.locale) {
+    out.locale = vars.locale;
+    out.marketId = vars.marketId ?? null;
+  }
+  if (vars.country) out.country = vars.country;
+  return out;
+}
+
+function buildProductsQuery(vars: MarketQueryVars): string {
+  const countryDecl = vars.country ? ", $country: CountryCode!" : "";
+  const pricingField = vars.country
+    ? "contextualPricing(context: { country: $country }) { minVariantPrice { amount currencyCode } }"
+    : "";
+  return `
+  query GetProducts($first: Int!, $after: String${translationDecls(vars)}${countryDecl}) {
     products(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
       edges {
@@ -190,17 +242,22 @@ const PRODUCTS_QUERY = `
             }
           }
           onlineStoreUrl
+          ${translationField(vars)}
+          ${pricingField}
         }
       }
     }
   }
 `;
+}
 
 async function fetchAllProducts(
   domain: string,
   accessToken: string,
-  maxProducts: number = Infinity
+  maxProducts: number = Infinity,
+  market: MarketQueryVars = {}
 ): Promise<ShopifyProduct[]> {
+  const query = buildProductsQuery(market);
   const products: ShopifyProduct[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
@@ -218,9 +275,10 @@ async function fetchAllProducts(
           pageInfo: { hasNextPage: boolean; endCursor: string };
           edges: { node: ShopifyProduct }[];
         };
-      }>(domain, accessToken, PRODUCTS_QUERY, {
+      }>(domain, accessToken, query, {
         first: pageSize,
         after: cursor,
+        ...marketVariables(market),
       })
     );
 
@@ -238,8 +296,9 @@ async function fetchAllProducts(
   return products;
 }
 
-const COLLECTIONS_QUERY = `
-  query GetCollections($first: Int!, $after: String) {
+function buildCollectionsQuery(vars: MarketQueryVars): string {
+  return `
+  query GetCollections($first: Int!, $after: String${translationDecls(vars)}) {
     collections(first: $first, after: $after, query: "published_status:published") {
       pageInfo { hasNextPage endCursor }
       edges {
@@ -249,16 +308,20 @@ const COLLECTIONS_QUERY = `
           description
           handle
           productsCount { count }
+          ${translationField(vars)}
         }
       }
     }
   }
 `;
+}
 
 async function fetchAllCollections(
   domain: string,
-  accessToken: string
+  accessToken: string,
+  market: MarketQueryVars = {}
 ): Promise<ShopifyCollection[]> {
+  const query = buildCollectionsQuery(market);
   const collections: ShopifyCollection[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
@@ -271,9 +334,10 @@ async function fetchAllCollections(
           pageInfo: { hasNextPage: boolean; endCursor: string };
           edges: { node: ShopifyCollection }[];
         };
-      }>(domain, accessToken, COLLECTIONS_QUERY, {
+      }>(domain, accessToken, query, {
         first: 250,
         after: cursor,
+        ...marketVariables(market),
       })
     );
 
@@ -285,8 +349,9 @@ async function fetchAllCollections(
   return collections;
 }
 
-const BLOGS_QUERY = `
-  query GetBlogs($first: Int!, $after: String) {
+function buildBlogsQuery(vars: MarketQueryVars): string {
+  return `
+  query GetBlogs($first: Int!, $after: String${translationDecls(vars)}) {
     blogs(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
       edges {
@@ -301,6 +366,7 @@ const BLOGS_QUERY = `
                 handle
                 publishedAt
                 blog { title handle }
+                ${translationField(vars)}
               }
             }
           }
@@ -309,11 +375,14 @@ const BLOGS_QUERY = `
     }
   }
 `;
+}
 
 async function fetchAllArticles(
   domain: string,
-  accessToken: string
+  accessToken: string,
+  market: MarketQueryVars = {}
 ): Promise<ShopifyArticle[]> {
+  const query = buildBlogsQuery(market);
   const articles: ShopifyArticle[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
@@ -331,9 +400,10 @@ async function fetchAllArticles(
             };
           }[];
         };
-      }>(domain, accessToken, BLOGS_QUERY, {
+      }>(domain, accessToken, query, {
         first: 50,
         after: cursor,
+        ...marketVariables(market),
       })
     );
 
@@ -380,13 +450,40 @@ async function fetchShopInfo(
 
 // ─── Content Formatters ───────────────────────────────────────────────────────
 
-function formatProduct(product: ShopifyProduct, storeUrl: string): string {
-  const url =
-    product.onlineStoreUrl ?? `${storeUrl}/products/${product.handle}`;
-  const description = product.descriptionHtml
-    ? truncate(stripHtml(product.descriptionHtml), 300)
+/** Translated value for a key with fallback to the default-language value.
+ *  Shopify returns translations as { key, value } pairs and omits keys that
+ *  were never translated; value can also be null for cleared translations. */
+function pickTranslation(
+  translations: ShopifyTranslation[] | undefined,
+  key: string,
+  fallback: string
+): string {
+  const match = translations?.find((t) => t.key === key);
+  return match?.value ? match.value : fallback;
+}
+
+function formatProduct(
+  product: ShopifyProduct,
+  storeUrl: string,
+  isMarketFile: boolean
+): string {
+  // Market files always build links from the market's base URL;
+  // onlineStoreUrl points at the primary domain.
+  const url = isMarketFile
+    ? `${storeUrl}/products/${product.handle}`
+    : product.onlineStoreUrl ?? `${storeUrl}/products/${product.handle}`;
+  const title = pickTranslation(product.translations, "title", product.title);
+  const descriptionSource = pickTranslation(
+    product.translations,
+    "body_html",
+    product.descriptionHtml
+  );
+  const description = descriptionSource
+    ? truncate(stripHtml(descriptionSource), 300)
     : "No description available.";
-  const { amount, currencyCode } = product.priceRangeV2.minVariantPrice;
+  const { amount, currencyCode } =
+    product.contextualPricing?.minVariantPrice ??
+    product.priceRangeV2.minVariantPrice;
   const variants = product.variants.edges.map((e) => e.node);
   const available = variants.some((v) => v.availableForSale) ? "yes" : "no";
   const variantSummary =
@@ -397,7 +494,7 @@ function formatProduct(product: ShopifyProduct, storeUrl: string): string {
       : `${variants.length} variants`;
 
   const parts = [
-    `[${product.title}](${url}): ${description}`,
+    `[${title}](${url}): ${description}`,
     `Price: ${amount} ${currencyCode}.`,
     `Variants: ${variantSummary}.`,
     `Available: ${available}.`,
@@ -414,19 +511,35 @@ function formatCollection(
   storeUrl: string
 ): string {
   const url = `${storeUrl}/collections/${collection.handle}`;
-  const description = collection.description
-    ? truncate(stripHtml(collection.description), 200)
+  const title = pickTranslation(
+    collection.translations,
+    "title",
+    collection.title
+  );
+  const descriptionSource = pickTranslation(
+    collection.translations,
+    "body_html",
+    collection.description
+  );
+  const description = descriptionSource
+    ? truncate(stripHtml(descriptionSource), 200)
     : "";
   const count = collection.productsCount?.count ?? 0;
   const desc = description ? ` ${description}.` : "";
-  return `[${collection.title}](${url}):${desc} ${count} products.`;
+  return `[${title}](${url}):${desc} ${count} products.`;
 }
 
 function formatArticle(article: ShopifyArticle, storeUrl: string): string {
   const url = `${storeUrl}/blogs/${article.blog.handle}/${article.handle}`;
-  const summary = truncate(stripHtml(article.body), 200);
+  const title = pickTranslation(article.translations, "title", article.title);
+  const bodySource = pickTranslation(
+    article.translations,
+    "body_html",
+    article.body
+  );
+  const summary = truncate(stripHtml(bodySource), 200);
   const date = new Date(article.publishedAt).toISOString().split("T")[0];
-  return `[${article.title}](${url}): ${summary} Published: ${date}.`;
+  return `[${title}](${url}): ${summary} Published: ${date}.`;
 }
 
 // ─── Bot Permissions Header ───────────────────────────────────────────────────
@@ -455,14 +568,17 @@ function buildBotPermissions(settings: {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export async function getOrCreateLlmsFile(storeId: string) {
+export async function getOrCreateLlmsFile(
+  storeId: string,
+  marketCode = "default"
+) {
   const existing = await prisma.llmsFile.findFirst({
-    where: { storeId, marketCode: "default" },
+    where: { storeId, marketCode },
   });
   if (existing) return existing;
 
   return prisma.llmsFile.create({
-    data: { storeId, content: "", marketCode: "default" },
+    data: { storeId, content: "", marketCode },
   });
 }
 
@@ -473,6 +589,11 @@ export interface GenerateLlmsTxtOptions {
    *  pass `PLAN_LIMITS[plan].maxProductsInLlmsTxt`; otherwise Free-plan
    *  stores end up with their entire catalog in the public llms.txt file. */
   maxProducts?: number;
+  /** Shopify Market handle to generate for ("default" = the base file).
+   *  Non-default codes fetch translated content, market prices and market
+   *  URLs, and persist to that market's LlmsFile row. Callers must enforce
+   *  PLAN_LIMITS[plan].multiMarketLlmsTxt before passing non-default codes. */
+  marketCode?: string;
 }
 
 export async function generateLlmsTxt(
@@ -484,19 +605,52 @@ export async function generateLlmsTxt(
     where: { id: storeId },
   });
 
-  const llmsFile = await getOrCreateLlmsFile(storeId);
+  const marketCode = options.marketCode ?? "default";
+  const isMarketFile = marketCode !== "default";
+
+  let market: StoreMarket | null = null;
+  if (isMarketFile) {
+    market = await getMarketByCode(storeId, marketCode);
+    if (!market) {
+      throw new Error(
+        `Market "${marketCode}" was not found on this store. It may have been deleted in Shopify, or the app may still need re-authorization for the markets permission.`
+      );
+    }
+  }
+
+  const llmsFile = await getOrCreateLlmsFile(storeId, marketCode);
   const { shopifyDomain: domain, shopifyAccessToken: token } = store;
   const maxProducts = options.maxProducts ?? Infinity;
+
+  // Market context for the GraphQL queries: translated content needs the
+  // locale (+ marketId for market-specific overrides), prices need a
+  // representative country. Missing pieces simply degrade to defaults.
+  const marketVars: MarketQueryVars = market
+    ? {
+        locale: market.defaultLocale ?? undefined,
+        marketId: market.id,
+        country: market.country ?? undefined,
+      }
+    : {};
 
   // 2. Fetch data from Shopify
   const [shopInfo, products, collections, articles] = await Promise.all([
     fetchShopInfo(domain, token),
-    llmsFile.includeProducts ? fetchAllProducts(domain, token, maxProducts) : [],
-    llmsFile.includeCollections ? fetchAllCollections(domain, token) : [],
-    llmsFile.includeBlogPosts ? fetchAllArticles(domain, token) : [],
+    llmsFile.includeProducts
+      ? fetchAllProducts(domain, token, maxProducts, marketVars)
+      : [],
+    llmsFile.includeCollections
+      ? fetchAllCollections(domain, token, marketVars)
+      : [],
+    llmsFile.includeBlogPosts
+      ? fetchAllArticles(domain, token, marketVars)
+      : [],
   ]);
 
-  const storeUrl = shopInfo.primaryDomain.url.replace(/\/$/, "");
+  const storeUrl = (market?.baseUrl ?? shopInfo.primaryDomain.url).replace(
+    /\/$/,
+    ""
+  );
 
   // 3. Build content sections
   const sections: string[] = [];
@@ -516,7 +670,7 @@ export async function generateLlmsTxt(
     sections.push("## Products");
     sections.push("");
     for (const product of products) {
-      sections.push(`- ${formatProduct(product, storeUrl)}`);
+      sections.push(`- ${formatProduct(product, storeUrl, isMarketFile)}`);
     }
   }
 
@@ -546,6 +700,12 @@ export async function generateLlmsTxt(
   sections.push("");
   sections.push(`Store: ${shopInfo.name}`);
   sections.push(`Domain: ${domain}`);
+  if (market) {
+    const localeSuffix = market.defaultLocale
+      ? ` (${market.defaultLocale})`
+      : "";
+    sections.push(`Market: ${market.name}${localeSuffix}`);
+  }
   if (shopInfo.email) sections.push(`Contact: ${shopInfo.email}`);
 
   const content = sections.join("\n");
@@ -571,4 +731,59 @@ export async function generateLlmsTxt(
     blogPostCount: articles.length,
     fileSizeBytes,
   };
+}
+
+export interface GenerateAllResult {
+  /** Market codes regenerated successfully, "default" always first. */
+  generated: string[];
+  /** Market codes whose regeneration failed (logged, not thrown), e.g. a
+   *  market deleted in Shopify whose LlmsFile row still exists. */
+  failed: { marketCode: string; error: string }[];
+}
+
+/** Regenerate the default llms.txt plus every EXISTING non-default market
+ *  file (merchants opt markets in by generating them once in the UI; this
+ *  never creates new market rows). A failure on the default file throws;
+ *  per-market failures are collected so one stale market can't block the
+ *  rest. Pass multiMarket = PLAN_LIMITS[plan].multiMarketLlmsTxt: when
+ *  false only the default file refreshes, so downgraded stores keep their
+ *  market rows but stop spending API budget on them. */
+export async function generateAllLlmsFiles(
+  storeId: string,
+  options: { maxProducts?: number; multiMarket: boolean }
+): Promise<GenerateAllResult> {
+  const generated: string[] = [];
+  const failed: { marketCode: string; error: string }[] = [];
+
+  await generateLlmsTxt(storeId, { maxProducts: options.maxProducts });
+  generated.push("default");
+
+  if (!options.multiMarket) return { generated, failed };
+
+  const marketRows = await prisma.llmsFile.findMany({
+    where: { storeId, marketCode: { not: "default" } },
+    select: { marketCode: true },
+    orderBy: { marketCode: "asc" },
+  });
+
+  // Sequential on purpose: each generation paginates the full catalog and
+  // the Shopify client already self-throttles; parallel market generation
+  // would race straight into the API rate limit.
+  for (const row of marketRows) {
+    try {
+      await generateLlmsTxt(storeId, {
+        maxProducts: options.maxProducts,
+        marketCode: row.marketCode,
+      });
+      generated.push(row.marketCode);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[llms.txt] market "${row.marketCode}" regeneration failed for store ${storeId}: ${error}`
+      );
+      failed.push({ marketCode: row.marketCode, error });
+    }
+  }
+
+  return { generated, failed };
 }
