@@ -30,6 +30,8 @@ import {
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { sanitizeAiVendorError } from "~/services/ai-retry.server";
+import { getProductCitationStats } from "~/services/product-citations.server";
+import type { ProductCitationStats } from "~/services/product-citations.server";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,9 @@ interface LoaderData {
   prompts: LoaderPrompt[];
   promptsRemaining: number | null; // null = unlimited
   storeId: string;
+  /** Per-product mention stats for the "Top cited products" card.
+   *  Null when the plan has no tracking (the query is skipped). */
+  productCitations: ProductCitationStats | null;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -110,6 +115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       prompts: [],
       promptsRemaining: 0,
       storeId: "",
+      productCitations: null,
     } satisfies LoaderData;
   }
 
@@ -207,11 +213,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const cap = limits.maxTrackingPrompts;
   const promptsRemaining = cap === Infinity ? null : Math.max(0, cap - used);
 
+  // Per-product mention stats. FREE has no tracking (and therefore no
+  // citation rows worth aggregating), so skip the query entirely.
+  const productCitations =
+    limits.maxTrackingPrompts > 0
+      ? await getProductCitationStats(store.id)
+      : null;
+
   return {
     plan: planKey,
     prompts: loaderPrompts,
     promptsRemaining,
     storeId: store.id,
+    productCitations,
   } satisfies LoaderData;
 };
 
@@ -525,7 +539,8 @@ function relativeFuture(iso: string | null): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TrackingPage() {
-  const { plan, prompts, promptsRemaining } = useLoaderData<LoaderData>();
+  const { plan, prompts, promptsRemaining, productCitations } =
+    useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const isWorking = fetcher.state !== "idle";
@@ -789,6 +804,11 @@ export default function TrackingPage() {
           </Card>
         )}
 
+        {/* ── Top cited products ── */}
+        {canAddPrompts && productCitations && prompts.length > 0 && (
+          <TopCitedProductsCard stats={productCitations} />
+        )}
+
         {/* ── Prompts list ── */}
         {prompts.length === 0 && canAddPrompts ? (
           <Card>
@@ -825,6 +845,79 @@ export default function TrackingPage() {
         )}
       </BlockStack>
     </Page>
+  );
+}
+
+// ─── Top Cited Products ───────────────────────────────────────────────────────
+
+function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Top cited products
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Which of your products AI assistants mentioned in the last{" "}
+            {stats.rangeDays} days, across all your prompts.
+          </Text>
+        </BlockStack>
+
+        {stats.products.length === 0 ? (
+          <Text as="p" variant="bodyMd" tone="subdued">
+            No product mentions detected yet. Run checks on your prompts - when
+            an AI answer names one of your products, it shows up here.
+          </Text>
+        ) : (
+          <BlockStack gap="300">
+            {stats.products.map((p) => (
+              <Box
+                key={p.title.toLowerCase()}
+                padding="300"
+                background="bg-surface-secondary"
+                borderRadius="200"
+              >
+                <BlockStack gap="200">
+                  <InlineStack
+                    align="space-between"
+                    blockAlign="start"
+                    gap="300"
+                    wrap={false}
+                  >
+                    <Text as="p" variant="bodyMd" fontWeight="semibold">
+                      {p.title}
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Last mentioned {relativeTime(p.lastMentionedAt)}
+                    </Text>
+                  </InlineStack>
+                  <InlineStack gap="200" wrap blockAlign="center">
+                    <Text as="span" variant="bodySm">
+                      {p.mentionCount === 1
+                        ? "Mentioned in 1 AI answer"
+                        : `Mentioned in ${p.mentionCount} AI answers`}
+                    </Text>
+                    {(
+                      Object.entries(p.byPlatform) as [AiPlatform, number][]
+                    ).map(([platform, count]) => (
+                      <Badge key={platform} tone="info">
+                        {`${PLATFORM_LABELS[platform] ?? platform}: ${count}`}
+                      </Badge>
+                    ))}
+                    {!p.inCatalog && (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        No longer matches a product in your catalog
+                      </Text>
+                    )}
+                  </InlineStack>
+                </BlockStack>
+              </Box>
+            ))}
+          </BlockStack>
+        )}
+      </BlockStack>
+    </Card>
   );
 }
 
