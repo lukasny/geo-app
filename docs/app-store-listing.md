@@ -1,8 +1,10 @@
-# GEO Rise — Shopify App Store Listing
+# GEO Rise: Shopify App Store Listing
+
+Last updated: 2026-06-12 (prices, features, and scopes match billing.shared.ts and shopify.app.toml as of this date).
 
 ---
 
-## App Name
+## App name
 GEO Rise
 
 ## Tagline (80 chars max)
@@ -10,91 +12,97 @@ Get your products recommended by ChatGPT, Gemini & AI search engines
 
 ---
 
-## Key Benefits (bullet points shown on listing)
+## Key benefits (bullet points shown on listing)
 
 - Get discovered when shoppers ask AI for product recommendations
-- One-click llms.txt generation — the AI equivalent of a sitemap
-- AI readiness audit scores every product on discoverability
-- See exactly what AI sees on your product pages with our AI Simulator
-- Auto-fix missing meta data, alt text, and structured data in one click
-- Track your visibility across ChatGPT, Gemini, Perplexity & more
+- One-click llms.txt generation: the AI equivalent of a sitemap, per market and language
+- AI readiness audit scores every product on discoverability, with one-click auto-fix
+- See exactly what AI sees on your product pages with the AI Simulator
+- Track whether ChatGPT, Claude, and Perplexity actually cite your store and products
+- Bulk-edit meta titles and image alt text across your catalog in one pass
 
 ---
 
-## App Description (~2000 characters)
+## App description (~2000 characters)
 
 **AI search is changing how shoppers find products. Is your store ready?**
 
-Over 8 in 10 online shoppers now use AI assistants to research products before buying. When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand" — your store either shows up or it doesn't. Most Shopify stores are invisible to AI. GEO Rise changes that.
+When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand", your store either shows up or it doesn't. Most Shopify stores are invisible to AI. GEO Rise changes that.
 
 **What GEO Rise does**
 
-GEO Rise is the first Shopify app built specifically for Generative Engine Optimization (GEO) — the practice of making your store readable and recommendable by AI search engines. In minutes, GEO Rise sets up everything AI engines need to understand, trust, and recommend your products.
+GEO Rise is built for Generative Engine Optimization (GEO): making your store readable, trustworthy, and recommendable for AI search engines.
 
-**llms.txt Generator**
-Generate an llms.txt file — a machine-readable sitemap specifically designed for AI crawlers. It tells ChatGPT, Gemini, Perplexity, and Claude exactly what you sell, your prices, your policies, and your brand story. Think of it as a handshake between your store and every AI engine on the internet.
+**llms.txt generator.** Create a machine-readable file that tells ChatGPT, Gemini, Perplexity, and Claude exactly what you sell. Selling in multiple countries? Generate one llms.txt per Shopify Market, with translated content, local prices, and market URLs.
 
-**AI Readiness Audit**
-Our audit engine scores every product across 5 dimensions: content quality, meta data, image optimization, variant completeness, and reviews. You get a store-wide GEO score (0–100) and a prioritized list of issues to fix — sorted by what matters most to AI engines.
+**AI readiness audit + auto-fix.** Every product scored across content, meta data, images, variants, and reviews. Get a store-wide GEO score and a prioritized action plan, then auto-fix missing meta descriptions and alt text with one click.
 
-**AI Agent Simulator**
-See your store exactly how ChatGPT sees it. Our simulator sends your product page to an AI and compares what it found versus what's actually in your Shopify store — showing gaps in real time. It's the clearest picture of your AI discoverability available anywhere.
+**Bulk editing.** Apply meta title patterns and alt-text templates to dozens of products at once, no AI required.
 
-**JSON-LD Schema Injection**
-Automatically adds structured data (schema.org markup) to every product, collection, and blog page. This is the technical foundation that helps AI engines extract accurate product details, prices, availability, and brand information.
+**AI Simulator.** See your product pages the way AI assistants see them, field by field, with specific fix recommendations.
 
-**Auto-Fix**
-GEO Rise can automatically generate missing meta descriptions and alt text for product images — the two most common AI discoverability issues — with one click.
+**JSON-LD schema injection.** Structured data on every product, collection, and blog page, so AI engines extract accurate prices, availability, and brand details.
 
-**AI Visibility Tracking (Growth & Pro)**
-Monitor whether ChatGPT, Gemini, and Perplexity are actually recommending your products. Set up tracking prompts and get weekly reports on your AI citation rate.
+**AI visibility tracking.** Monitor whether AI assistants cite your store, track sentiment, see which products get mentioned, and let Intent Lab suggest the prompts your real shoppers ask. Watch competitors too.
+
+**AI blog posts and weekly digests.** Generate SEO-ready blog drafts and get a weekly email with your visibility trends.
 
 **Start free. Upgrade when you're ready.**
 
-GEO Rise offers a free plan with core features so you can start improving your AI discoverability today. Upgrade to Growth ($39/mo) or Pro ($79/mo) for unlimited audits, AI tracking across all major platforms, competitor monitoring, and revenue attribution — all with a 7-day free trial.
+The free plan includes llms.txt generation, schema injection, and a starter audit. Growth ($19/mo) unlocks tracking, bulk editing, and multi-market llms.txt. Pro ($49/mo) adds competitor monitoring and AI revenue attribution. Every paid plan starts with a 7-day free trial.
 
-Join merchants already getting recommended by ChatGPT. Install GEO Rise free today.
+Install GEO Rise free today and get found by AI.
 
 ---
 
 ## Pricing
 
-| Plan       | Price     | Trial     |
-|------------|-----------|-----------|
-| Free       | $0/month  | —         |
-| Growth     | $39/month | 7 days    |
-| Pro        | $79/month | 7 days    |
-| Enterprise | $199/month| 7 days    |
+| Plan       | Price     | Trial  |
+|------------|-----------|--------|
+| Free       | $0/month  | none   |
+| Growth     | $19/month | 7 days |
+| Pro        | $49/month | 7 days |
+| Enterprise | $99/month | 7 days |
+
+Prices are defined in `app/services/billing.shared.ts`; keep this table in sync with it.
 
 ---
 
-## App Categories
+## App categories
 - Search and discovery
-- Store content
 - Marketing and conversion
 
-## Required Shopify Permissions
-- `write_products` — to auto-fix meta descriptions and alt text on your products
+## Required Shopify permissions (be ready to justify each in review)
+
+| Scope | Why the app needs it |
+|---|---|
+| `write_products` | Auto-fix and bulk edit write product SEO fields and image alt text |
+| `read_content`, `write_content` | llms.txt includes blog posts; the blog generator publishes articles |
+| `read_orders` | Revenue attribution reads AI-attributed orders (requires Protected Customer Data approval in the Partner Dashboard BEFORE submission) |
+| `read_reports` | Intent Lab reads store search analytics via ShopifyQL |
+| `read_markets`, `read_translations` | Multi-market llms.txt reads markets, locales, and translated content |
 
 ## Support
 - Support email: hello@boda.no
-- Privacy policy: [your-app-url]/privacy
-- Terms of service: [your-app-url]/terms
+- Privacy policy: https://geo-app-hkhi.onrender.com/privacy (public, no login)
+- Terms of service: https://geo-app-hkhi.onrender.com/terms (public, no login)
 
 ---
 
-## Screenshots (to capture)
+## Screenshots (minimum 3, maximum 8, 1600x900)
 
-1. **Dashboard** — GEO Score ring with store stats and quick actions
-2. **AI Audit** — Product table with score pills and issue breakdown
-3. **AI Simulator** — Side-by-side comparison of what AI sees vs Shopify data
-4. **llms.txt Manager** — Generated file preview with bot access controls
-5. **Pricing** — 4-column plan comparison
+1. **Dashboard**: GEO score ring with store stats and quick actions
+2. **AI Audit**: product table with score pills and issue breakdown
+3. **AI Tracking**: prompt cards with citation timeline and top cited products
+4. **AI Simulator**: side-by-side comparison of what AI sees vs Shopify data
+5. **llms.txt Manager**: file preview with market picker and bot access controls
+6. **Bulk Edit**: product grid with template preview
+7. **Pricing**: 4-column plan comparison
 
 ## Demo video script (30 seconds)
 - Open: "AI is the new Google. Is your store visible?"
 - Show: GEO score on dashboard (low score)
-- Show: Run audit → issues appear
-- Show: Auto-fix button → score jumps
-- Show: AI Simulator → AI can now see product details
+- Show: Run audit, issues appear
+- Show: Auto-fix button, score jumps
+- Show: AI Tracking, a prompt gets cited with the store's product named
 - End: "GEO Rise. Get found by AI. Free to install."

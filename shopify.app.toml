@@ -65,7 +65,9 @@ api_version = "2025-07"
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 # read_markets + read_translations power multi-market llms.txt. Adding scopes
 # requires `shopify app deploy` and a merchant re-auth before they take effect.
-scopes = "write_products,read_content,write_content,read_themes,read_orders,read_reports,read_markets,read_translations"
+# read_themes was dropped 2026-06-12: no code reads the Themes API (theme app
+# extensions don't need it), and unused scopes are an App Store rejection risk.
+scopes = "write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations"
 
 [auth]
 redirect_urls = [
