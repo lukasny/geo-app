@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { generateLlmsTxt } from "../services/llms-generator.server";
+import { requestLlmsRegeneration } from "../services/llms-regen-queue.server";
 import { PLAN_LIMITS } from "../services/billing.shared";
 import db from "../db.server";
 
@@ -79,9 +80,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
     // Shopify marks the delivery failed without a 2xx within ~5 seconds,
     // and a multi-market store regenerates several full-catalog files
-    // here. Run the loop detached and acknowledge immediately (Render is
-    // a long-lived Node server, so the promise survives the response).
-    void (async () => {
+    // here. The queue runs the loop detached AND coalesces bursts (a bulk
+    // edit fires one of these webhooks per mutated product).
+    requestLlmsRegeneration(store.id, async () => {
       for (const file of toRefresh) {
         if (file.marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
           continue;
@@ -101,12 +102,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           );
         }
       }
-    })().catch((err) =>
-      console.error(
-        `[GEO Rise] llms.txt regeneration loop crashed for ${shop}:`,
-        err
-      )
-    );
+    });
   }
 
   return new Response();
