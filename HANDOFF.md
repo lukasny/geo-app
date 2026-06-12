@@ -10,6 +10,14 @@ Deep context lives in the memory files at
 `C:\Users\nyima\.claude\projects\-Users-lukas-Desktop-geo-app\memory\` (start with
 `project_checkpoint.md`). This file is the single-session snapshot.
 
+> **Correction (2026-06-12, verified on macOS):** the memory path above is on the
+> Windows machine and is NOT available on the Mac. If working on the Mac, the
+> referenced files (`project_checkpoint.md`, `project_known_fixes.md`,
+> `project_shopify_url_workflow.md`) must be copied over from the Windows machine
+> or their knowledge regenerated. Everything else in this handoff was verified
+> against the repo on 2026-06-12 (all file, commit, config, and build claims check
+> out; one fix applied below to the Task 1 description).
+
 ---
 
 ## What's built and working (verified)
@@ -128,8 +136,8 @@ execution with per-task commits.
 "Your Videographer Snowboard was cited 12 times across ChatGPT and Perplexity
 this month."
 
-- Data already exists: `AiCitation.productsCited` (Json field, populated by
-  `detectMentions` in `app/services/tracking.server.ts`).
+- Data already exists: `AiCitation.productsCited` (Json field, populated inline by
+  `processPlatformCitation` in `app/services/tracking.server.ts`).
 - Build an aggregation (likely new `app/services/product-citations.server.ts` or
   extend tracking.server.ts) that groups citations per product across platforms
   and time.
