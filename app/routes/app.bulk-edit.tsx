@@ -182,7 +182,9 @@ function renderPreview(
   vars: Record<string, string | null | undefined>
 ): string {
   return template
-    .replace(/\{(\w+)\}/g, (_match, key: string) => vars[key] ?? "")
+    .replace(/\{(\w+)\}/g, (_match, key: string) =>
+      Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] ?? "" : ""
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -209,8 +211,22 @@ export default function BulkEditPage() {
   const [currentPage, setCurrentPage] = useState(0);
   const [showConfirm, setShowConfirm] = useState(false);
 
+  const filtered = useMemo(() => {
+    const q = queryValue.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(
+      (p) =>
+        p.title.toLowerCase().includes(q) ||
+        (p.vendor ?? "").toLowerCase().includes(q)
+    );
+  }, [products, queryValue]);
+
+  // The hook gets the FILTERED list, not the whole catalog: select-all and
+  // shift-click ranges resolve against the hook's array, so feeding it
+  // unfiltered products would let a select-all during a search silently
+  // select (and edit) products the merchant never saw.
   const { selectedResources, allResourcesSelected, handleSelectionChange, clearSelection } =
-    useIndexResourceState(products.map((p) => ({ id: p.id })));
+    useIndexResourceState(filtered.map((p) => ({ id: p.id })));
 
   const isApplying =
     fetcher.state !== "idle" &&
@@ -227,7 +243,13 @@ export default function BulkEditPage() {
       if (s.altTextsSet > 0) parts.push(`${s.altTextsSet} alt texts`);
       if (s.skipped > 0) parts.push(`${s.skipped} needed no change`);
       if (s.failed > 0) parts.push(`${s.failed} failed`);
-      shopify.toast.show(parts.join(", "), { isError: s.failed > 0 });
+      if (s.metaTitlesFailed > 0)
+        parts.push(`${s.metaTitlesFailed} meta titles failed`);
+      if (s.altTextsFailed > 0)
+        parts.push(`${s.altTextsFailed} alt texts failed`);
+      const anyFailure =
+        s.failed > 0 || s.metaTitlesFailed > 0 || s.altTextsFailed > 0;
+      shopify.toast.show(parts.join(", "), { isError: anyFailure });
       if (s.aborted) {
         shopify.toast.show(
           "Stopped early after repeated failures. Try again in a minute.",
@@ -242,16 +264,6 @@ export default function BulkEditPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data, fetcher.state, shopify]);
-
-  const filtered = useMemo(() => {
-    const q = queryValue.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(
-      (p) =>
-        p.title.toLowerCase().includes(q) ||
-        (p.vendor ?? "").toLowerCase().includes(q)
-    );
-  }, [products, queryValue]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice(
@@ -320,7 +332,8 @@ export default function BulkEditPage() {
             <InlineStack gap="200" blockAlign="center">
               <Spinner size="small" />
               <Text as="p" variant="bodyMd">
-                Applying templates to {selectedResources.length} products.
+                Applying templates to{" "}
+                {Math.min(selectedResources.length, maxBulkProducts)} products.
                 This takes roughly a second per product; stay on this page.
               </Text>
             </InlineStack>
@@ -410,14 +423,20 @@ export default function BulkEditPage() {
                 onQueryChange={(v) => {
                   setQueryValue(v);
                   setCurrentPage(0);
+                  // Selection is scoped to the visible (filtered) list;
+                  // changing the filter resets it so stale picks from a
+                  // previous search can't ride along into an apply.
+                  clearSelection();
                 }}
                 onQueryClear={() => {
                   setQueryValue("");
                   setCurrentPage(0);
+                  clearSelection();
                 }}
                 onClearAll={() => {
                   setQueryValue("");
                   setCurrentPage(0);
+                  clearSelection();
                 }}
               />
             </Box>

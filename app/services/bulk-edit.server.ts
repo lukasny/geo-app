@@ -29,9 +29,13 @@ export interface BulkEditSummary {
   skipped: number;
   /** True when the loop stopped early after consecutive failures. */
   aborted: boolean;
-  /** Field-level counts for the result toast. */
+  /** Field-level counts for the result toast. A product whose meta write
+   *  succeeds but whose alt write fails counts as updated AND shows up in
+   *  altTextsFailed, so partial failures are never silently swallowed. */
   metaTitlesSet: number;
   altTextsSet: number;
+  metaTitlesFailed: number;
+  altTextsFailed: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -66,7 +70,11 @@ export function renderTemplate(
   vars: Record<string, string | null | undefined>
 ): string {
   return template
-    .replace(/\{(\w+)\}/g, (_match, key: string) => vars[key] ?? "")
+    .replace(/\{(\w+)\}/g, (_match, key: string) =>
+      // Own-property check: without it, {constructor} and friends resolve
+      // through the prototype chain and render JS internals into the SEO.
+      Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] ?? "" : ""
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -86,6 +94,10 @@ async function markMatchingIssuesFixed(
       storeId,
       productId,
       fixed: false,
+      // autoFixable only: the fragment "alt text" would otherwise also
+      // close "Alt text is not descriptive enough", which concerns
+      // EXISTING alt text this edit never touches.
+      autoFixable: true,
       title: { contains: titleFragment, mode: "insensitive" },
     },
     data: { fixed: true, fixedAt: new Date() },
@@ -141,6 +153,8 @@ export async function applyBulkEdit(
     aborted: false,
     metaTitlesSet: 0,
     altTextsSet: 0,
+    metaTitlesFailed: 0,
+    altTextsFailed: 0,
   };
   let consecutiveFailures = 0;
 
@@ -162,72 +176,89 @@ export async function applyBulkEdit(
     let wroteSomething = false;
     let failedSomething = false;
 
-    if (metaTitleTemplate) {
-      const rendered = renderTemplate(metaTitleTemplate, vars);
-      if (rendered.length === 0) {
-        // Template produced nothing for this product (all-null variables).
-        // Not a Shopify failure: skip the field without tripping the breaker.
-        console.warn(
-          `[GEO Rise bulk-edit] meta title template rendered empty for ${product.shopifyProductId}; field skipped`
-        );
-      } else {
-        const write = await updateProductSeo(admin, product.shopifyProductId, {
-          title: rendered,
-        });
-        if (write.result === "updated") {
-          wroteSomething = true;
-          summary.metaTitlesSet += 1;
-          // Audit semantics: "has custom meta title" means it differs from
-          // the product title (case-insensitive).
-          const isCustom =
-            rendered.toLowerCase() !== product.title.toLowerCase();
-          await prisma.product.update({
-            where: { id: product.id },
-            data: { hasMetaTitle: isCustom },
-          });
-          if (isCustom) {
-            await markMatchingIssuesFixed(storeId, product.id, "SEO title");
-          }
+    // Throttled/network GraphQL responses THROW (data: null) rather than
+    // returning userErrors; a throw must feed the circuit breaker like any
+    // other failure instead of killing the batch and discarding the
+    // partial summary.
+    try {
+      if (metaTitleTemplate) {
+        const rendered = renderTemplate(metaTitleTemplate, vars);
+        if (rendered.length === 0) {
+          // Template produced nothing for this product (all-null
+          // variables). Not a Shopify failure: skip the field without
+          // tripping the breaker.
+          console.warn(
+            `[GEO Rise bulk-edit] meta title template rendered empty for ${product.shopifyProductId}; field skipped`
+          );
         } else {
-          failedSomething = true;
-        }
-      }
-    }
-
-    if (altTextTemplate) {
-      const renderedAlt = renderTemplate(altTextTemplate, vars);
-      if (renderedAlt.length === 0) {
-        console.warn(
-          `[GEO Rise bulk-edit] alt text template rendered empty for ${product.shopifyProductId}; field skipped`
-        );
-      } else {
-        const media = await fetchProductMediaImages(
-          admin,
-          product.shopifyProductId
-        );
-        const missing = media
-          .filter((m) => !m.alt || m.alt.trim() === "")
-          .map((m) => ({ id: m.id, alt: renderedAlt }));
-        if (missing.length > 0) {
-          const write = await updateMediaAltText(
+          const write = await updateProductSeo(
             admin,
             product.shopifyProductId,
-            missing
+            { title: rendered }
           );
           if (write.result === "updated") {
             wroteSomething = true;
-            summary.altTextsSet += missing.length;
+            summary.metaTitlesSet += 1;
+            // Audit semantics: "has custom meta title" means it differs
+            // from the product title (case-insensitive).
+            const isCustom =
+              rendered.toLowerCase() !== product.title.toLowerCase();
             await prisma.product.update({
               where: { id: product.id },
-              // 70 mirrors the auto-fix heuristic for template-grade alt text.
-              data: { hasAltText: true, altTextQuality: 70 },
+              data: { hasMetaTitle: isCustom },
             });
-            await markMatchingIssuesFixed(storeId, product.id, "alt text");
+            if (isCustom) {
+              await markMatchingIssuesFixed(storeId, product.id, "SEO title");
+            }
           } else {
             failedSomething = true;
+            summary.metaTitlesFailed += 1;
           }
         }
       }
+
+      if (altTextTemplate) {
+        const renderedAlt = renderTemplate(altTextTemplate, vars);
+        if (renderedAlt.length === 0) {
+          console.warn(
+            `[GEO Rise bulk-edit] alt text template rendered empty for ${product.shopifyProductId}; field skipped`
+          );
+        } else {
+          const media = await fetchProductMediaImages(
+            admin,
+            product.shopifyProductId
+          );
+          const missing = media
+            .filter((m) => !m.alt || m.alt.trim() === "")
+            .map((m) => ({ id: m.id, alt: renderedAlt }));
+          if (missing.length > 0) {
+            const write = await updateMediaAltText(
+              admin,
+              product.shopifyProductId,
+              missing
+            );
+            if (write.result === "updated") {
+              wroteSomething = true;
+              summary.altTextsSet += missing.length;
+              await prisma.product.update({
+                where: { id: product.id },
+                // 70 mirrors the auto-fix heuristic for template alt text.
+                data: { hasAltText: true, altTextQuality: 70 },
+              });
+              await markMatchingIssuesFixed(storeId, product.id, "alt text");
+            } else {
+              failedSomething = true;
+              summary.altTextsFailed += missing.length;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(
+        `[GEO Rise bulk-edit] unexpected error for ${product.shopifyProductId}:`,
+        err
+      );
+      failedSomething = true;
     }
 
     if (failedSomething && !wroteSomething) {
@@ -235,7 +266,10 @@ export async function applyBulkEdit(
       consecutiveFailures += 1;
     } else if (wroteSomething) {
       summary.updated += 1;
-      consecutiveFailures = 0;
+      // A clean product resets the breaker; a partial failure (one field
+      // wrote, the other failed) leaves it untouched so a systematic
+      // media-write failure can still trip it.
+      if (!failedSomething) consecutiveFailures = 0;
     } else {
       summary.skipped += 1;
       consecutiveFailures = 0;
