@@ -5,6 +5,12 @@ import {
   isPermanentApiError,
   withRetry,
 } from "./ai-retry.server";
+import {
+  fetchProductSeo,
+  fetchProductMediaImages,
+  updateProductSeo,
+  updateMediaAltText,
+} from "./product-mutations.server";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -910,20 +916,13 @@ export async function runFullAudit(
 
 // ─── Auto-Fix ─────────────────────────────────────────────────────────────────
 
+// Used by fixContentIssue for descriptionHtml updates. SEO and media-alt
+// writes moved to product-mutations.server.ts (shared with bulk edit).
 const UPDATE_PRODUCT_MUTATION = `#graphql
   mutation UpdateProduct($input: ProductInput!) {
     productUpdate(input: $input) {
       product { id descriptionHtml seo { title description } }
       userErrors { field message }
-    }
-  }
-`;
-
-const UPDATE_IMAGE_ALT_MUTATION = `#graphql
-  mutation UpdateProductMedia($productId: ID!, $media: [UpdateMediaInput!]!) {
-    productUpdateMedia(productId: $productId, media: $media) {
-      media { ... on MediaImage { id alt } }
-      mediaUserErrors { field message }
     }
   }
 `;
@@ -1331,18 +1330,12 @@ async function fixMetaIssue(
   const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
 
   // Fetch current seo for both (a) skip-if-good check and (b) the
-  // productUpdate seo:-wholesale-replacement workaround - always send BOTH.
-  const currentResponse = await admin.graphql(
-    `#graphql
-     query GetCurrentSeo($id: ID!) {
-       product(id: $id) { seo { title description } }
-     }`,
-    { variables: { id: product.shopifyProductId } }
-  );
-  const currentJson = (await currentResponse.json()) as {
-    data: { product: { seo: { title: string | null; description: string | null } } | null };
-  };
-  const currentSeo = currentJson.data.product?.seo ?? { title: null, description: null };
+  // productUpdate seo:-wholesale-replacement workaround - always send BOTH
+  // (handled inside updateProductSeo, which gets this pre-read passed in).
+  const currentSeo = (await fetchProductSeo(
+    admin,
+    product.shopifyProductId
+  )) ?? { title: null, description: null };
 
   if (isSeoTitleIssue) {
     const t = currentSeo.title?.trim() ?? "";
@@ -1407,43 +1400,14 @@ async function fixMetaIssue(
       : { result: "failed", reason: gen.reason };
   }
 
-  const seoUpdate: { title: string | null; description: string | null } = {
-    title: currentSeo.title,
-    description: currentSeo.description,
-  };
-  if (isSeoTitleIssue) seoUpdate.title = gen.value;
-  else seoUpdate.description = gen.value;
-
-  const response = await admin.graphql(UPDATE_PRODUCT_MUTATION, {
-    variables: { input: { id: product.shopifyProductId, seo: seoUpdate } },
-  });
-  const json = (await response.json()) as {
-    data: {
-      productUpdate: {
-        product?: { seo?: { title?: string | null; description?: string | null } };
-        userErrors: { field: string; message: string }[];
-      };
-    };
-  };
-  if (json.data.productUpdate.userErrors.length > 0) {
-    console.error(
-      `[GEO Rise auto-fix] META userErrors for ${product.shopifyProductId}:`,
-      json.data.productUpdate.userErrors
-    );
-    return { result: "failed", reason: "shopify_user_errors" };
-  }
-
-  const updatedSeo = json.data.productUpdate.product?.seo;
-  const persisted = isSeoTitleIssue
-    ? updatedSeo?.title === seoUpdate.title
-    : updatedSeo?.description === seoUpdate.description;
-  if (!persisted) {
-    console.error(
-      `[GEO Rise auto-fix] META persistence verify failed for ${product.shopifyProductId} (${
-        isSeoTitleIssue ? "title" : "description"
-      })`
-    );
-    return { result: "failed", reason: "persistence_verify_failed" };
+  const write = await updateProductSeo(
+    admin,
+    product.shopifyProductId,
+    isSeoTitleIssue ? { title: gen.value } : { description: gen.value },
+    currentSeo
+  );
+  if (write.result === "failed") {
+    return { result: "failed", reason: write.reason };
   }
 
   await prisma.auditResult.update({
@@ -1473,38 +1437,12 @@ async function fixImagesIssue(
   });
   if (!product) return { result: "failed", reason: "product_not_found" };
 
-  const imgResponse = await admin.graphql(
-    `#graphql
-     query GetProductImages($id: ID!) {
-       product(id: $id) {
-         media(first: 20) {
-           edges {
-             node {
-               ... on MediaImage {
-                 id
-                 alt
-                 image { url }
-               }
-             }
-           }
-         }
-       }
-     }`,
-    { variables: { id: product.shopifyProductId } }
+  const mediaImages = await fetchProductMediaImages(
+    admin,
+    product.shopifyProductId
   );
-  const imgJson = (await imgResponse.json()) as {
-    data: {
-      product: {
-        media: {
-          edges: {
-            node: { id: string; alt: string | null; image?: { url: string } | null };
-          }[];
-        };
-      };
-    };
-  };
-  const missingAlt = imgJson.data.product.media.edges.filter(
-    (e) => !e.node.alt || e.node.alt.trim() === ""
+  const missingAlt = mediaImages.filter(
+    (m) => !m.alt || m.alt.trim() === ""
   );
 
   if (missingAlt.length === 0) {
@@ -1524,15 +1462,15 @@ async function fixImagesIssue(
 
   const mediaWithoutAlt: { id: string; alt: string }[] = [];
   let usedAnyFallback = false;
-  for (const edge of missingAlt) {
-    const imageUrl = edge.node.image?.url;
+  for (const mediaImage of missingAlt) {
+    const imageUrl = mediaImage.imageUrl;
     if (!imageUrl) continue;
     const gen = await generateAltTextWithClaude(
       { title: product.title, vendor: product.vendor, productType: product.productType },
       imageUrl
     );
     if (gen.ok) {
-      mediaWithoutAlt.push({ id: edge.node.id, alt: gen.value });
+      mediaWithoutAlt.push({ id: mediaImage.id, alt: gen.value });
       if (gen.source === "fallback") usedAnyFallback = true;
     } else if (gen.reason === "claude_credits") {
       return { result: "aborted", reason: "claude_credits" };
@@ -1548,39 +1486,13 @@ async function fixImagesIssue(
     return { result: "failed", reason: "all_alt_generators_failed" };
   }
 
-  const updateResponse = await admin.graphql(UPDATE_IMAGE_ALT_MUTATION, {
-    variables: {
-      productId: product.shopifyProductId,
-      media: mediaWithoutAlt,
-    },
-  });
-  const updateJson = (await updateResponse.json()) as {
-    data: {
-      productUpdateMedia: {
-        media?: { id: string; alt: string }[];
-        mediaUserErrors: { field: string; message: string }[];
-      };
-    };
-  };
-  if (updateJson.data.productUpdateMedia.mediaUserErrors.length > 0) {
-    console.error(
-      `[GEO Rise auto-fix] IMAGES mediaUserErrors for ${product.shopifyProductId}:`,
-      updateJson.data.productUpdateMedia.mediaUserErrors
-    );
-    return { result: "failed", reason: "shopify_media_errors" };
-  }
-
-  // Persistence check: every alt we asked to set should come back exactly.
-  const returned = updateJson.data.productUpdateMedia.media ?? [];
-  const allPersisted = mediaWithoutAlt.every((wanted) => {
-    const got = returned.find((m) => m.id === wanted.id);
-    return got && got.alt === wanted.alt;
-  });
-  if (!allPersisted) {
-    console.error(
-      `[GEO Rise auto-fix] IMAGES persistence verify failed for ${product.shopifyProductId}`
-    );
-    return { result: "failed", reason: "persistence_verify_failed" };
+  const write = await updateMediaAltText(
+    admin,
+    product.shopifyProductId,
+    mediaWithoutAlt
+  );
+  if (write.result === "failed") {
+    return { result: "failed", reason: write.reason };
   }
 
   await prisma.auditResult.update({
