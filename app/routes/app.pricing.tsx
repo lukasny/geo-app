@@ -71,9 +71,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent") as string;
 
   if (intent === "subscribe") {
-    const planKey = formData.get("plan") as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
+    // Runtime validation, not just a type cast: only self-serve paid plans
+    // are valid subscribe targets (Enterprise goes through contact-us).
+    const requested = formData.get("plan");
+    if (requested !== "GROWTH" && requested !== "PRO") {
+      return { error: "Invalid plan selection." };
+    }
+    const planKey = requested as Exclude<PlanKey, "FREE" | "ENTERPRISE">;
     try {
-      const confirmationUrl = await createSubscription(admin, planKey, session.shop);
+      // A merchant already on a paid plan is switching, not starting out:
+      // the new subscription replaces the old one on approval (Shopify
+      // prorates automatically) and must not grant a fresh free trial.
+      const store = await prisma.store.findUnique({
+        where: { shopifyDomain: session.shop },
+        select: { plan: true },
+      });
+      const isPlanSwitch = (store?.plan ?? "FREE") !== "FREE";
+      const confirmationUrl = await createSubscription(
+        admin,
+        planKey,
+        session.shop,
+        { skipTrial: isPlanSwitch }
+      );
       // Return the URL as data - the client navigates via window.top.location.
       // shopify-app-remix's redirect helper is unreliable in this iframe context;
       // returning data and letting the client escape the iframe is deterministic.
@@ -300,54 +319,16 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
             <>
               <Button disabled fullWidth>Current plan</Button>
               {planKey !== "FREE" && shopifySubId && (
-                <>
-                  <Button
-                    variant="plain"
-                    tone="critical"
-                    loading={isLoading}
-                    disabled={siblingSubmitting}
-                    fullWidth
-                    onClick={() => setShowCancelModal(true)}
-                  >
-                    Cancel plan
-                  </Button>
-                  <Modal
-                    open={showCancelModal}
-                    onClose={() => setShowCancelModal(false)}
-                    title={`Cancel your ${def.name} plan?`}
-                    primaryAction={{
-                      content: "Cancel plan",
-                      destructive: true,
-                      loading: isLoading,
-                      onAction: () => {
-                        fetcher.submit(
-                          {
-                            intent: "cancel",
-                            subscriptionId: shopifySubId,
-                            plan: planKey,
-                          },
-                          { method: "POST" }
-                        );
-                        setShowCancelModal(false);
-                      },
-                    }}
-                    secondaryActions={[
-                      {
-                        content: "Keep my plan",
-                        onAction: () => setShowCancelModal(false),
-                      },
-                    ]}
-                  >
-                    <Modal.Section>
-                      <Text as="p" variant="bodyMd">
-                        You'll move to the Free plan immediately. Your data
-                        stays, but paid features like AI tracking, bulk
-                        optimization, and weekly insight emails lock until you
-                        upgrade again.
-                      </Text>
-                    </Modal.Section>
-                  </Modal>
-                </>
+                <Button
+                  variant="plain"
+                  tone="critical"
+                  loading={isLoading}
+                  disabled={siblingSubmitting}
+                  fullWidth
+                  onClick={() => setShowCancelModal(true)}
+                >
+                  Cancel plan
+                </Button>
               )}
             </>
           ) : isEnterprise ? (
@@ -367,13 +348,50 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
             >
               {`Start ${def.trialDays}-day free trial`}
             </Button>
+          ) : isDowngrade && planKey === "FREE" ? (
+            // Moving to Free = cancelling the subscription. Confirmed via
+            // the shared modal below.
+            <Button
+              variant="plain"
+              loading={isLoading}
+              disabled={siblingSubmitting}
+              fullWidth
+              onClick={() => setShowCancelModal(true)}
+            >
+              Downgrade to Free
+            </Button>
           ) : isDowngrade ? (
+            // Paid-to-paid switch: a NEW subscription replaces the active
+            // one when the merchant approves it on Shopify's confirmation
+            // page (prorated automatically). Never cancel here; that would
+            // drop the merchant to Free instead of switching plans.
             <Button
               variant="plain"
               loading={isLoading}
               disabled={siblingSubmitting}
               fullWidth
               onClick={() => {
+                fetcher.submit(
+                  { intent: "subscribe", plan: planKey },
+                  { method: "POST" }
+                );
+              }}
+            >
+              {`Switch to ${def.name}`}
+            </Button>
+          ) : null}
+
+          {/* Shared cancel confirmation: opened by "Cancel plan" on the
+              current paid card and "Downgrade to Free" on the Free card. */}
+          <Modal
+            open={showCancelModal}
+            onClose={() => setShowCancelModal(false)}
+            title={`Cancel your ${PLAN_DEFINITIONS[currentPlan].name} plan?`}
+            primaryAction={{
+              content: "Cancel plan",
+              destructive: true,
+              loading: isLoading,
+              onAction: () => {
                 fetcher.submit(
                   {
                     intent: "cancel",
@@ -382,11 +400,24 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
                   },
                   { method: "POST" }
                 );
-              }}
-            >
-              Downgrade to {def.name}
-            </Button>
-          ) : null}
+                setShowCancelModal(false);
+              },
+            }}
+            secondaryActions={[
+              {
+                content: "Keep my plan",
+                onAction: () => setShowCancelModal(false),
+              },
+            ]}
+          >
+            <Modal.Section>
+              <Text as="p" variant="bodyMd">
+                You'll move to the Free plan immediately. Your data stays,
+                but paid features like AI tracking, bulk optimization, and
+                weekly insight emails lock until you upgrade again.
+              </Text>
+            </Modal.Section>
+          </Modal>
 
           <Divider />
 

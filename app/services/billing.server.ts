@@ -19,11 +19,18 @@ export function planRank(plan: PlanKey): number {
 /**
  * Creates a Shopify app subscription and returns the confirmationUrl to
  * redirect the merchant to for approval.
+ *
+ * Plan switches: Shopify allows one active subscription per app per shop;
+ * approving a new subscription automatically cancels the old one (with
+ * prorated credit on downgrades), so switching plans is just another
+ * create. Pass skipTrial for switches so existing subscribers don't get
+ * a fresh free trial every time they change plans.
  */
 export async function createSubscription(
   admin: AdminApiContext,
   planKey: Exclude<PlanKey, "FREE" | "ENTERPRISE">,
-  shopDomain: string
+  shopDomain: string,
+  options: { skipTrial?: boolean } = {}
 ): Promise<string> {
   const plan = PLAN_DEFINITIONS[planKey];
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/pricing`;
@@ -79,7 +86,7 @@ export async function createSubscription(
       variables: {
         name: plan.name,
         returnUrl,
-        trialDays: plan.trialDays,
+        trialDays: options.skipTrial ? 0 : plan.trialDays,
         test: isDevStore,
         lineItems: [
           {
