@@ -62,6 +62,13 @@ interface ShopifyProductData {
 interface AuditIssue {
   category: "SCHEMA" | "CONTENT" | "TECHNICAL" | "ACCESSIBILITY" | "IMAGES" | "META";
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  /** Must be static per issue family - no per-product numbers. The action
+   *  plan groups buckets by exact `category::title` and its per-card
+   *  auto-fix filters AuditResult rows by exact title equality, so dynamic
+   *  values fragment one fix recipe into many one-item buckets. Put char
+   *  counts / image counts in `description`. fixMetaIssue and bulk-edit
+   *  also branch on title fragments ("seo title", "length", "alt text") -
+   *  keep those substrings stable when renaming. */
   title: string;
   description: string;
   recommendation: string;
@@ -377,8 +384,8 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       issues.push({
         category: "META",
         severity: "LOW",
-        title: `SEO title length is ${seoTitle.length < 30 ? "too short" : "too long"} (${seoTitle.length} chars)`,
-        description: `Your SEO title is ${seoTitle.length} characters. The ideal range is 30–60 characters for maximum readability in AI search results and Google snippets.`,
+        title: "SEO title length outside 30-60 characters",
+        description: `Your SEO title is ${seoTitle.length} characters (${seoTitle.length < 30 ? "too short" : "too long"}). The ideal range is 30–60 characters for maximum readability in AI search results and Google snippets.`,
         recommendation: `Adjust your SEO title to be between 30 and 60 characters. Current title: "${seoTitle}"`,
         autoFixable: true,
       });
@@ -403,8 +410,8 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       issues.push({
         category: "META",
         severity: "LOW",
-        title: `Meta description length is ${seoDesc.length < 120 ? "too short" : "too long"} (${seoDesc.length} chars)`,
-        description: `Your meta description is ${seoDesc.length} characters. The ideal range is 120–160 characters. AI search engines use meta descriptions to generate product summaries.`,
+        title: "Meta description length outside 120-160 characters",
+        description: `Your meta description is ${seoDesc.length} characters (${seoDesc.length < 120 ? "too short" : "too long"}). The ideal range is 120–160 characters. AI search engines use meta descriptions to generate product summaries.`,
         recommendation:
           "Rewrite the meta description to be 120–160 characters. Make it a concise, informative summary of the product's key benefit.",
         autoFixable: true,
@@ -444,9 +451,8 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
     issues.push({
       category: "IMAGES",
       severity: "MEDIUM",
-      title: `Only ${images.length} product image${images.length === 1 ? "" : "s"}`,
-      description:
-        "Products with 3+ images perform significantly better in AI search results. More images help AI agents build a complete picture of your product.",
+      title: "Fewer than 3 product images",
+      description: `This product has only ${images.length} image${images.length === 1 ? "" : "s"}. Products with 3+ images perform significantly better in AI search results. More images help AI agents build a complete picture of your product.`,
       recommendation:
         "Add at least 3 images: a main product shot, detail/close-up shots, and a lifestyle or in-use shot.",
       autoFixable: false,
@@ -463,9 +469,8 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
     issues.push({
       category: "IMAGES",
       severity: "HIGH",
-      title: `${images.length - imagesWithAlt.length} image${images.length - imagesWithAlt.length > 1 ? "s" : ""} missing alt text`,
-      description:
-        "Alt text is how AI systems read your images. Without alt text, AI search engines cannot understand what your images show, reducing your product's visibility in AI-powered image search and shopping results.",
+      title: "Images missing alt text",
+      description: `${images.length - imagesWithAlt.length} of ${images.length} image${images.length === 1 ? "" : "s"} on this product ${images.length - imagesWithAlt.length === 1 ? "is" : "are"} missing alt text. Alt text is how AI systems read your images. Without alt text, AI search engines cannot understand what your images show, reducing your product's visibility in AI-powered image search and shopping results.`,
       recommendation:
         "Add descriptive alt text to every image. Each alt text should describe what the image shows, not just repeat the product title. Example: 'Blue running shoe side view showing mesh upper and rubber sole'.",
       autoFixable: true,
@@ -936,10 +941,13 @@ const UPDATE_PRODUCT_MUTATION = `#graphql
  *  - `!ok + claude_credits` - permanent failure (credits exhausted, auth)
  *    that won't recover this session; caller should ABORT the whole loop
  *  - `!ok + claude_other` - transient failure that didn't recover even
- *    after retries; caller should SKIP this issue but keep going */
+ *    after retries; caller should SKIP this issue but keep going
+ *  - `!ok + unusable_output` - Claude responded but output failed validation
+ *    AND the deterministic template would be worse than what the merchant
+ *    already has; caller should count this issue as failed, never write */
 type GenResult =
   | { ok: true; value: string; source: "claude" | "fallback" }
-  | { ok: false; reason: "claude_credits" | "claude_other" };
+  | { ok: false; reason: "claude_credits" | "claude_other" | "unusable_output" };
 
 // Retry/error helpers live in `./ai-retry.server` - shared with tracking +
 // simulator now that all three call third-party AI vendors with the same
@@ -1048,6 +1056,12 @@ Store: ${storeName}`,
         return { ok: true, value: cleaned, source: "claude" };
       }
     }
+    // With no vendor the fallback degenerates to the bare product title,
+    // which is exactly the audit's "Missing custom SEO title" condition:
+    // writing it would guarantee a re-flag on the next audit. Fail instead.
+    if (!product.vendor?.trim()) {
+      return { ok: false, reason: "unusable_output" };
+    }
     return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
     console.error("[GEO Rise auto-fix] SEO title generator failed:", err);
@@ -1113,6 +1127,13 @@ Output ONLY the HTML <p> paragraphs. No preamble, no labels, no quotes around th
       if (cleaned.length >= 100 && cleaned.length <= 3000 && cleaned.includes("<p>")) {
         return { ok: true, value: cleaned, source: "claude" };
       }
+    }
+    // The template fallback strips ALL of the merchant's HTML (lists,
+    // headings, tables) and truncates mid-word at 500 chars, so it must
+    // never replace a description the merchant already wrote. It is only
+    // an acceptable floor when the product has no description at all.
+    if (existing) {
+      return { ok: false, reason: "unusable_output" };
     }
     return { ok: true, value: fallback, source: "fallback" };
   } catch (err) {
@@ -1328,8 +1349,14 @@ async function fixMetaIssue(
   if (!product) return { result: "failed", reason: "product_not_found" };
 
   const isSeoTitleIssue = issue.title.toLowerCase().includes("seo title");
+  // "... length outside ..." issues may only be skipped when the live value
+  // sits inside the audit rubric's window (titles 30-60, descriptions
+  // 120-160); a looser window would mark the issue fixed with nothing
+  // written and the next audit would recreate it forever. "Missing ..."
+  // issues only need the field populated to a sane length.
+  const isLengthIssue = issue.title.toLowerCase().includes("length");
 
-  // Fetch current seo for both (a) skip-if-good check and (b) the
+  // Fetch current seo for both (a) skip-if-already-good check and (b) the
   // productUpdate seo:-wholesale-replacement workaround - always send BOTH
   // (handled inside updateProductSeo, which gets this pre-read passed in).
   const currentSeo = (await fetchProductSeo(
@@ -1339,11 +1366,10 @@ async function fixMetaIssue(
 
   if (isSeoTitleIssue) {
     const t = currentSeo.title?.trim() ?? "";
-    if (
-      t.length >= 20 &&
-      t.length <= 80 &&
-      t.toLowerCase() !== product.title.toLowerCase()
-    ) {
+    const withinWindow = isLengthIssue
+      ? t.length >= 30 && t.length <= 60
+      : t.length >= 20 && t.length <= 80;
+    if (withinWindow && t.toLowerCase() !== product.title.toLowerCase()) {
       console.log(
         `[GEO Rise auto-fix] META SEO-title skipped for ${product.shopifyProductId}: already populated (${t.length} chars)`
       );
@@ -1359,7 +1385,10 @@ async function fixMetaIssue(
     }
   } else {
     const d = currentSeo.description?.trim() ?? "";
-    if (d.length >= 50 && d.length <= 320) {
+    const withinWindow = isLengthIssue
+      ? d.length >= 120 && d.length <= 160
+      : d.length >= 50 && d.length <= 320;
+    if (withinWindow) {
       console.log(
         `[GEO Rise auto-fix] META meta-description skipped for ${product.shopifyProductId}: already populated (${d.length} chars)`
       );

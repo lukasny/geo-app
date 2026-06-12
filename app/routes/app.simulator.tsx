@@ -27,6 +27,7 @@ import {
   AlertCircleIcon,
 } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { Prisma } from "@prisma/client";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
@@ -133,6 +134,32 @@ const PRODUCT_DETAIL_QUERY = `#graphql
   }
 `;
 
+// Review apps store several metafields per namespace (rating, rating_count,
+// widget JSON, ...), so the rating must be matched on namespace AND key.
+// Matching namespace alone parsed whichever metafield happened to come first
+// (e.g. a review count of 47) as the product's rating.
+const REVIEW_NAMESPACES = ["reviews", "loox", "okendo"];
+const RATING_KEYS = ["rating", "avg_rating", "average_rating", "rating_value"];
+
+/** Shopify's standard `rating` metafield type stores JSON like
+ *  {"value":"4.6","scale_min":"1.0","scale_max":"5.0"}; Loox/Okendo store a
+ *  bare number string. Accept both, and reject anything outside a 0-5 scale
+ *  so a stray count or widget blob never poses as the rating. */
+function parseRatingValue(raw: string): number | null {
+  let candidate = raw.trim();
+  if (candidate.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(candidate) as { value?: unknown };
+      if (parsed?.value === undefined) return null;
+      candidate = String(parsed.value);
+    } catch {
+      return null;
+    }
+  }
+  const n = parseFloat(candidate);
+  return Number.isFinite(n) && n >= 0 && n <= 5 ? n : null;
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
@@ -143,29 +170,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const productDbId = formData.get("productId") as string;
   if (!productDbId) return { error: "No product selected." };
 
-  // Enforce simulation limit for free plan
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: session.shop },
     select: { id: true, plan: true },
   });
   if (!store) return { error: "Store not found." };
-
-  if (store.plan === "FREE") {
-    const limit = PLAN_LIMITS.FREE.maxSimulations;
-    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    // Count actual simulator runs - the previous code counted AiCitation
-    // records, which are never created by the simulator, so the limit never
-    // tripped and free users could run unlimited simulations.
-    const usedThisMonth = await prisma.simulationUsage.count({
-      where: {
-        storeId: store.id,
-        createdAt: { gte: startOfMonth },
-      },
-    });
-    if (usedThisMonth >= limit) {
-      return { error: `Free plan allows ${limit} simulations per month. Upgrade to Growth for unlimited simulations.` };
-    }
-  }
 
   // P1-11 fix: scope the product lookup to this store. CUIDs are hard to
   // guess but tenant isolation should never rely on opaque-ID secrecy.
@@ -233,12 +242,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     .map((e) => e.node.title)
     .filter((t) => t !== "Default Title");
 
-  // Check review metafields
-  const reviewMf = sp.metafields.edges.find(
+  const ratingMf = sp.metafields.edges.find(
     (e) =>
-      e.node.namespace === "reviews" ||
-      e.node.namespace === "loox" ||
-      e.node.namespace === "okendo"
+      REVIEW_NAMESPACES.includes(e.node.namespace) &&
+      RATING_KEYS.includes(e.node.key)
   );
 
   const shopifyInput = {
@@ -257,16 +264,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     variants: variantTitles,
     hasReviews: dbProduct.hasReviews,
     reviewCount: dbProduct.reviewCount,
-    rating: reviewMf ? parseFloat(reviewMf.node.value) || null : null,
+    rating: ratingMf ? parseRatingValue(ratingMf.node.value) : null,
   };
+
+  // Atomically reserve the FREE-plan usage slot BEFORE the AI call. The
+  // previous flow counted usage, ran the 10-30s simulation, then recorded it,
+  // so concurrent requests all read a stale count and blew past the cap
+  // (unbounded paid LLM spend). Serializable isolation makes count + create a
+  // single atomic step; the reservation is released in the catch below so a
+  // failed run never burns quota.
+  let reservationId: string | null = null;
+  if (store.plan === "FREE") {
+    const limit = PLAN_LIMITS.FREE.maxSimulations;
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    try {
+      reservationId = await prisma.$transaction(
+        async (tx) => {
+          const usedThisMonth = await tx.simulationUsage.count({
+            where: { storeId: store.id, createdAt: { gte: startOfMonth } },
+          });
+          if (usedThisMonth >= limit) return null;
+          const reservation = await tx.simulationUsage.create({
+            data: { storeId: store.id, productId: productDbId },
+          });
+          return reservation.id;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (err) {
+      // P2034 = serialization conflict: another request reserved a slot at
+      // the same instant. Err toward blocking so the cap stays a hard cap.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2034"
+      ) {
+        return { error: "Another simulation is already starting. Please try again in a moment." };
+      }
+      throw err;
+    }
+    if (!reservationId) {
+      return { error: `Free plan allows ${limit} simulations per month. Upgrade to Growth for unlimited simulations.` };
+    }
+  }
 
   try {
     const result = await simulateAiView(productUrl, shopifyInput);
-    // Record one usage row per successful run so the monthly limit check
-    // actually has data to count.
-    await prisma.simulationUsage.create({
-      data: { storeId: store.id, productId: productDbId },
-    });
+    // FREE runs already hold a reservation row; paid plans record usage after
+    // the fact so the dashboard's lifetime counter keeps working.
+    if (!reservationId) {
+      await prisma.simulationUsage.create({
+        data: { storeId: store.id, productId: productDbId },
+      });
+    }
     return {
       result,
       productTitle: sp.title,
@@ -278,6 +327,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       productUrl,
     } satisfies ActionData;
   } catch (err) {
+    // Release the reserved slot - a failed run must not burn monthly quota.
+    if (reservationId) {
+      await prisma.simulationUsage
+        .deleteMany({ where: { id: reservationId, storeId: store.id } })
+        .catch(() => {});
+    }
     const msg = err instanceof Error ? err.message : "Unknown error";
     return { error: `Simulation failed: ${msg}. Please try again.` };
   }

@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Resend } from "resend";
 import prisma from "~/db.server";
 import { PLAN_LIMITS } from "./billing.shared";
@@ -17,6 +18,22 @@ const resend = process.env.RESEND_API_KEY
 const FROM_EMAIL =
   process.env.INSIGHT_FROM_EMAIL ?? "GEO Rise <onboarding@resend.dev>";
 
+// resend.dev can only deliver to the Resend account owner's own address;
+// every merchant send gets a 403. Dev tests to Lukas's own inbox succeed,
+// which masks the gap, so shout at boot when production is still on the
+// default sender.
+if (
+  process.env.NODE_ENV === "production" &&
+  process.env.RESEND_API_KEY &&
+  !process.env.INSIGHT_FROM_EMAIL
+) {
+  console.warn(
+    "[GEO Rise insight-email] WARNING: INSIGHT_FROM_EMAIL is not set in production. " +
+      "Falling back to onboarding@resend.dev, which Resend only delivers to the account owner's address. " +
+      "Every merchant digest will be rejected with a 403 until a verified sender is configured."
+  );
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ComposedEmail {
@@ -28,6 +45,38 @@ export interface ComposedEmail {
 export type SendResult =
   | { sent: true }
   | { sent: false; reason: string; recoverable: boolean };
+
+// ─── Unsubscribe tokens ───────────────────────────────────────────────────────
+
+/** HMAC binding an unsubscribe link to one store. Keyed with the Shopify API
+ *  secret so no extra secret needs provisioning. The token only authorizes
+ *  flipping that store's `weeklyInsightEnabled` off, nothing else, so the
+ *  blast radius of a leaked link is one merchant's email preference. */
+export function unsubscribeToken(storeId: string): string {
+  return createHmac("sha256", process.env.SHOPIFY_API_SECRET ?? "")
+    .update(storeId)
+    .digest("hex");
+}
+
+/** Constant-time token check for the public /unsubscribe route. */
+export function verifyUnsubscribeToken(
+  storeId: string,
+  token: string
+): boolean {
+  const expected = Buffer.from(unsubscribeToken(storeId), "utf8");
+  const provided = Buffer.from(token, "utf8");
+  return (
+    expected.length === provided.length && timingSafeEqual(expected, provided)
+  );
+}
+
+function buildUnsubscribeUrl(storeId: string): string {
+  const appBaseUrl =
+    process.env.SHOPIFY_APP_URL ?? "https://geo-app-hkhi.onrender.com";
+  return `${appBaseUrl}/unsubscribe?store=${encodeURIComponent(
+    storeId
+  )}&token=${unsubscribeToken(storeId)}`;
+}
 
 // ─── Compose ──────────────────────────────────────────────────────────────────
 
@@ -81,13 +130,17 @@ export async function composeInsightEmail(
     .slice()
     .sort((a, b) => b.citedCount - a.citedCount)[0];
 
-  // Shopify admin deep link. We can't know the app's "handle" reliably, so
-  // we use the app's public URL - clicking it triggers Shopify's normal
-  // embedded-app handoff back into the admin.
-  const appBaseUrl =
-    process.env.SHOPIFY_APP_URL ?? "https://geo-app-hkhi.onrender.com";
-  const actionPlanUrl = `${appBaseUrl}/app/action-plan`;
-  const dashboardUrl = `${appBaseUrl}/app`;
+  // Shopify admin deep link. A bare link to the app's public URL dead-ends
+  // at the auth bounce (no shop context, no embedded session); the working
+  // form for embedded apps is {shop}/admin/apps/{client_id}/{path}, which
+  // logs the merchant into their admin and opens the app at that route.
+  const clientId = process.env.SHOPIFY_API_KEY ?? "";
+  const adminAppBase = clientId
+    ? `https://${store.shopifyDomain}/admin/apps/${clientId}`
+    : `${process.env.SHOPIFY_APP_URL ?? "https://geo-app-hkhi.onrender.com"}/app`;
+  const actionPlanUrl = `${adminAppBase}${clientId ? "/app/action-plan" : "/action-plan"}`;
+  const dashboardUrl = clientId ? `${adminAppBase}/app` : adminAppBase;
+  const unsubscribeUrl = buildUnsubscribeUrl(storeId);
 
   // ── Build subject ──
   // Three cases: has actions (top item leads), audit ran with no
@@ -146,6 +199,7 @@ export async function composeInsightEmail(
   textLines.push(
     `Manage email preferences in your GEO Rise dashboard.`
   );
+  textLines.push(`Unsubscribe from these emails: ${unsubscribeUrl}`);
   const text = textLines.join("\n");
 
   // ── Build HTML ──
@@ -282,9 +336,11 @@ export async function composeInsightEmail(
       </div>
 
       <div style="padding: 24px 32px; border-top: 1px solid #eee; font-size: 12px; color: #8C9196;">
-        You're getting this because you opted in to weekly insights on your
-        ${escapeHtml(store.plan)} plan. Manage preferences in your GEO Rise
-        dashboard.
+        You're getting this because weekly insights are enabled for your store
+        on the ${escapeHtml(store.plan)} plan. Manage preferences in your GEO
+        Rise dashboard, or
+        <a href="${unsubscribeUrl}" style="color: #8C9196; text-decoration: underline;">unsubscribe</a>
+        from these emails.
         <br /><br />
         - Boda Apps / GEO Rise
       </div>
@@ -334,6 +390,8 @@ export async function sendInsightEmail(storeId: string): Promise<SendResult> {
     };
   }
 
+  const unsubscribeUrl = buildUnsubscribeUrl(storeId);
+
   try {
     const result = await resend.emails.send({
       from: FROM_EMAIL,
@@ -341,25 +399,40 @@ export async function sendInsightEmail(storeId: string): Promise<SendResult> {
       subject: composed.subject,
       html: composed.html,
       text: composed.text,
+      // RFC 8058 one-click unsubscribe. Gmail/Yahoo require these headers
+      // from bulk senders, and mail clients surface them as a native
+      // "Unsubscribe" button - a much cheaper exit than "Report spam".
+      headers: {
+        "List-Unsubscribe": `<${unsubscribeUrl}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
     });
     if (result.error) {
+      // Resend 4xx errors (validation, bad sender domain, auth, bad
+      // recipient) will fail identically on every retry - the resend.dev
+      // default-sender 403 is the canonical case. Marking those
+      // recoverable would put the store in a daily retry loop that burns
+      // a full compose per attempt and never delivers. Only rate limits
+      // (429) and 5xx are worth retrying; unknown shapes fall back to a
+      // name allowlist of transient codes.
+      const status = result.error.statusCode;
+      const transient =
+        status !== null && status !== undefined
+          ? status === 429 || status >= 500
+          : ["rate_limit_exceeded", "application_error", "internal_server_error"].includes(
+              result.error.name
+            );
       console.error(
-        `[GEO Rise insight-email] Resend rejected for store ${storeId}:`,
+        `[GEO Rise insight-email] Resend rejected for store ${storeId} ` +
+          `(${result.error.name ?? "unknown"}, ${transient ? "transient, will retry" : "PERMANENT, config fix needed"}):`,
         result.error
       );
       return {
         sent: false,
         reason: `Email service rejected: ${result.error.message ?? "unknown error"}`,
-        // Transient 5xx / rate-limit vs permanent auth/bad-recipient - Resend
-        // doesn't always type the error well, so treat as transient.
-        recoverable: true,
+        recoverable: transient,
       };
     }
-    await prisma.store.update({
-      where: { id: storeId },
-      data: { lastInsightSentAt: new Date() },
-    });
-    return { sent: true };
   } catch (err) {
     console.error(
       `[GEO Rise insight-email] send threw for store ${storeId}:`,
@@ -371,6 +444,22 @@ export async function sendInsightEmail(storeId: string): Promise<SendResult> {
       recoverable: true,
     };
   }
+
+  // Bookkeeping sits OUTSIDE the send try block: the email is already in the
+  // merchant's inbox, so a DB hiccup here must not be reported as a failed
+  // send - the cron would re-send the identical digest on the next tick.
+  try {
+    await prisma.store.update({
+      where: { id: storeId },
+      data: { lastInsightSentAt: new Date() },
+    });
+  } catch (err) {
+    console.error(
+      `[GEO Rise insight-email] sent for store ${storeId} but failed to record lastInsightSentAt:`,
+      err
+    );
+  }
+  return { sent: true };
 }
 
 // ─── Weekly cron entry point ──────────────────────────────────────────────────
@@ -386,8 +475,8 @@ export interface DigestRunResult {
 
 /** Find stores due for their weekly insight digest and send. Called by the
  *  daily cron in `scheduler.server.ts`. A store is "due" when it's on Growth+,
- *  opted in, has an email on file, AND its last digest was more than 6.5 days
- *  ago (or never sent). */
+ *  has weekly insights enabled, has an email on file, AND its last digest was
+ *  more than 6.5 days ago (or never sent). */
 export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
   // 6.5-day cutoff gives some slack - running the cron daily-ish means
   // each store's digest cycle slides between 6.5–7.5 days, not strictly
@@ -405,7 +494,7 @@ export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
         { lastInsightSentAt: { lt: cutoff } },
       ],
     },
-    select: { id: true },
+    select: { id: true, lastInsightSentAt: true },
     take: EMAIL_LIMIT_PER_TICK,
   });
 
@@ -414,15 +503,51 @@ export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
   let failed = 0;
 
   for (const store of due) {
+    // Claim atomically BEFORE sending: a second server instance (deploy
+    // overlap, scaling) firing the same 09:00 cron holds an identical due
+    // snapshot, and without a claim every merchant in it gets the digest
+    // twice. Re-stating the dueness condition in the WHERE makes this a
+    // compare-and-swap - the first runner advances lastInsightSentAt past
+    // the cutoff, every other runner matches zero rows and skips.
+    const claimed = await prisma.store.updateMany({
+      where: {
+        id: store.id,
+        weeklyInsightEnabled: true,
+        OR: [
+          { lastInsightSentAt: null },
+          { lastInsightSentAt: { lt: cutoff } },
+        ],
+      },
+      data: { lastInsightSentAt: new Date() },
+    });
+    if (claimed.count === 0) continue;
+
     const result = await sendInsightEmail(store.id);
     if (result.sent) {
       sent++;
     } else if (!result.recoverable) {
-      // Permanent: not eligible / no email / API key missing. Don't retry
-      // next tick; counts as "skipped" rather than "failed."
+      // Permanent: not eligible / no email / bad sender config. Keep the
+      // claim so the store is NOT retried daily forever - it becomes due
+      // again next week, by which point the config may be fixed. Counts as
+      // "skipped" rather than "failed."
       skippedNotEligible++;
     } else {
       failed++;
+      // Transient failure: release the claim by restoring the original
+      // timestamp so the store is retried at tomorrow's tick instead of
+      // silently losing a week. If this restore itself fails, the claim
+      // stays - skipping a week is safer than risking a duplicate email.
+      try {
+        await prisma.store.update({
+          where: { id: store.id },
+          data: { lastInsightSentAt: store.lastInsightSentAt },
+        });
+      } catch (err) {
+        console.error(
+          `[GEO Rise insight-email] failed to release digest claim for store ${store.id}:`,
+          err
+        );
+      }
     }
   }
 

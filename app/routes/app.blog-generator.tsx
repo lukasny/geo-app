@@ -20,6 +20,8 @@ import {
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
+import { Prisma } from "@prisma/client";
+
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import {
@@ -179,47 +181,90 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ) as BlogPostLength;
 
     // Race-condition mitigation (audit I3): insert a placeholder row inside a
-    // transaction that also re-checks the cap. Two concurrent generate clicks
-    // can't both pass the cap check because the count read sees the other
-    // request's placeholder row. The placeholder is updated to a real draft
-    // on success, or marked "failed" on error. Either way it counts toward
-    // the monthly quota (Anthropic was billed for the call regardless).
-    let placeholderId: string;
-    try {
-      placeholderId = await prisma.$transaction(async (tx) => {
-        if (monthlyCap !== Infinity) {
-          const startOfMonth = new Date();
-          startOfMonth.setUTCDate(1);
-          startOfMonth.setUTCHours(0, 0, 0, 0);
-          const used = await tx.blogPost.count({
+    // SERIALIZABLE transaction that also re-checks the cap. Under the default
+    // READ COMMITTED isolation two overlapping requests each count only
+    // committed rows, so neither sees the other's placeholder and both pass
+    // the check (write skew); Serializable makes Postgres abort one of them
+    // with a serialization failure (Prisma P2034) instead. The placeholder is
+    // updated to a real draft on success, or marked "failed" on error. Either
+    // way it counts toward the monthly quota (Anthropic was billed for the
+    // call regardless).
+    const reserveQuotaSlot = () =>
+      prisma.$transaction(
+        async (tx) => {
+          // Reap orphaned placeholders before counting. A crash or deploy
+          // mid-generation leaves rows stuck at "generating" forever; the
+          // cap count below includes them while the UI count excludes them,
+          // so the merchant would see quota remaining while the server
+          // refuses. Ten minutes is far beyond the longest Claude call, so
+          // anything older cannot still be in flight. Marking them "failed"
+          // makes both counts agree.
+          await tx.blogPost.updateMany({
             where: {
               storeId: store.id,
-              createdAt: { gte: startOfMonth },
+              status: "generating",
+              createdAt: { lt: new Date(Date.now() - 10 * 60_000) },
+            },
+            data: { status: "failed" },
+          });
+
+          if (monthlyCap !== Infinity) {
+            const startOfMonth = new Date();
+            startOfMonth.setUTCDate(1);
+            startOfMonth.setUTCHours(0, 0, 0, 0);
+            const used = await tx.blogPost.count({
+              where: {
+                storeId: store.id,
+                createdAt: { gte: startOfMonth },
+              },
+            });
+            if (used >= monthlyCap) {
+              throw new BlogPostCapReachedError(monthlyCap);
+            }
+          }
+          const placeholder = await tx.blogPost.create({
+            data: {
+              storeId: store.id,
+              topic,
+              tone,
+              targetKeywords: targetKeywords ?? undefined,
+              title: "(generating...)",
+              excerpt: "",
+              bodyHtml: "",
+              wordCount: 0,
+              status: "generating",
             },
           });
-          if (used >= monthlyCap) {
-            throw new BlogPostCapReachedError(monthlyCap);
-          }
-        }
-        const placeholder = await tx.blogPost.create({
-          data: {
-            storeId: store.id,
-            topic,
-            tone,
-            targetKeywords: targetKeywords ?? undefined,
-            title: "(generating...)",
-            excerpt: "",
-            bodyHtml: "",
-            wordCount: 0,
-            status: "generating",
-          },
-        });
-        return placeholder.id;
-      });
+          return placeholder.id;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+
+    const isSerializationConflict = (err: unknown) =>
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2034";
+
+    let placeholderId: string;
+    try {
+      try {
+        placeholderId = await reserveQuotaSlot();
+      } catch (err) {
+        // One retry on a serialization conflict: by then the competing
+        // request's placeholder is committed, so the count is accurate and
+        // the retry either succeeds or hits the cap check honestly.
+        if (!isSerializationConflict(err)) throw err;
+        placeholderId = await reserveQuotaSlot();
+      }
     } catch (err) {
       if (err instanceof BlogPostCapReachedError) {
         return {
           error: `You've used all ${err.cap} blog posts on your plan this month. Upgrade for more, or try again next month.`,
+        };
+      }
+      if (isSerializationConflict(err)) {
+        return {
+          error:
+            "Another blog post generation just started for your store. Give it a moment, then try again.",
         };
       }
       console.error("[GEO Rise blog] placeholder transaction failed:", err);
@@ -289,7 +334,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!result.ok) {
       return { error: result.error ?? "Couldn't publish the post." };
     }
-    return { success: true, intent };
+    // `warning` means the article IS live on Shopify but our row didn't
+    // update; the UI must tell the merchant not to publish again.
+    return { success: true, intent, warning: result.warning };
   }
 
   if (intent === "deletePost") {
@@ -376,7 +423,14 @@ export default function BlogGeneratorPage() {
       setTopicDraft("");
       setKeywordsDraft("");
     } else if (data.success && data.intent === "publishPost") {
-      shopify.toast.show("Published to your Shopify blog");
+      // A warning means the article is live but our DB row didn't update;
+      // longer duration because the merchant must read it before clicking
+      // Publish again on the still-draft card.
+      if (typeof data.warning === "string" && data.warning) {
+        shopify.toast.show(data.warning, { duration: 8000 });
+      } else {
+        shopify.toast.show("Published to your Shopify blog");
+      }
     } else if (data.success && data.intent === "deletePost") {
       shopify.toast.show(
         data.wasPublished

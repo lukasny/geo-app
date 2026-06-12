@@ -277,6 +277,11 @@ model AiTrafficEvent {
 
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
+  // Shopify webhook delivery is at-least-once; this makes the orders/paid
+  // insert idempotent so redeliveries can't double-count revenue. orderId is
+  // nullable and Postgres treats NULLs as distinct, so referral events
+  // without an order are unaffected.
+  @@unique([storeId, orderId])
   @@index([storeId])
   @@index([storeId, eventAt])
   @@index([storeId, platform])

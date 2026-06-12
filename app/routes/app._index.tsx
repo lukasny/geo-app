@@ -623,7 +623,14 @@ function Step2({
 }) {
   const [hasFiredAudit, setHasFiredAudit] = useState(false);
   const [hasFiredLlms, setHasFiredLlms] = useState(false);
+  // Dedicated fetcher so the llms-gen response never clobbers the audit
+  // result on the shared `fetcher.data`. It must be a fetcher (not a raw
+  // fetch): only fetcher.submit appends the ?index param that targets this
+  // index route's action - a plain POST to "/app" hits the parent layout
+  // route, which has no action, and 405s.
+  const llmsFetcher = useFetcher<typeof action>();
   const data = fetcher.data as Record<string, unknown> | undefined;
+  const llmsData = llmsFetcher.data as Record<string, unknown> | undefined;
   const lastIntent = fetcher.formData?.get("intent") as string | undefined;
   const isAuditing =
     fetcher.state !== "idle" && lastIntent === "runStarterAudit";
@@ -646,20 +653,24 @@ function Step2({
       setHasFiredAudit(true);
     }
     if (!hasFiredLlms) {
-      // Fire-and-forget llms-gen via a separate plain fetch so the audit
-      // result still lands on `fetcher.data`. If it fails, the merchant
-      // can regenerate from the llms.txt Manager page.
-      const formData = new FormData();
-      formData.append("intent", "generateLlms");
-      fetch(window.location.pathname, {
-        method: "POST",
-        body: formData,
-      }).catch((err) => {
-        console.warn("[onboarding] silent llms generation failed:", err);
-      });
+      // Fire-and-forget: if it fails, the merchant can regenerate from
+      // the llms.txt Manager page.
+      llmsFetcher.submit({ intent: "generateLlms" }, { method: "POST" });
       setHasFiredLlms(true);
     }
-  }, [fetcher, hasFiredAudit, hasFiredLlms]);
+  }, [fetcher, llmsFetcher, hasFiredAudit, hasFiredLlms]);
+
+  // Silent by design: no toast on success. The action returns errors as
+  // data rather than throwing, so log them here for diagnosability.
+  useEffect(() => {
+    if (llmsFetcher.state !== "idle" || !llmsData) return;
+    if ("error" in llmsData) {
+      console.warn(
+        "[onboarding] silent llms generation failed:",
+        llmsData.error
+      );
+    }
+  }, [llmsFetcher.state, llmsData]);
 
   // Don't show the stale error while a retry submission is in flight -
   // `data` still holds the previous failure until the new response lands.
@@ -1154,9 +1165,10 @@ function AiRevenueCard({
             </Button>
           </InlineStack>
           <Text as="p" variant="bodySm" tone="subdued">
-            No AI-attributed revenue yet. Make sure the GEO Rise Schema theme
-            app embed is enabled, then any shopper who reaches you via
-            ChatGPT, Perplexity, Claude, or Gemini will show up here.
+            No AI-attributed revenue yet. Order tracking is awaiting
+            Shopify&apos;s approval for protected order data and activates
+            automatically once granted; AI referrals are already being tagged
+            by the GEO Rise Schema app embed in the meantime.
           </Text>
         </BlockStack>
       </Card>

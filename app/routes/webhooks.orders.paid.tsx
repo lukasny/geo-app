@@ -85,20 +85,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const eventAt = order.processed_at ? new Date(order.processed_at) : new Date();
 
-  await prisma.aiTrafficEvent.create({
-    data: {
-      storeId: store.id,
-      platform,
-      referrerUrl: order.referring_site ?? null,
-      landingPage: order.landing_site ?? "",
-      sessionId: null,
-      convertedToOrder: true,
-      orderId,
-      orderRevenue: totalPrice,
-      orderCurrency: currency,
-      eventAt,
-    },
-  });
+  // Shopify delivery is at-least-once, so the same order can arrive more than
+  // once (e.g. a retry after a slow response). The DB has a unique constraint
+  // on (storeId, orderId); a P2002 here means the order is already recorded,
+  // and we must still return 200 so Shopify stops redelivering.
+  try {
+    await prisma.aiTrafficEvent.create({
+      data: {
+        storeId: store.id,
+        platform,
+        referrerUrl: order.referring_site ?? null,
+        landingPage: order.landing_site ?? "",
+        sessionId: null,
+        convertedToOrder: true,
+        orderId,
+        orderRevenue: totalPrice,
+        orderCurrency: currency,
+        eventAt,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/Unique constraint/i.test(msg) || /P2002/i.test(msg)) {
+      return new Response(null, { status: 200 });
+    }
+    throw err;
+  }
 
   console.log(
     `[GEO Rise revenue] recorded ${platform} attribution: order=${orderId} amount=${totalPrice} ${currency}`

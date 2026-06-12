@@ -75,10 +75,17 @@ export async function runDueTrackingChecks(): Promise<DueChecksResult> {
     if (nextAt && nextAt < now) {
       nextAt = computeNextRunAt(prompt.schedule as TrackingSchedule, now);
     }
-    await prisma.trackingPrompt.update({
-      where: { id: prompt.id },
+    // Conditional claim: the in-process isRunning guard doesn't cover a
+    // second server instance (deploy overlap, scaling) or a manual call,
+    // and each duplicate run costs paid LLM calls plus a duplicate
+    // AiCitation row. Keying the update on the snapshot's `nextRunAt`
+    // makes it a compare-and-swap: only one runner matches the old value,
+    // every other runner sees count 0 and skips.
+    const claimed = await prisma.trackingPrompt.updateMany({
+      where: { id: prompt.id, nextRunAt: prompt.nextRunAt },
       data: { nextRunAt: nextAt },
     });
+    if (claimed.count === 0) continue;
 
     try {
       await runTrackingCheck(prompt.id);

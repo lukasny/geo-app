@@ -130,6 +130,11 @@ export default function RevenuePage() {
               here. Make sure the GEO Rise Schema app embed is enabled so the
               tracker can detect AI referrals.
             </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Note: order tracking is awaiting Shopify&apos;s approval for
+              protected order data and activates automatically once granted.
+              AI referrals are already being tagged in the meantime.
+            </Text>
           </EmptyState>
         </Card>
       </Page>

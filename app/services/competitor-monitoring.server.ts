@@ -171,6 +171,10 @@ export async function suggestCompetitors(
     prisma.aiCitation.findMany({
       where: { storeId },
       select: { competitorsCited: true },
+      // Same most-recent window as getCompetitorOverview; without the
+      // orderBy, take returns an arbitrary Postgres sample once the table
+      // exceeds the window.
+      orderBy: { checkedAt: "desc" },
       take: CITATIONS_WINDOW,
     }),
     prisma.competitor.findMany({
@@ -179,7 +183,13 @@ export async function suggestCompetitors(
     }),
   ]);
 
-  const tracked = new Set(existing.map((c) => c.domain));
+  const tracked = existing.map((c) => c.domain);
+  // Mirrors citationIncludesDomain: a tracked parent domain already counts
+  // its subdomains in the overview stats, so suggesting shop.burton.com when
+  // burton.com is tracked would burn a plan-capped slot on coverage the
+  // merchant already has.
+  const isTracked = (domain: string) =>
+    tracked.some((t) => domain === t || domain.endsWith(`.${t}`));
   const counts = new Map<string, number>();
 
   for (const c of citations) {
@@ -194,7 +204,7 @@ export async function suggestCompetitors(
       const normalized = normalizeDomain(raw);
       if (!normalized) continue;
       if (isGenericNonCompetitor(normalized)) continue;
-      if (tracked.has(normalized)) continue;
+      if (isTracked(normalized)) continue;
       if (seenThisRow.has(normalized)) continue;
       seenThisRow.add(normalized);
       counts.set(normalized, (counts.get(normalized) ?? 0) + 1);

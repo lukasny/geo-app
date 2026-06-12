@@ -161,14 +161,20 @@ const FEATURES: FeatureRow[] = [
   { label: "Multi-market llms.txt",   free: false, growth: true, pro: true, enterprise: true },
   { label: "Bulk optimization",       free: false, growth: true, pro: true, enterprise: true },
   {
-    label: "AI tracking (platforms)",
+    label: "AI tracking prompts",
     free: false,
-    growth: "3 platforms",
-    pro: "All 6+",
-    enterprise: "All 6+",
+    growth: String(PLAN_LIMITS.GROWTH.maxTrackingPrompts),
+    pro: String(PLAN_LIMITS.PRO.maxTrackingPrompts),
+    enterprise: String(PLAN_LIMITS.ENTERPRISE.maxTrackingPrompts),
   },
   { label: "Weekly insight emails",   free: false, growth: true, pro: true, enterprise: true },
-  { label: "Competitor monitoring",   free: false, growth: false, pro: true, enterprise: true },
+  {
+    label: "Competitor monitoring",
+    free: false,
+    growth: `${PLAN_LIMITS.GROWTH.maxCompetitors} competitors`,
+    pro: `${PLAN_LIMITS.PRO.maxCompetitors} competitors`,
+    enterprise: `${PLAN_LIMITS.ENTERPRISE.maxCompetitors} competitors`,
+  },
   { label: "AI revenue attribution",  free: false, growth: false, pro: true, enterprise: true },
   {
     label: "AI blog posts per month",
@@ -177,7 +183,6 @@ const FEATURES: FeatureRow[] = [
     pro: String(PLAN_LIMITS.PRO.maxBlogPostsPerMonth),
     enterprise: String(PLAN_LIMITS.ENTERPRISE.maxBlogPostsPerMonth),
   },
-  { label: "Shopify Flow integration",free: false, growth: false, pro: false, enterprise: true },
   { label: "Priority support",        free: false, growth: false, pro: true, enterprise: true },
 ];
 
@@ -251,16 +256,11 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
     true,
     limits.multiMarketLlmsTxt,
     limits.bulkOptimization,
-    planKey === "GROWTH"
-      ? "3 platforms"
-      : planKey === "PRO" || planKey === "ENTERPRISE"
-      ? "All 6+"
-      : false,
+    limits.maxTrackingPrompts > 0 ? String(limits.maxTrackingPrompts) : false,
     limits.insightEmails,
-    limits.competitorMonitoring,
+    limits.maxCompetitors > 0 ? `${limits.maxCompetitors} competitors` : false,
     limits.revenueAttribution,
     String(limits.maxBlogPostsPerMonth),
-    limits.shopifyFlowIntegration,
     limits.prioritySupport,
   ];
 

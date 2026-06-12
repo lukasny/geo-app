@@ -241,12 +241,21 @@ function presenceStatus(
 }
 
 function statusFor(shopifyVal: unknown, aiVal: unknown): FieldStatus {
+  // Boolean fields are presence flags (imagesHaveAltText, structuredDataFound):
+  // false is a real answer meaning "the attribute is absent", not an empty
+  // value. Treating false as empty made "store has no alt text" score as a
+  // green "found" and suppressed the fix recommendation, so only an
+  // affirmative true from the AI counts as found; false or null means the
+  // attribute is invisible to AI and the merchant should fix it.
+  if (typeof shopifyVal === "boolean" || typeof aiVal === "boolean") {
+    return aiVal === true ? "found" : "missing";
+  }
+
+  // Numeric 0 on the Shopify side is a real value too (0 reviews, 0 images),
+  // not an empty slot - it must compare against the AI's number instead of
+  // short-circuiting to "found" whenever the AI extracted anything.
   const shopifyEmpty =
-    shopifyVal === null ||
-    shopifyVal === undefined ||
-    shopifyVal === "" ||
-    shopifyVal === 0 ||
-    shopifyVal === false;
+    shopifyVal === null || shopifyVal === undefined || shopifyVal === "";
 
   const aiEmpty =
     aiVal === null || aiVal === undefined || aiVal === "" || aiVal === 0;
@@ -265,9 +274,6 @@ function statusFor(shopifyVal: unknown, aiVal: unknown): FieldStatus {
   }
   if (typeof shopifyVal === "number" && typeof aiVal === "number") {
     return Math.abs(shopifyVal - aiVal) <= 1 ? "found" : "mismatch";
-  }
-  if (typeof shopifyVal === "boolean") {
-    return shopifyVal === !!aiVal ? "found" : "mismatch";
   }
   if (Array.isArray(shopifyVal) && Array.isArray(aiVal)) {
     return aiVal.length > 0 ? "found" : "missing";
@@ -421,7 +427,18 @@ function buildComparison(
     },
   ];
 
-  return fields.map(({ fieldName, label, shopifyValue, aiValue, importance }) => {
+  // Shopify auto-creates a lone "Default Title" variant for products with no
+  // options (the route filters that placeholder out), so an empty variants
+  // list means there is genuinely nothing for the AI to find. Drop the row
+  // instead of penalizing every single-variant product with a permanent
+  // high-importance "missing" verdict - the audit engine treats this case as
+  // complete for the same reason.
+  const applicableFields =
+    shopify.variants.length === 0
+      ? fields.filter((f) => f.fieldName !== "variants")
+      : fields;
+
+  return applicableFields.map(({ fieldName, label, shopifyValue, aiValue, importance }) => {
     // Field-specific status logic for the two fields where the generic
     // string-includes check produced misleading "partial" / "mismatch"
     // results even when the data was genuinely present.
@@ -514,16 +531,57 @@ interface ExtractResult {
   rawResponse: string;
 }
 
-/** Strip markdown code fences from a JSON-ish string and parse. Claude
- *  sometimes wraps its JSON output in ```json … ```; OpenAI with
- *  json_object mode doesn't, but we run the same cleaner defensively. */
+/** Return the first balanced {...} block in `raw`. String-aware (braces and
+ *  escapes inside JSON string values don't end the scan) so fenced or
+ *  preambled output still yields the object. Returns null when no complete
+ *  object exists, e.g. output truncated at max_tokens. */
+function extractFirstJsonObject(raw: string): string | null {
+  const start = raw.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return raw.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** Pull the model's JSON object out of its raw text. Models deviate from the
+ *  "ONLY JSON" instruction in three ways - markdown fences, prose preambles,
+ *  and truncation - and a bare JSON.parse turned each of them into a hard
+ *  simulation failure for the merchant. Fall back to an empty partial so the
+ *  page still scores (every field reads as missing) instead of erroring. */
 function parseExtractedJson(raw: string): Partial<AiExtractedData> {
-  const cleaned = raw
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```\s*$/i, "")
-    .trim();
-  return JSON.parse(cleaned) as Partial<AiExtractedData>;
+  const candidate = extractFirstJsonObject(raw);
+  if (!candidate) {
+    console.error(
+      "[ai-simulator] no complete JSON object in model output:",
+      raw.slice(0, 200)
+    );
+    return {};
+  }
+  try {
+    return JSON.parse(candidate) as Partial<AiExtractedData>;
+  } catch (err) {
+    console.error("[ai-simulator] failed to parse model JSON:", err);
+    return {};
+  }
 }
 
 async function extractWithClaude(cleanedHtml: string): Promise<ExtractResult> {
@@ -531,7 +589,10 @@ async function extractWithClaude(cleanedHtml: string): Promise<ExtractResult> {
     () =>
       anthropic.messages.create({
         model: "claude-sonnet-4-6",
-        max_tokens: 1024,
+        // 2048 gives the 22-field JSON (300-char description, variants and
+        // schemaTypes arrays, uncapped shipping/returns strings) headroom so
+        // the object is not truncated mid-field.
+        max_tokens: 2048,
         system: SYSTEM_PROMPT,
         messages: [
           {
@@ -558,7 +619,8 @@ async function extractWithOpenAI(cleanedHtml: string): Promise<ExtractResult> {
         // gpt-4o-mini is the cost-sweet-spot - pure HTML extraction doesn't need
         // search (so no `-search-preview` variant) and doesn't need the full 4o.
         model: "gpt-4o-mini",
-        max_tokens: 1024,
+        // Same headroom as the Claude call - truncated JSON fails the run.
+        max_tokens: 2048,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },

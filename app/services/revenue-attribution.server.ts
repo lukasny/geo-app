@@ -40,8 +40,9 @@ export interface RecentOrder {
 }
 
 export interface RevenueSummary {
-  /** Currency that contributed the largest revenue across the range. Null
-   *  when the store has no attributed orders yet. */
+  /** Currency that contributed the largest revenue across the range, falling
+   *  back to all-time events when the range is empty. Null only when the
+   *  store has no attributed orders at all. */
   dominantCurrency: string | null;
   /** Total revenue and order count, grouped by currency. */
   byCurrency: CurrencyTotal[];
@@ -121,7 +122,24 @@ export async function getRevenueAttribution(
     .map(([currency, v]) => ({ currency, ...v }))
     .sort((a, b) => b.amount - a.amount);
 
-  const dominantCurrency = byCurrency[0]?.currency ?? null;
+  // When the range window is empty, fall back to all-time events so a store
+  // whose attributed orders are all older than the range still gets its
+  // all-time total and recent orders (instead of the setup empty state, which
+  // gates on allTimeTotal !== null in app.revenue.tsx).
+  let dominantCurrency = byCurrency[0]?.currency ?? null;
+  if (!dominantCurrency && allTimeEvents.length > 0) {
+    const allTimeByCurrency = new Map<string, number>();
+    for (const e of allTimeEvents) {
+      const ccy = e.orderCurrency ?? "USD";
+      allTimeByCurrency.set(
+        ccy,
+        (allTimeByCurrency.get(ccy) ?? 0) + (e.orderRevenue ?? 0)
+      );
+    }
+    dominantCurrency = Array.from(allTimeByCurrency.entries()).sort(
+      (a, b) => b[1] - a[1]
+    )[0][0];
+  }
 
   // 2. All-time total in dominant currency.
   let allTimeTotal: RevenueSummary["allTimeTotal"] = null;

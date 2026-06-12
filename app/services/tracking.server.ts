@@ -77,6 +77,57 @@ function shortDomain(shopifyDomain: string): string {
   return shopifyDomain.replace(/\.myshopify\.com$/i, "").toLowerCase();
 }
 
+/** Best-effort registrable root: strips a leading "www." so citations of
+ *  "acmeboards.com" match a primary domain of "www.acmeboards.com". A full
+ *  public-suffix parse is overkill for primary storefront domains. */
+function registrableRoot(host: string): string {
+  return host.replace(/^www\./i, "");
+}
+
+/** Exact or subdomain match of a cited hostname against the store's own
+ *  hosts. Deliberately not a substring check: a short slug like "sun" would
+ *  otherwise match sunglasses-hut.com. */
+function isOwnHost(hostname: string, ownHosts: string[]): boolean {
+  return ownHosts.some(
+    (own) => own.length > 0 && (hostname === own || hostname.endsWith(`.${own}`))
+  );
+}
+
+/** Distinctiveness filter for product-title matching. Generic titles
+ *  ("Hat", "Gift Card") substring-match virtually every response in the
+ *  category, so a title only counts as citation evidence when it is at least
+ *  12 characters or has at least two words of 5+ characters. The word
+ *  threshold is 5, not 4, because "Gift Card" is two 4-char words and must
+ *  not pass. */
+function isDistinctiveTitle(title: string): boolean {
+  const t = title.trim();
+  if (t.length >= 12) return true;
+  const longWords = t.split(/\s+/).filter((w) => w.length >= 5);
+  return longWords.length >= 2;
+}
+
+/** True when Product.vendor is the merchant's own brand rather than a resold
+ *  third-party brand (Nike, Burton, ...). An AI mentioning a resold brand
+ *  says nothing about THIS store being cited, so only own-brand vendors may
+ *  flip `cited`. Own-brand means the vendor equals the store name, or the
+ *  vendor appears (compacted) in the shop slug or primary domain root. */
+function isOwnBrandVendor(
+  vendor: string,
+  storeName: string,
+  shortDom: string,
+  primaryRoot: string
+): boolean {
+  const v = vendor.trim().toLowerCase();
+  if (!v) return false;
+  if (v === storeName.trim().toLowerCase()) return true;
+  const compactVendor = v.replace(/[^a-z0-9]/g, "");
+  // 3+ chars so a vendor like "My" can't match inside a domain by accident.
+  if (compactVendor.length < 3) return false;
+  return [shortDom, primaryRoot].some((host) =>
+    host.replace(/[^a-z0-9]/g, "").includes(compactVendor)
+  );
+}
+
 /** Return a snippet of `text` centered around the first occurrence of any
  *  keyword in `keywords` (case-insensitive). Used for the citation context. */
 function snippetAround(text: string, keywords: string[], pad = 100): string | null {
@@ -110,11 +161,22 @@ function firstPosition(text: string, keywords: string[]): number | null {
     if (i >= 0 && i < earliest) earliest = i;
   }
   if (earliest === Infinity) return null;
-  // Count occurrences of either "1." / "1)" or newlines before earliest to
-  // approximate a list position. Imperfect but good enough for v1.
+  // A keyword inside list item N is preceded by item N's own marker, so
+  // counting markers and adding 1 over-reported every position by one (a
+  // store listed first showed as position 2). Parse the last marker's
+  // number directly instead; no marker before the match means the store was
+  // mentioned ahead of any list, which we report as position 1.
   const before = text.slice(0, earliest);
-  const listMarkers = before.match(/\n\s*\d+[.)]/g) ?? [];
-  return listMarkers.length + 1;
+  const markerRe = /(?:^|\n)\s*(\d+)[.)]/g;
+  let lastNumber: number | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = markerRe.exec(before)) !== null) {
+    lastNumber = Number(match[1]);
+  }
+  if (lastNumber === null || !Number.isFinite(lastNumber) || lastNumber < 1) {
+    return 1;
+  }
+  return lastNumber;
 }
 
 // ─── Sentiment Classification ─────────────────────────────────────────────────
@@ -212,7 +274,12 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
     if (block.type === "text") {
       responseText += block.text + "\n";
       // Claude returns inline citations as `citations` on text blocks
-      // (server-side web_search tool). Pull domains from them.
+      // (server-side web_search tool). Only these count as cited sources.
+      // web_search_tool_result blocks carry EVERY raw result the search
+      // engine returned to the model, cited or not; feeding those into
+      // sourceDomains marked stores as "cited" for answers that never
+      // mentioned them and persisted random search-result domains as
+      // competitors.
       const citations = (block as unknown as { citations?: Array<{ url?: string }> })
         .citations;
       if (citations) {
@@ -221,19 +288,6 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
             if (c.url) sourceDomains.add(new URL(c.url).hostname.toLowerCase());
           } catch {
             // skip unparseable URLs
-          }
-        }
-      }
-    } else if (block.type === "web_search_tool_result") {
-      // Extract source URLs from the tool result envelope as well, in case
-      // citations aren't surfaced inline.
-      const content = (block as unknown as { content?: Array<{ url?: string }> }).content;
-      if (Array.isArray(content)) {
-        for (const item of content) {
-          try {
-            if (item.url) sourceDomains.add(new URL(item.url).hostname.toLowerCase());
-          } catch {
-            // skip
           }
         }
       }
@@ -335,6 +389,48 @@ async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSear
 
 // ─── Main Tracking Check ──────────────────────────────────────────────────────
 
+const PRIMARY_DOMAIN_QUERY = `#graphql
+  query StorefrontPrimaryDomain {
+    shop {
+      primaryDomain { host }
+    }
+  }
+`;
+
+/** The shop's public storefront host (e.g. "acmeboards.com"). AI answers
+ *  cite this domain, essentially never the myshopify.com one, so it must
+ *  feed both mention matching and the competitor exclusion filter. Raw fetch
+ *  with the store's own token (same pattern as llms-generator) because
+ *  tracking checks also run from the scheduler where no admin context
+ *  exists. Falls back to the myshopify domain on any error so a transient
+ *  API failure never aborts a check. */
+async function fetchPrimaryDomainHost(
+  shopifyDomain: string,
+  accessToken: string
+): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://${shopifyDomain}/admin/api/2025-07/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify({ query: PRIMARY_DOMAIN_QUERY }),
+      }
+    );
+    if (!response.ok) return shopifyDomain.toLowerCase();
+    const json = (await response.json()) as {
+      data?: { shop?: { primaryDomain?: { host?: string } } };
+    };
+    const host = json.data?.shop?.primaryDomain?.host?.trim().toLowerCase();
+    return host || shopifyDomain.toLowerCase();
+  } catch {
+    return shopifyDomain.toLowerCase();
+  }
+}
+
 /** Per-platform processor: takes one platform's web-search result, runs
  *  mention detection / position scoring / sentiment classification, and
  *  persists an AiCitation row tagged with that platform. Called once per
@@ -344,6 +440,8 @@ async function processPlatformCitation(args: {
   storeName: string;
   shortDom: string;
   fullDom: string;
+  primaryHost: string;
+  primaryRoot: string;
   productTitles: string[];
   vendors: string[];
   platform: AiPlatform;
@@ -365,6 +463,8 @@ async function processPlatformCitation(args: {
     storeName,
     shortDom,
     fullDom,
+    primaryHost,
+    primaryRoot,
     productTitles,
     vendors,
     platform,
@@ -373,17 +473,24 @@ async function processPlatformCitation(args: {
   const { responseText, sourceDomains } = apiResult;
   const lower = responseText.toLowerCase();
 
+  // Hosts that identify the merchant's own site. The primary storefront
+  // domain matters most: paying merchants run custom domains, and that is
+  // what AI engines cite.
+  const ownHosts = [...new Set([fullDom, primaryHost, primaryRoot])];
+
   const mentionedDomain =
-    sourceDomains.some((d) => d.includes(shortDom)) ||
-    lower.includes(fullDom) ||
+    sourceDomains.some((d) => isOwnHost(d, ownHosts)) ||
+    ownHosts.some((h) => lower.includes(h)) ||
     lower.includes(shortDom);
   const mentionedStoreName = !!storeName && lower.includes(storeName.toLowerCase());
-  const mentionedProducts = productTitles.filter((t) =>
-    lower.includes(t.toLowerCase())
-  );
-  const mentionedVendors = vendors.filter((v) =>
-    lower.includes(v.toLowerCase())
-  );
+  const mentionedProducts = productTitles
+    .filter(isDistinctiveTitle)
+    .filter((t) => lower.includes(t.toLowerCase()));
+  // Only own-brand vendor mentions identify the store; resold third-party
+  // brands fired `cited` on essentially every in-category answer.
+  const mentionedVendors = vendors
+    .filter((v) => isOwnBrandVendor(v, storeName, shortDom, primaryRoot))
+    .filter((v) => lower.includes(v.toLowerCase()));
 
   const cited =
     mentionedDomain ||
@@ -392,18 +499,27 @@ async function processPlatformCitation(args: {
     mentionedVendors.length > 0;
 
   const positionKeywords = [
-    storeName,
-    shortDom,
-    ...mentionedProducts.slice(0, 3),
-    ...mentionedVendors.slice(0, 3),
-  ].filter(Boolean) as string[];
+    ...new Set(
+      [
+        storeName,
+        shortDom,
+        primaryHost,
+        primaryRoot,
+        ...mentionedProducts.slice(0, 3),
+        ...mentionedVendors.slice(0, 3),
+      ].filter(Boolean) as string[]
+    ),
+  ];
   const position = cited ? firstPosition(responseText, positionKeywords) : null;
   const citationContext = cited
     ? snippetAround(responseText, positionKeywords)
     : null;
 
+  // Never record the store's own domains (including subdomains) as
+  // competitors; before primaryHost existed merchants saw their own custom
+  // domain listed as a competitor on every cited check.
   const competitorsDetected = sourceDomains.filter(
-    (d) => !d.includes(shortDom) && !d.includes("shopify.com")
+    (d) => !isOwnHost(d, ownHosts) && !d.includes("shopify.com")
   );
 
   let sentiment: CitationSentiment = "NEUTRAL";
@@ -468,6 +584,12 @@ export async function runTrackingCheck(
   const storeName = prompt.store.shopName;
   const shortDom = shortDomain(prompt.store.shopifyDomain);
   const fullDom = prompt.store.shopifyDomain.toLowerCase();
+  // Resolved once per check and shared across all platform fanouts.
+  const primaryHost = await fetchPrimaryDomainHost(
+    prompt.store.shopifyDomain,
+    prompt.store.shopifyAccessToken
+  );
+  const primaryRoot = registrableRoot(primaryHost);
 
   const platforms = enabledPlatforms();
   if (platforms.length === 0) {
@@ -493,6 +615,8 @@ export async function runTrackingCheck(
         storeName,
         shortDom,
         fullDom,
+        primaryHost,
+        primaryRoot,
         productTitles,
         vendors,
         platform: p,
@@ -569,16 +693,10 @@ interface SearchTerm {
 const SHOPIFY_SEARCH_ANALYTICS_QUERY = `#graphql
   query SearchAnalytics($q: String!) {
     shopifyqlQuery(query: $q) {
-      __typename
-      ... on TableResponse {
-        tableData {
-          rowData
-          columns { name dataType }
-        }
-      }
-      ... on ParseError {
-        code
-        message
+      parseErrors
+      tableData {
+        columns { name }
+        rows
       }
     }
   }
@@ -591,29 +709,49 @@ SINCE -30d UNTIL today
 ORDER BY count DESC
 LIMIT 50`;
 
+// shopifyqlQuery does not exist in the app's pinned 2025-07 Admin API (it
+// was introduced in 2025-10), so this single query goes through its own raw
+// versioned fetch instead of admin.graphql.
+const SEARCH_ANALYTICS_API_VERSION = "2026-04";
+
 /** Stage 1 of Intent Lab. Pulls the top 50 storefront search terms from the
  *  merchant's last 30 days via ShopifyQL. Returns up to 20 cleaned results
  *  (3 to 200 character terms, deduped, ordered by count). Returns [] on any
  *  error so the caller can run Stage 2 regardless. */
 async function fetchShopifySearchAnalytics(
-  admin: AdminApiContext
+  shopifyDomain: string,
+  accessToken: string
 ): Promise<SearchTerm[]> {
   try {
-    const response = await admin.graphql(SHOPIFY_SEARCH_ANALYTICS_QUERY, {
-      variables: { q: SHOPIFYQL },
-    });
+    const response = await fetch(
+      `https://${shopifyDomain}/admin/api/${SEARCH_ANALYTICS_API_VERSION}/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify({
+          query: SHOPIFY_SEARCH_ANALYTICS_QUERY,
+          variables: { q: SHOPIFYQL },
+        }),
+      }
+    );
+    if (!response.ok) {
+      console.warn(
+        `[Intent Lab] shopifyqlQuery HTTP ${response.status}, skipping search analytics`
+      );
+      return [];
+    }
     const json = (await response.json()) as {
       data?: {
-        shopifyqlQuery?:
-          | {
-              __typename: "TableResponse";
-              tableData: { rowData: unknown[][] };
-            }
-          | {
-              __typename: "ParseError";
-              code: string;
-              message: string;
-            };
+        shopifyqlQuery?: {
+          parseErrors?: string[];
+          tableData?: {
+            columns?: Array<{ name?: string }>;
+            rows?: unknown;
+          } | null;
+        } | null;
       };
       errors?: { message?: string }[];
     };
@@ -628,19 +766,36 @@ async function fetchShopifySearchAnalytics(
 
     const result = json.data?.shopifyqlQuery;
     if (!result) return [];
-    if (result.__typename === "ParseError") {
+    if (result.parseErrors && result.parseErrors.length > 0) {
       console.warn(
-        `[Intent Lab] shopifyqlQuery ParseError ${result.code}: ${result.message}`
+        "[Intent Lab] shopifyqlQuery parse errors:",
+        result.parseErrors
       );
       return [];
     }
 
-    const rows = result.tableData?.rowData ?? [];
+    // `rows` is a JSON scalar: the 2026-04 docs describe an array of
+    // column-keyed objects, but handle positional arrays too so a shape
+    // difference degrades to a skipped row instead of a crash.
+    const columns = result.tableData?.columns ?? [];
+    const termKey = columns[0]?.name ?? "search_term";
+    const countKey = columns[1]?.name ?? "count";
+    const rawRows = result.tableData?.rows;
+    const rows: unknown[] = Array.isArray(rawRows) ? rawRows : [];
+
     const terms: SearchTerm[] = [];
     const seen = new Set<string>();
     for (const row of rows) {
-      const rawTerm = String(row[0] ?? "").trim();
-      const rawCount = Number(row[1]);
+      let rawTerm = "";
+      let rawCount = NaN;
+      if (Array.isArray(row)) {
+        rawTerm = String(row[0] ?? "").trim();
+        rawCount = Number(row[1]);
+      } else if (row && typeof row === "object") {
+        const obj = row as Record<string, unknown>;
+        rawTerm = String(obj[termKey] ?? "").trim();
+        rawCount = Number(obj[countKey]);
+      }
       if (!rawTerm) continue;
       if (rawTerm.length < 3 || rawTerm.length > 200) continue;
       if (!Number.isFinite(rawCount) || rawCount <= 0) continue;
@@ -784,6 +939,11 @@ async function fetchRedditTitles(
     try {
       const response = await fetch(url, {
         headers: { "User-Agent": "web:geo-rise-shopify-app:1.0" },
+        // Reddit throttles unauthenticated datacenter requests and can stall
+        // instead of failing cleanly; without a deadline one hung subreddit
+        // blocks the merchant-facing suggest action for minutes. A timeout
+        // throws, and the per-subreddit catch below skips to the next one.
+        signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) {
         console.warn(
@@ -875,7 +1035,10 @@ Output strictly as JSON:
  *  it came from so the UI can attribute it. */
 export async function suggestTrackingPrompts(
   storeId: string,
-  admin: AdminApiContext
+  // Retained for call-site compatibility. Stage 1 needs a newer API version
+  // than the app pins, so it uses a raw versioned fetch with the store's own
+  // token instead of this admin context.
+  _admin: AdminApiContext
 ): Promise<SuggestedPrompt[]> {
   const store = await prisma.store.findUnique({ where: { id: storeId } });
   if (!store) throw new Error("Store not found");
@@ -883,7 +1046,7 @@ export async function suggestTrackingPrompts(
   // Stages 1 + 2 run in parallel. Both gracefully return empty arrays on
   // error so the orchestrator can always proceed to polish or fallback.
   const [searchTerms, niche] = await Promise.all([
-    fetchShopifySearchAnalytics(admin),
+    fetchShopifySearchAnalytics(store.shopifyDomain, store.shopifyAccessToken),
     detectNicheAndSubreddits(storeId),
   ]);
   const redditSignals: RedditSignal[] = niche

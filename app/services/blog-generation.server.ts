@@ -254,9 +254,19 @@ Write the full post now and return the JSON object.`;
 /** Hard guarantee: no em-dash ever reaches Shopify or the merchant's blog,
  *  even if Claude ignores the "no em-dashes" instruction in the system
  *  prompt. Replaces em-dash plus its surrounding whitespace with a single
- *  ", " (the typical reading without the typographic flourish). */
+ *  ", " (the typical reading without the typographic flourish).
+ *
+ *  Matches the HTML-entity spellings too (&mdash; / &#8212; / &#x2014;):
+ *  bodyHtml is LLM-written HTML where punctuation routinely arrives
+ *  entity-encoded, and an entity renders as an em-dash on the published
+ *  article just the same. A leading match would otherwise leave a dangling
+ *  ", " prefix (trim removes whitespace, not the inserted comma), so that
+ *  artifact is stripped last. */
 function stripEmDashes(text: string): string {
-  return text.replace(/\s*—\s*/g, ", ").trim();
+  return text
+    .replace(/\s*(?:—|&mdash;|&#8212;|&#x2014;)\s*/gi, ", ")
+    .trim()
+    .replace(/^,\s*/, "");
 }
 
 // ─── Sanitization ─────────────────────────────────────────────────────────────
@@ -355,19 +365,76 @@ export interface PublishResult {
   shopifyArticleId?: string;
   shopifyBlogId?: string;
   error?: string;
+  /** Set when the article WAS created on Shopify but our own DB row couldn't
+   *  be updated. `ok` stays true; callers should show this instead of the
+   *  normal success message so the merchant doesn't retry and publish a
+   *  duplicate article. */
+  warning?: string;
 }
 
 /** Look up the merchant's first blog (most stores have exactly one - "News").
- *  Returns null if the store has no blogs configured. */
+ *  Returns null ONLY when the store genuinely has no blogs configured.
+ *
+ *  Top-level GraphQL errors (missing read_content scope on legacy installs,
+ *  throttling) must throw instead of returning null: a null here makes the
+ *  caller tell a merchant who already has a blog to go create one. The
+ *  Shopify client usually throws on these itself; the json.errors check
+ *  covers 200-with-errors bodies that slip through. The thrown message
+ *  carries the GraphQL error text so the caller's error mapping can surface
+ *  the permission-specific remediation. */
 async function getPrimaryBlogId(admin: AdminApiContext): Promise<string | null> {
   const response = await admin.graphql(BLOGS_QUERY);
   const json = (await response.json()) as {
+    errors?: { message?: string }[];
     data?: {
       blogs?: { edges?: Array<{ node?: { id?: string } }> };
     };
   };
-  const id = json.data?.blogs?.edges?.[0]?.node?.id ?? null;
-  return id;
+  if (json.errors && json.errors.length > 0) {
+    console.error("[GEO Rise blog] blogs lookup GraphQL errors:", json.errors);
+    throw new Error(
+      json.errors[0]?.message ?? "Shopify rejected the blogs lookup."
+    );
+  }
+  return json.data?.blogs?.edges?.[0]?.node?.id ?? null;
+}
+
+/** Map a thrown Shopify-client error to a merchant-safe PublishResult.
+ *  The Shopify GraphQL client throws on top-level errors (auth, scope,
+ *  schema validation, network); both the blogs lookup and articleCreate can
+ *  hit the same failure modes, so they share this mapping. Only safe-to-retry
+ *  phases may route through here; success-side failures must not (a retry
+ *  would create a duplicate article). */
+function mapPublishThrow(err: unknown, postId: string): PublishResult {
+  const raw = err instanceof Error ? err.message : String(err);
+  console.error(
+    `[GEO Rise blog] publish to Shopify threw for post ${postId}:`,
+    err
+  );
+  if (/scope|permission|access denied|write_content/i.test(raw)) {
+    return {
+      ok: false,
+      error:
+        "Your Shopify app doesn't have permission to create blog posts. Reinstall the app to grant write_content access.",
+    };
+  }
+  if (/Variable .* type .*Input.*was provided invalid value/i.test(raw)) {
+    return {
+      ok: false,
+      error:
+        "Shopify's blog post API rejected this request. Please report this to GEO Rise support, we'll patch it.",
+    };
+  }
+  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
+    return {
+      ok: false,
+      error: "Shopify didn't respond in time. Please try again in a moment.",
+    };
+  }
+  return {
+    ok: false,
+    error: "Couldn't publish to Shopify. Please try again in a moment.",
+  };
 }
 
 /** Publish a generated post to the merchant's primary Shopify blog. Returns
@@ -377,7 +444,11 @@ async function getPrimaryBlogId(admin: AdminApiContext): Promise<string | null> 
  *  `storeId` is required and enforced via `findFirst` so this function is
  *  safe-by-default against cross-tenant publish attempts. Callers (routes,
  *  webhooks, future cron jobs) cannot accidentally publish another store's
- *  draft by passing only an ID. */
+ *  draft by passing only an ID.
+ *
+ *  Always returns a PublishResult, never throws: the route action relies on
+ *  that to render a toast instead of letting the error boundary replace the
+ *  merchant's page. */
 export async function publishBlogPostToShopify(
   postId: string,
   storeId: string,
@@ -399,26 +470,36 @@ export async function publishBlogPostToShopify(
     };
   }
 
-  const blogId = await getPrimaryBlogId(admin);
-  if (!blogId) {
-    return {
-      ok: false,
-      error:
-        "Your Shopify store has no blogs configured. Create one in Online Store > Blog posts, then try again.",
-    };
-  }
+  // Pre-flight lookups. Nothing has been created on Shopify yet, so a
+  // failure here is safe to retry, but it still needs the no-throw guard
+  // (the blogs lookup hits Shopify and throws on scope errors).
+  let blogId: string;
+  let authorName: string;
+  try {
+    const primaryBlogId = await getPrimaryBlogId(admin);
+    if (!primaryBlogId) {
+      return {
+        ok: false,
+        error:
+          "Your Shopify store has no blogs configured. Create one in Online Store > Blog posts, then try again.",
+      };
+    }
+    blogId = primaryBlogId;
 
-  // Shopify's `articleCreate` input requires `author: { name }` (2025-07).
-  // We default to the store/brand name so the article reads as authored by
-  // the merchant's store. The merchant can edit it in Shopify's admin after
-  // publish if they want a personal byline. We deliberately don't query the
-  // user session for firstName/lastName because the action runs on an
-  // offline session that doesn't carry user info.
-  const storeForAuthor = await prisma.store.findUnique({
-    where: { id: storeId },
-    select: { shopName: true },
-  });
-  const authorName = storeForAuthor?.shopName?.trim() || "Store";
+    // Shopify's `articleCreate` input requires `author: { name }` (2025-07).
+    // We default to the store/brand name so the article reads as authored by
+    // the merchant's store. The merchant can edit it in Shopify's admin after
+    // publish if they want a personal byline. We deliberately don't query the
+    // user session for firstName/lastName because the action runs on an
+    // offline session that doesn't carry user info.
+    const storeForAuthor = await prisma.store.findUnique({
+      where: { id: storeId },
+      select: { shopName: true },
+    });
+    authorName = storeForAuthor?.shopName?.trim() || "Store";
+  } catch (err) {
+    return mapPublishThrow(err, postId);
+  }
 
   // Shopify's `body` field accepts HTML directly, NOT a separate `bodyHtml`
   // (the API renamed at some point; 2025-07 uses `body`).
@@ -434,6 +515,11 @@ export async function publishBlogPostToShopify(
     articleInput.tags = post.tags as string[];
   }
 
+  // Only the mutation itself sits in this try: once articleCreate succeeds
+  // the article is live on the merchant's storefront, and any later failure
+  // must not be reported as a publish failure (the route's "try again" would
+  // create a duplicate article).
+  let articleId: string;
   try {
     const response = await admin.graphql(ARTICLE_CREATE_MUTATION, {
       variables: { article: articleInput },
@@ -477,16 +563,25 @@ export async function publishBlogPostToShopify(
         error: `Shopify rejected the post: ${messages || "unknown error"}`,
       };
     }
-    const articleId = json.data?.articleCreate?.article?.id;
-    if (!articleId) {
+    const createdId = json.data?.articleCreate?.article?.id;
+    if (!createdId) {
       return {
         ok: false,
         error: "Shopify didn't return an article ID. Try again.",
       };
     }
+    articleId = createdId;
+  } catch (err) {
+    return mapPublishThrow(err, postId);
+  }
 
+  // Success-side bookkeeping. The article is live; if this write fails our
+  // row stays "draft" while Shopify has the post, so log loudly and return
+  // ok with a warning instead of an error that invites a duplicate-creating
+  // retry.
+  try {
     await prisma.blogPost.update({
-      where: { id: postId },
+      where: { id: postId, storeId },
       data: {
         status: "published",
         shopifyArticleId: articleId,
@@ -494,39 +589,19 @@ export async function publishBlogPostToShopify(
         publishedAt: new Date(),
       },
     });
-
-    return { ok: true, shopifyArticleId: articleId, shopifyBlogId: blogId };
   } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err);
     console.error(
-      `[GEO Rise blog] publish to Shopify threw for post ${postId}:`,
+      `[GEO Rise blog] post ${postId} was created on Shopify as ${articleId} but the local status update failed; row is still "draft":`,
       err
     );
-    // Shopify's GraphQL client throws on top-level schema validation failures
-    // (e.g. missing required input). Map common cases to merchant-safe text.
-    if (/scope|permission|access denied|write_content/i.test(raw)) {
-      return {
-        ok: false,
-        error:
-          "Your Shopify app doesn't have permission to create blog posts. Reinstall the app to grant write_content access.",
-      };
-    }
-    if (/Variable .* type .*Input.*was provided invalid value/i.test(raw)) {
-      return {
-        ok: false,
-        error:
-          "Shopify's blog post API rejected this request. Please report this to GEO Rise support, we'll patch it.",
-      };
-    }
-    if (/timeout|ETIMEDOUT|ECONNRESET/i.test(raw)) {
-      return {
-        ok: false,
-        error: "Shopify didn't respond in time. Please try again in a moment.",
-      };
-    }
     return {
-      ok: false,
-      error: "Couldn't publish to Shopify. Please try again in a moment.",
+      ok: true,
+      shopifyArticleId: articleId,
+      shopifyBlogId: blogId,
+      warning:
+        "The post is live on your Shopify blog, but GEO Rise couldn't update its records. It may still show as a draft here; don't publish it again.",
     };
   }
+
+  return { ok: true, shopifyArticleId: articleId, shopifyBlogId: blogId };
 }
