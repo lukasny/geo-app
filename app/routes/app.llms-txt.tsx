@@ -58,6 +58,9 @@ interface MarketOption {
   name: string;
   /** True when this market already has generated llms.txt content. */
   hasFile: boolean;
+  /** True for LlmsFile rows whose market no longer exists in Shopify;
+   *  they stay visible so the merchant can inspect and delete them. */
+  removed: boolean;
 }
 
 interface LoaderData {
@@ -85,6 +88,50 @@ interface LoaderData {
 function normalizeMarketCode(raw: string | null): string {
   const code = String(raw ?? "").trim().toLowerCase();
   return /^[a-z0-9-]{1,64}$/.test(code) ? code : "default";
+}
+
+/** Explicit field pick: spreading the raw Prisma row would leak fields the
+ *  client never needs (storeId, autoRefresh, timestamps) into the payload. */
+function toLlmsFileData(raw: {
+  id: string;
+  content: string;
+  marketCode: string;
+  productCount: number;
+  collectionCount: number;
+  blogPostCount: number;
+  includeProducts: boolean;
+  includeCollections: boolean;
+  includeBlogPosts: boolean;
+  allowChatGPT: boolean;
+  allowClaude: boolean;
+  allowGemini: boolean;
+  allowPerplexity: boolean;
+  allowDeepSeek: boolean;
+  allowGrok: boolean;
+  refreshInterval: string;
+  fileSizeBytes: number;
+  lastGeneratedAt: Date | null;
+}): LlmsFileData {
+  return {
+    id: raw.id,
+    content: raw.content,
+    marketCode: raw.marketCode,
+    productCount: raw.productCount,
+    collectionCount: raw.collectionCount,
+    blogPostCount: raw.blogPostCount,
+    includeProducts: raw.includeProducts,
+    includeCollections: raw.includeCollections,
+    includeBlogPosts: raw.includeBlogPosts,
+    allowChatGPT: raw.allowChatGPT,
+    allowClaude: raw.allowClaude,
+    allowGemini: raw.allowGemini,
+    allowPerplexity: raw.allowPerplexity,
+    allowDeepSeek: raw.allowDeepSeek,
+    allowGrok: raw.allowGrok,
+    refreshInterval: raw.refreshInterval,
+    fileSizeBytes: raw.fileSizeBytes,
+    lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null,
+  };
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -119,22 +166,43 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     if (planAllowsMultiMarket) {
       try {
+        // Handles that wouldn't survive normalizeMarketCode (or that
+        // collide with "default") would render as unselectable picker
+        // options; exclude them up front.
         const storeMarkets = (await listMarkets(store.id)).filter(
-          (m) => !m.isPrimary
+          (m) =>
+            !m.isPrimary &&
+            m.handle !== "default" &&
+            normalizeMarketCode(m.handle) === m.handle
         );
+        // lastGeneratedAt is the "has content" signal; selecting content
+        // here would pull every market file's full text just for a boolean.
         const rows = await prisma.llmsFile.findMany({
           where: { storeId: store.id, marketCode: { not: "default" } },
-          select: { marketCode: true, content: true },
+          select: { marketCode: true, lastGeneratedAt: true },
         });
         const rowsByCode = new Map(rows.map((r) => [r.marketCode, r]));
         markets = storeMarkets.map((m) => ({
           handle: m.handle,
           name: m.name,
-          hasFile: Boolean(rowsByCode.get(m.handle)?.content),
+          hasFile: Boolean(rowsByCode.get(m.handle)?.lastGeneratedAt),
+          removed: false,
         }));
+        // Rows whose market was deleted in Shopify stay manageable: the
+        // merchant can still inspect and delete them from the picker.
+        for (const row of rows) {
+          if (!storeMarkets.some((m) => m.handle === row.marketCode)) {
+            markets.push({
+              handle: row.marketCode,
+              name: row.marketCode,
+              hasFile: Boolean(row.lastGeneratedAt),
+              removed: true,
+            });
+          }
+        }
         if (
           marketParam !== "default" &&
-          storeMarkets.some((m) => m.handle === marketParam)
+          markets.some((m) => m.handle === marketParam)
         ) {
           activeMarketCode = marketParam;
         }
@@ -147,18 +215,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     if (activeMarketCode === "default") {
       const raw = await getOrCreateLlmsFile(store.id);
-      llmsFile = {
-        ...raw,
-        lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null,
-      };
+      llmsFile = toLlmsFileData(raw);
     } else {
       // Browsing a market must not create rows; generation does that.
       const raw = await prisma.llmsFile.findFirst({
         where: { storeId: store.id, marketCode: activeMarketCode },
       });
-      llmsFile = raw
-        ? { ...raw, lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null }
-        : null;
+      llmsFile = raw ? toLlmsFileData(raw) : null;
     }
   }
 
@@ -198,11 +261,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
 
   // Server-side plan enforcement: non-default markets are Growth+, no
-  // matter what the client sends.
+  // matter what the client sends. Deleting leftover market files is
+  // exempt so downgraded stores can still clean up.
   const marketCode = normalizeMarketCode(
     formData.get("marketCode") as string | null
   );
-  if (marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
+  if (
+    marketCode !== "default" &&
+    !planLimits.multiMarketLlmsTxt &&
+    intent !== "deleteMarketFile"
+  ) {
     return {
       error:
         "Multi-market llms.txt requires the Growth plan or higher. Upgrade on the Plans page to generate market files.",
@@ -225,8 +293,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "deleteMarketFile") {
+    if (marketCode === "default") {
+      return { error: "The default llms.txt can't be deleted." };
+    }
+    await prisma.llmsFile.deleteMany({
+      where: { storeId: store.id, marketCode },
+    });
+    return { success: true, message: "Market llms.txt deleted." };
+  }
+
   if (intent === "updateSettings") {
-    const llmsFile = await getOrCreateLlmsFile(store.id, marketCode);
+    let llmsFile;
+    if (marketCode === "default") {
+      llmsFile = await getOrCreateLlmsFile(store.id);
+    } else {
+      // Market rows are only legitimately created by generation (which
+      // validates the market exists in Shopify); a settings save must not
+      // create rows for arbitrary client-supplied codes.
+      llmsFile = await prisma.llmsFile.findFirst({
+        where: { storeId: store.id, marketCode },
+      });
+      if (!llmsFile) {
+        return {
+          error:
+            "Generate this market's llms.txt first, then adjust its settings.",
+        };
+      }
+    }
     await prisma.llmsFile.update({
       where: { id: llmsFile.id },
       data: {
@@ -339,6 +433,12 @@ export default function LlmsTxtPage() {
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formData?.get("intent") === "updateSettings";
 
+  const isDeletingMarket =
+    ["loading", "submitting"].includes(fetcher.state) &&
+    fetcher.formData?.get("intent") === "deleteMarketFile";
+
+  const activeMarket = markets.find((m) => m.handle === activeMarketCode);
+
   // Toast on action result
   useEffect(() => {
     if (!fetcher.data) return;
@@ -434,33 +534,70 @@ export default function LlmsTxtPage() {
         {/* ── Market Picker ── */}
         {planAllowsMultiMarket && markets.length > 0 && (
           <Card>
-            <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">
-                  Market
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Each Shopify Market gets its own llms.txt with translated
-                  content, local prices and market URLs. Generate and tune
-                  them one market at a time.
-                </Text>
-              </BlockStack>
-              <div style={{ minWidth: "240px" }}>
-                <Select
-                  label="Market"
-                  labelHidden
-                  options={[
-                    { label: "Default (primary market)", value: "default" },
-                    ...markets.map((m) => ({
-                      label: m.hasFile ? m.name : `${m.name} (not generated yet)`,
-                      value: m.handle,
-                    })),
-                  ]}
-                  value={activeMarketCode}
-                  onChange={handleMarketChange}
-                />
-              </div>
-            </InlineStack>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Market
+                  </Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Each Shopify Market gets its own llms.txt with translated
+                    content, local prices and market URLs. Generate and tune
+                    them one market at a time.
+                  </Text>
+                </BlockStack>
+                <div style={{ minWidth: "240px" }}>
+                  <Select
+                    label="Market"
+                    labelHidden
+                    options={[
+                      { label: "Default (primary market)", value: "default" },
+                      ...markets.map((m) => ({
+                        label: m.removed
+                          ? `${m.name} (removed from Shopify)`
+                          : m.hasFile
+                          ? m.name
+                          : `${m.name} (not generated yet)`,
+                        value: m.handle,
+                      })),
+                    ]}
+                    value={activeMarketCode}
+                    onChange={handleMarketChange}
+                  />
+                </div>
+              </InlineStack>
+              {activeMarket?.removed && (
+                <Banner
+                  tone="warning"
+                  title="This market no longer exists in Shopify"
+                >
+                  <BlockStack gap="200">
+                    <Text as="p" variant="bodyMd">
+                      Its llms.txt is still served at the URL below but won't
+                      refresh anymore. Delete it if the market is gone for
+                      good.
+                    </Text>
+                    <div>
+                      <Button
+                        tone="critical"
+                        loading={isDeletingMarket}
+                        onClick={() =>
+                          fetcher.submit(
+                            {
+                              intent: "deleteMarketFile",
+                              marketCode: activeMarketCode,
+                            },
+                            { method: "POST" }
+                          )
+                        }
+                      >
+                        Delete this market file
+                      </Button>
+                    </div>
+                  </BlockStack>
+                </Banner>
+              )}
+            </BlockStack>
           </Card>
         )}
         {store && !planAllowsMultiMarket && (

@@ -93,10 +93,12 @@ async function shopifyGraphql<T>(
 // Written against the 2025-07 schema (the unified Markets model). `regions`
 // is deprecated there in favor of `conditions.regionsCondition`, but it is
 // still callable on the pinned version and has a stable, documented shape;
-// we only need one representative country code from it.
+// we only need one representative country code from it. Note: status is NOT
+// a top-level argument on the markets connection; it only exists as a
+// search term inside the query string.
 const MARKETS_QUERY = `
   query GetMarkets {
-    markets(first: 50, status: ACTIVE) {
+    markets(first: 50, query: "status:ACTIVE") {
       nodes {
         id
         name

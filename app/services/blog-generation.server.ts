@@ -408,7 +408,7 @@ export async function publishBlogPostToShopify(
     };
   }
 
-  // Shopify's 2025-01 `articleCreate` input requires `author: { name }`.
+  // Shopify's `articleCreate` input requires `author: { name }` (2025-07).
   // We default to the store/brand name so the article reads as authored by
   // the merchant's store. The merchant can edit it in Shopify's admin after
   // publish if they want a personal byline. We deliberately don't query the
@@ -421,7 +421,7 @@ export async function publishBlogPostToShopify(
   const authorName = storeForAuthor?.shopName?.trim() || "Store";
 
   // Shopify's `body` field accepts HTML directly, NOT a separate `bodyHtml`
-  // (the API renamed at some point; 2025-01 uses `body`).
+  // (the API renamed at some point; 2025-07 uses `body`).
   const articleInput: Record<string, unknown> = {
     blogId,
     title: post.title,

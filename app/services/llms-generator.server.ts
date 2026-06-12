@@ -60,9 +60,14 @@ interface ShopifyProduct {
   onlineStoreUrl: string | null;
   /** Present only on market queries (translations(locale:, marketId:)). */
   translations?: ShopifyTranslation[];
-  /** Present only on market queries with a representative country. */
+  /** Present only on market queries with a representative country.
+   *  ProductContextualPricing has no direct minVariantPrice field on
+   *  2025-07; the price lives under priceRange (same shape as
+   *  priceRangeV2). */
   contextualPricing?: {
-    minVariantPrice: { amount: string; currencyCode: string };
+    priceRange: {
+      minVariantPrice: { amount: string; currencyCode: string };
+    };
   } | null;
 }
 
@@ -85,7 +90,7 @@ interface ShopifyArticle {
   translations?: ShopifyTranslation[];
 }
 
-interface GenerateResult {
+export interface GenerateResult {
   content: string;
   productCount: number;
   collectionCount: number;
@@ -208,7 +213,7 @@ function marketVariables(vars: MarketQueryVars): Record<string, unknown> {
 function buildProductsQuery(vars: MarketQueryVars): string {
   const countryDecl = vars.country ? ", $country: CountryCode!" : "";
   const pricingField = vars.country
-    ? "contextualPricing(context: { country: $country }) { minVariantPrice { amount currencyCode } }"
+    ? "contextualPricing(context: { country: $country }) { priceRange { minVariantPrice { amount currencyCode } } }"
     : "";
   return `
   query GetProducts($first: Int!, $after: String${translationDecls(vars)}${countryDecl}) {
@@ -482,7 +487,7 @@ function formatProduct(
     ? truncate(stripHtml(descriptionSource), 300)
     : "No description available.";
   const { amount, currencyCode } =
-    product.contextualPricing?.minVariantPrice ??
+    product.contextualPricing?.priceRange.minVariantPrice ??
     product.priceRangeV2.minVariantPrice;
   const variants = product.variants.edges.map((e) => e.node);
   const available = variants.some((v) => v.availableForSale) ? "yes" : "no";
@@ -734,6 +739,8 @@ export async function generateLlmsTxt(
 }
 
 export interface GenerateAllResult {
+  /** The default file's generation result (counts for caller toasts). */
+  defaultResult: GenerateResult;
   /** Market codes regenerated successfully, "default" always first. */
   generated: string[];
   /** Market codes whose regeneration failed (logged, not thrown), e.g. a
@@ -755,10 +762,12 @@ export async function generateAllLlmsFiles(
   const generated: string[] = [];
   const failed: { marketCode: string; error: string }[] = [];
 
-  await generateLlmsTxt(storeId, { maxProducts: options.maxProducts });
+  const defaultResult = await generateLlmsTxt(storeId, {
+    maxProducts: options.maxProducts,
+  });
   generated.push("default");
 
-  if (!options.multiMarket) return { generated, failed };
+  if (!options.multiMarket) return { defaultResult, generated, failed };
 
   const marketRows = await prisma.llmsFile.findMany({
     where: { storeId, marketCode: { not: "default" } },
@@ -785,5 +794,5 @@ export async function generateAllLlmsFiles(
     }
   }
 
-  return { generated, failed };
+  return { defaultResult, generated, failed };
 }

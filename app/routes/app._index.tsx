@@ -23,7 +23,7 @@ import {
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
-import { generateLlmsTxt } from "~/services/llms-generator.server";
+import { generateAllLlmsFiles } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
 import { getRevenueAttribution } from "~/services/revenue-attribution.server";
 import type { RevenueSummary } from "~/services/revenue-attribution.server";
@@ -273,10 +273,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // llms.txt file.
       const planLimits =
         PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
-      const result = await generateLlmsTxt(store.id, {
+      // Regenerates the default file plus any existing market files, so a
+      // dashboard regenerate doesn't leave multi-market stores half-stale.
+      const result = await generateAllLlmsFiles(store.id, {
         maxProducts: planLimits.maxProductsInLlmsTxt,
+        multiMarket: Boolean(planLimits.multiMarketLlmsTxt),
       });
-      return { success: true, intent, productCount: result.productCount };
+      return {
+        success: true,
+        intent,
+        productCount: result.defaultResult.productCount,
+      };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "Generation failed." };
     }

@@ -75,7 +75,7 @@ Loader reads `?market=`, validates it against `listMarkets` + existing rows, ret
 
 ### 5. Webhooks
 
-`webhooks.products.update.tsx` and `webhooks.products.delete.tsx`: replace the single default-row lookup with `findMany` and regenerate every row whose settings say on_change, default first. Rate limits: generation is sequential per row and the generator already self-throttles at 75% of the API call limit.
+`webhooks.products.update.tsx` and `webhooks.products.delete.tsx`: replace the single default-row lookup with `findMany` and regenerate every row whose settings say on_change, default first. The loop runs detached AFTER the webhook is acknowledged: Shopify fails deliveries without a 2xx within about 5 seconds, and several full-catalog regenerations cannot fit in that budget. Rate limits: generation is sequential per row and the generator already self-throttles at 75% of the API call limit.
 
 ## Decisions
 

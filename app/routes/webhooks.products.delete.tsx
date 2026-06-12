@@ -45,25 +45,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (toRefresh.length > 0) {
     const planLimits =
       PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
-    for (const file of toRefresh) {
-      if (file.marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
-        continue;
+    // Shopify marks the delivery failed without a 2xx within ~5 seconds,
+    // and a multi-market store regenerates several full-catalog files
+    // here. Run the loop detached and acknowledge immediately (Render is
+    // a long-lived Node server, so the promise survives the response).
+    void (async () => {
+      for (const file of toRefresh) {
+        if (file.marketCode !== "default" && !planLimits.multiMarketLlmsTxt) {
+          continue;
+        }
+        try {
+          await generateLlmsTxt(store.id, {
+            maxProducts: planLimits.maxProductsInLlmsTxt,
+            marketCode: file.marketCode,
+          });
+          console.log(
+            `[GEO Rise] Auto-regenerated llms.txt (${file.marketCode}) for ${shop} after product delete`
+          );
+        } catch (err) {
+          console.error(
+            `[GEO Rise] Failed to auto-regenerate llms.txt (${file.marketCode}) for ${shop} after delete:`,
+            err
+          );
+        }
       }
-      try {
-        await generateLlmsTxt(store.id, {
-          maxProducts: planLimits.maxProductsInLlmsTxt,
-          marketCode: file.marketCode,
-        });
-        console.log(
-          `[GEO Rise] Auto-regenerated llms.txt (${file.marketCode}) for ${shop} after product delete`
-        );
-      } catch (err) {
-        console.error(
-          `[GEO Rise] Failed to auto-regenerate llms.txt (${file.marketCode}) for ${shop} after delete:`,
-          err
-        );
-      }
-    }
+    })().catch((err) =>
+      console.error(
+        `[GEO Rise] llms.txt regeneration loop crashed for ${shop}:`,
+        err
+      )
+    );
   }
 
   return new Response();
