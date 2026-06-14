@@ -19,6 +19,7 @@ import {
   CalloutCard,
   InlineGrid,
   Link,
+  List,
   Spinner,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
@@ -29,6 +30,16 @@ import {
   getOrCreateLlmsFile,
 } from "~/services/llms-generator.server";
 import { listMarkets } from "~/services/markets.server";
+import {
+  checkCrawlerAccess,
+  buildRobotsSnippet,
+  TOGGLE_CRAWLER_MAP,
+  type CrawlerAccessResult,
+} from "~/services/crawler-access.server";
+import {
+  getCrawlerStats,
+  type CrawlerStats,
+} from "~/services/crawler-hits.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
 
@@ -86,6 +97,13 @@ interface LoaderData {
   markets: MarketOption[];
   activeMarketCode: string;
   planAllowsMultiMarket: boolean;
+  /** 30-day llms.txt proxy fetch stats. FREE plans get totals only (byBot
+   *  stripped server-side); null when the aggregate query failed. */
+  crawlerStats: CrawlerStats | null;
+  /** Growth+ (the aiTracking limit) unlocks the per-bot breakdown. */
+  planAllowsCrawlerDetail: boolean;
+  /** robots.txt.liquid built from the active market file's SAVED toggles. */
+  robotsSnippet: string;
 }
 
 /** Market codes are URL-safe slugs; anything else falls back to default. */
@@ -162,11 +180,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let markets: MarketOption[] = [];
   let activeMarketCode = "default";
   let planAllowsMultiMarket = false;
+  let crawlerStats: CrawlerStats | null = null;
+  let planAllowsCrawlerDetail = false;
 
   if (store) {
     const planLimits =
       PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
     planAllowsMultiMarket = Boolean(planLimits.multiMarketLlmsTxt);
+    planAllowsCrawlerDetail = Boolean(planLimits.aiTracking);
+
+    try {
+      const stats = await getCrawlerStats(store.id);
+      // The per-bot breakdown is the Growth+ detail; strip it server-side
+      // so the plan gate can't be bypassed from the client. FREE keeps the
+      // totals (the spec's acquisition teaser).
+      crawlerStats = planAllowsCrawlerDetail ? stats : { ...stats, byBot: [] };
+    } catch (err) {
+      // Activity stats are an enhancement; an aggregate failure must not
+      // take down the manager page.
+      console.error(`[llms.txt] crawler stats failed for ${store.id}:`, err);
+    }
 
     if (planAllowsMultiMarket) {
       try {
@@ -235,6 +268,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? baseProxyUrl
       : `${baseProxyUrl}?market=${activeMarketCode}`;
 
+  // robots.txt is store-wide, but the snippet mirrors the toggles on
+  // screen (the active market's saved row); unsaved checkbox changes are
+  // deliberately excluded, since llms.txt only reflects saved settings.
+  const robotsSnippet = buildRobotsSnippet({
+    allowChatGPT: llmsFile?.allowChatGPT ?? true,
+    allowClaude: llmsFile?.allowClaude ?? true,
+    allowGemini: llmsFile?.allowGemini ?? true,
+    allowPerplexity: llmsFile?.allowPerplexity ?? true,
+    allowDeepSeek: llmsFile?.allowDeepSeek ?? true,
+    allowGrok: llmsFile?.allowGrok ?? true,
+  });
+
   return {
     store,
     llmsFile,
@@ -242,6 +287,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     markets,
     activeMarketCode,
     planAllowsMultiMarket,
+    crawlerStats,
+    planAllowsCrawlerDetail,
+    robotsSnippet,
   };
 };
 
@@ -266,14 +314,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Server-side plan enforcement: non-default markets are Growth+, no
   // matter what the client sends. Deleting leftover market files is
-  // exempt so downgraded stores can still clean up.
+  // exempt so downgraded stores can still clean up, and the read-only
+  // robots.txt checker is exempt because it is free on every plan.
   const marketCode = normalizeMarketCode(
     formData.get("marketCode") as string | null
   );
   if (
     marketCode !== "default" &&
     !planLimits.multiMarketLlmsTxt &&
-    intent !== "deleteMarketFile"
+    intent !== "deleteMarketFile" &&
+    intent !== "checkCrawlerAccess"
   ) {
     return {
       error:
@@ -294,6 +344,64 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       return { error: `Generation failed: ${message}` };
+    }
+  }
+
+  if (intent === "checkCrawlerAccess") {
+    // Available on every plan: the checker is the acquisition hook.
+    try {
+      const checkResult = await checkCrawlerAccess(store.id);
+
+      // Mismatch detection compares the live robots.txt against the SAVED
+      // toggles (what the served llms.txt actually says), not whatever is
+      // checked in the browser right now. Non-default markets may have no
+      // row yet; mismatches are simply skipped then.
+      const savedToggles =
+        marketCode === "default"
+          ? await getOrCreateLlmsFile(store.id)
+          : await prisma.llmsFile.findFirst({
+              where: { storeId: store.id, marketCode },
+            });
+
+      const mismatches: string[] = [];
+      if (checkResult.fetched && savedToggles) {
+        const statusByBot = new Map(
+          checkResult.bots.map((b) => [b.botName, b.status])
+        );
+        for (const { toggle, label, userAgents } of TOGGLE_CRAWLER_MAP) {
+          // Bots with no documented UA (DeepSeek, Grok) can't disagree
+          // with robots.txt because robots.txt can't address them.
+          if (userAgents.length === 0) continue;
+          const allowedHere = savedToggles[toggle];
+          const blockedBots = userAgents.filter(
+            (ua) => statusByBot.get(ua) === "blocked"
+          );
+          const allowedBots = userAgents.filter(
+            (ua) => statusByBot.get(ua) === "allowed"
+          );
+          if (allowedHere && blockedBots.length > 0) {
+            mismatches.push(
+              `${label} is allowed in your llms.txt settings, but robots.txt blocks ${blockedBots.join(", ")}.`
+            );
+          } else if (!allowedHere && allowedBots.length > 0) {
+            mismatches.push(
+              `${label} is blocked in your llms.txt settings, but robots.txt still allows ${allowedBots.join(", ")}.`
+            );
+          }
+        }
+      }
+
+      return {
+        success: true,
+        message: checkResult.fetched
+          ? "robots.txt checked."
+          : "Couldn't read your robots.txt. Statuses are unknown.",
+        checkResult,
+        mismatches,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return { error: `robots.txt check failed: ${message}` };
     }
   }
 
@@ -376,6 +484,9 @@ export default function LlmsTxtPage() {
     markets,
     activeMarketCode,
     planAllowsMultiMarket,
+    crawlerStats,
+    planAllowsCrawlerDetail,
+    robotsSnippet,
   } = useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -416,6 +527,24 @@ export default function LlmsTxtPage() {
   }, [activeMarketCode, llmsFile?.id]);
 
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [snippetOpen, setSnippetOpen] = useState(false);
+
+  // Check results live in state, not in fetcher.data: the fetcher is
+  // shared across every intent on this page, so a later settings save
+  // would otherwise wipe the rows off the screen.
+  const [crawlerCheck, setCrawlerCheck] = useState<{
+    result: CrawlerAccessResult;
+    mismatches: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (fetcher.data && "checkResult" in fetcher.data) {
+      setCrawlerCheck({
+        result: fetcher.data.checkResult,
+        mismatches: fetcher.data.mismatches ?? [],
+      });
+    }
+  }, [fetcher.data]);
 
   const handleMarketChange = (value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -440,6 +569,10 @@ export default function LlmsTxtPage() {
   const isDeletingMarket =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formData?.get("intent") === "deleteMarketFile";
+
+  const isCheckingRobots =
+    ["loading", "submitting"].includes(fetcher.state) &&
+    fetcher.formData?.get("intent") === "checkCrawlerAccess";
 
   const activeMarket = markets.find((m) => m.handle === activeMarketCode);
 
@@ -747,10 +880,293 @@ export default function LlmsTxtPage() {
                     Save settings
                   </Button>
                 </InlineStack>
+
+                <Divider />
+
+                {/* ── robots.txt checker ── */}
+                <BlockStack gap="300">
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    These toggles only annotate your llms.txt file, and AI
+                    crawlers treat that as a polite request. What crawlers
+                    actually obey is your store&apos;s robots.txt. Check it
+                    below, and use the snippet to make it match your
+                    choices.
+                  </Text>
+                  <InlineStack gap="200">
+                    <Button
+                      onClick={() =>
+                        fetcher.submit(
+                          {
+                            intent: "checkCrawlerAccess",
+                            marketCode: activeMarketCode,
+                          },
+                          { method: "POST" }
+                        )
+                      }
+                      loading={isCheckingRobots}
+                    >
+                      Check my robots.txt
+                    </Button>
+                    <Button
+                      variant="plain"
+                      onClick={() => setSnippetOpen((o) => !o)}
+                    >
+                      {snippetOpen ? "Hide" : "Show"} robots.txt snippet
+                    </Button>
+                  </InlineStack>
+
+                  {crawlerCheck && !crawlerCheck.result.fetched && (
+                    <Banner tone="warning">
+                      <Text as="p" variant="bodyMd">
+                        Couldn&apos;t read{" "}
+                        <Link
+                          url={crawlerCheck.result.robotsUrl}
+                          target="_blank"
+                        >
+                          {crawlerCheck.result.robotsUrl}
+                        </Link>{" "}
+                        (timeout or server error), so each bot&apos;s status
+                        is unknown. Try again in a minute.
+                      </Text>
+                    </Banner>
+                  )}
+
+                  {crawlerCheck && crawlerCheck.mismatches.length > 0 && (
+                    <Banner
+                      tone="warning"
+                      title="Your settings and robots.txt disagree"
+                    >
+                      <BlockStack gap="100">
+                        {crawlerCheck.mismatches.map((m) => (
+                          <Text as="p" variant="bodySm" key={m}>
+                            {m}
+                          </Text>
+                        ))}
+                        <Text as="p" variant="bodySm">
+                          Apply the robots.txt snippet below to bring them
+                          in line.
+                        </Text>
+                      </BlockStack>
+                    </Banner>
+                  )}
+
+                  {crawlerCheck && (
+                    <BlockStack gap="150">
+                      {crawlerCheck.result.fetched && (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Live status from{" "}
+                          <Link
+                            url={crawlerCheck.result.robotsUrl}
+                            target="_blank"
+                          >
+                            {crawlerCheck.result.robotsUrl}
+                          </Link>
+                        </Text>
+                      )}
+                      {crawlerCheck.result.bots.map(({ botName, status }) => (
+                        <InlineStack
+                          key={botName}
+                          align="space-between"
+                          blockAlign="center"
+                        >
+                          <Text as="span" variant="bodySm">
+                            {botName}
+                          </Text>
+                          <Badge
+                            tone={
+                              status === "allowed"
+                                ? "success"
+                                : status === "blocked"
+                                ? "critical"
+                                : undefined
+                            }
+                          >
+                            {status === "allowed"
+                              ? "Allowed"
+                              : status === "blocked"
+                              ? "Blocked"
+                              : "Unknown"}
+                          </Badge>
+                        </InlineStack>
+                      ))}
+                    </BlockStack>
+                  )}
+
+                  <Collapsible
+                    open={snippetOpen}
+                    id="robots-snippet"
+                    transition={{
+                      duration: "200ms",
+                      timingFunction: "ease-in-out",
+                    }}
+                  >
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <Text as="h3" variant="headingSm">
+                          robots.txt.liquid
+                        </Text>
+                        <Button
+                          variant="plain"
+                          onClick={() =>
+                            navigator.clipboard.writeText(robotsSnippet)
+                              .then(() =>
+                                shopify.toast.show("Snippet copied to clipboard!")
+                              )
+                              .catch(() =>
+                                shopify.toast.show(
+                                  "Couldn't copy. Select the text manually.",
+                                  { isError: true }
+                                )
+                              )
+                          }
+                        >
+                          Copy snippet
+                        </Button>
+                      </InlineStack>
+                      <Box
+                        padding="400"
+                        background="bg-surface-secondary"
+                        borderRadius="200"
+                        overflowX="scroll"
+                      >
+                        <pre
+                          style={{
+                            margin: 0,
+                            fontFamily: "monospace",
+                            fontSize: "12px",
+                            lineHeight: "1.6",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {robotsSnippet}
+                        </pre>
+                      </Box>
+                      <BlockStack gap="200">
+                        <Text as="p" variant="bodySm">
+                          How to apply it (about 2 minutes):
+                        </Text>
+                        <List type="number">
+                          <List.Item>
+                            In your Shopify admin, go to Online Store, then
+                            Themes.
+                          </List.Item>
+                          <List.Item>
+                            On your current theme, click the three-dot menu
+                            and choose Edit code.
+                          </List.Item>
+                          <List.Item>
+                            In the Templates folder, click Add a new
+                            template and pick robots.txt.liquid.
+                          </List.Item>
+                          <List.Item>
+                            Paste the snippet, replacing anything already in
+                            the file.
+                          </List.Item>
+                          <List.Item>
+                            Click Save. The change is live at /robots.txt
+                            right away.
+                          </List.Item>
+                        </List>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          The snippet keeps Shopify&apos;s default rules and
+                          reflects your saved toggles above, so save your
+                          settings before copying it.
+                        </Text>
+                      </BlockStack>
+                    </BlockStack>
+                  </Collapsible>
+                </BlockStack>
               </BlockStack>
             </Card>
           </Layout.Section>
         </Layout>
+
+        {/* ── AI Crawler Activity ── */}
+        {store && crawlerStats && (
+          <Card>
+            <BlockStack gap="400">
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  AI crawler activity
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Fetches of your llms.txt over the last 30 days
+                </Text>
+              </BlockStack>
+
+              {crawlerStats.totalHits === 0 ? (
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  No fetches recorded yet. Every request for your llms.txt
+                  is counted from now on, so check back once AI crawlers
+                  start picking it up.
+                </Text>
+              ) : planAllowsCrawlerDetail ? (
+                <BlockStack gap="300">
+                  <Text as="p" variant="bodyMd">
+                    {crawlerStats.botHits} of {crawlerStats.totalHits}{" "}
+                    {crawlerStats.totalHits === 1 ? "fetch" : "fetches"} came
+                    from known AI crawlers.
+                  </Text>
+                  {crawlerStats.byBot.length > 0 ? (
+                    <BlockStack gap="200">
+                      <Divider />
+                      {crawlerStats.byBot.map((bot) => (
+                        <InlineStack
+                          key={bot.botName}
+                          align="space-between"
+                          blockAlign="center"
+                        >
+                          <Text as="span" variant="bodyMd">
+                            {bot.botName}
+                          </Text>
+                          <InlineStack gap="200" blockAlign="center">
+                            <Badge>
+                              {`${bot.count} ${
+                                bot.count === 1 ? "fetch" : "fetches"
+                              }`}
+                            </Badge>
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              last seen {timeAgo(bot.lastHitAt)}
+                            </Text>
+                          </InlineStack>
+                        </InlineStack>
+                      ))}
+                    </BlockStack>
+                  ) : (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      All of them came from browsers or unidentified
+                      agents, none from known AI crawlers yet.
+                    </Text>
+                  )}
+                </BlockStack>
+              ) : (
+                <InlineStack
+                  align="space-between"
+                  blockAlign="center"
+                  gap="300"
+                  wrap
+                >
+                  <BlockStack gap="100">
+                    <Text as="p" variant="bodyMd">
+                      Your llms.txt was fetched {crawlerStats.totalHits}{" "}
+                      {crawlerStats.totalHits === 1 ? "time" : "times"} in
+                      the last 30 days.
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      See which AI crawlers (GPTBot, ClaudeBot,
+                      PerplexityBot, and more) fetched it, and how
+                      recently, on Growth and higher plans.
+                    </Text>
+                  </BlockStack>
+                  <Button variant="primary" url="/app/pricing">
+                    See pricing
+                  </Button>
+                </InlineStack>
+              )}
+            </BlockStack>
+          </Card>
+        )}
 
         {/* ── File Preview ── */}
         {hasFile && (

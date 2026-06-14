@@ -113,6 +113,7 @@ model Store {
   aiTrafficEvents  AiTrafficEvent[]
   simulationUsages SimulationUsage[]
   blogPosts        BlogPost[]
+  aiCrawlerHits    AiCrawlerHit[]
   subscription     Subscription?
 }
 
@@ -197,6 +198,12 @@ model LlmsFile {
   refreshInterval    String    @default("daily")
   fileSizeBytes      Int       @default(0)
   lastGeneratedAt    DateTime?
+  // True once the storefront /llms.txt -> /a/llms-txt redirect has been
+  // created (or confirmed to already exist). Default-market generation
+  // attempts the redirect whenever this is false, so existing stores and
+  // stores that failed before re-auth get it on a later generation, and it
+  // is attempted at most once per store after it succeeds.
+  rootRedirectCreated Boolean  @default(false)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -314,6 +321,36 @@ model SimulationUsage {
 
   @@index([storeId])
   @@index([storeId, createdAt])
+}
+
+// One row per llms.txt proxy request, written fire-and-forget by the public
+// proxy route. ALL hits are logged, not just AI bots - botName stays null
+// for browsers and unknown UAs so the manager page can report "9 of 14
+// fetches were AI bots". userAgent is capped at 250 chars before insert so
+// a hostile client can't bloat rows with megabyte headers.
+// One counter row per (store, bot, UTC day). The public llms.txt proxy is
+// unauthenticated, so a row-per-request design let any client grow this
+// table without bound; collapsing to a daily counter caps it at
+// stores x bots x retained-days and makes the stats queries trivial.
+model AiCrawlerHit {
+  id      String @id @default(cuid())
+  storeId String
+  // Canonical bot id from classifyCrawler ("GPTBot", "ClaudeBot", ...), or
+  // "" for unclassified traffic (browsers / unknown UAs). Empty string,
+  // never null: the [storeId, botName, day] unique key dedupes the upsert,
+  // and Postgres treats NULLs as distinct, which would defeat it.
+  botName String @default("")
+  // UTC calendar day this row counts hits for (stored at 00:00:00Z).
+  day           DateTime
+  count         Int      @default(0)
+  // Most recent raw User-Agent seen for this bot/day, for display only.
+  lastUserAgent String   @default("")
+  lastHitAt     DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, botName, day])
+  @@index([storeId, day])
 }
 
 // One row per generated blog post. Stored locally as a draft until the

@@ -16,6 +16,7 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
+import { recordCrawlerHit } from "~/services/crawler-hits.server";
 
 /** Market handles are URL-safe slugs; anything else is treated as absent
  *  so garbage input falls back to the default file instead of 404ing. */
@@ -70,6 +71,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     PLAN_LIMITS[store.plan as PlanKey] ?? PLAN_LIMITS.FREE;
   const marketCode =
     requestedMarket && planLimits.multiMarketLlmsTxt ? requestedMarket : null;
+
+  // Crawler analytics. Not awaited and never throws (contract of
+  // recordCrawlerHit), so it adds zero latency and can't change the
+  // response - including the not-yet-generated 404 below, which is still
+  // a real crawler visit worth counting.
+  recordCrawlerHit(store.id, request.headers.get("user-agent") ?? "");
 
   let llmsFile = marketCode
     ? await prisma.llmsFile.findFirst({

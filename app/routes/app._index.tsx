@@ -28,6 +28,7 @@ import { generateAllLlmsFiles } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
 import { getRevenueAttribution } from "~/services/revenue-attribution.server";
 import type { RevenueSummary } from "~/services/revenue-attribution.server";
+import { getBotFetchCount } from "~/services/crawler-hits.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
 import { formatMoney } from "~/utils/money";
@@ -85,6 +86,10 @@ interface LoaderData {
   /** Per-currency / per-platform AI revenue aggregates for the last 30
    *  days. Null when the merchant's plan doesn't include the feature. */
   revenueSummary: RevenueSummary | null;
+  /** Classified AI-crawler fetches of the llms.txt proxy in the last 30
+   *  days. Shown to all plans - it's the acquisition teaser for the
+   *  crawler-activity detail on the llms.txt manager page. */
+  botFetches30d: number;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -150,6 +155,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     competitorCount,
     blogPostCount,
     simulationCount,
+    botFetches30d,
   ] = await Promise.all([
     prisma.llmsFile.findFirst({
       where: { storeId: store.id, marketCode: "default" },
@@ -187,6 +193,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     }),
     prisma.simulationUsage.count({ where: { storeId: store.id } }),
+    // Classified bots only - the stat card promises "AI bot fetches", not
+    // raw proxy traffic. Sums the daily counters (excludes the unclassified
+    // bucket) over the last 30 days.
+    getBotFetchCount(store.id, 30),
   ]);
 
   const severityCount = (severity: string) =>
@@ -267,6 +277,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ),
     discoveryCards,
     revenueSummary,
+    botFetches30d,
   } satisfies LoaderData;
 };
 
@@ -1362,7 +1373,7 @@ function AiRevenueCard({
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Index() {
-  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards, revenueSummary } =
+  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards, revenueSummary, botFetches30d } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -1529,6 +1540,14 @@ export default function Index() {
                 </Text>
               )}
               <Button size="slim" url="/app/llms-txt" variant="plain">Manage</Button>
+            </BlockStack>
+          </Card>
+
+          <Card>
+            <BlockStack gap="200">
+              <Text as="p" variant="bodySm" tone="subdued">AI bot fetches, last 30 days</Text>
+              <Text as="p" variant="headingLg">{botFetches30d}</Text>
+              <Button size="slim" url="/app/llms-txt" variant="plain">View activity</Button>
             </BlockStack>
           </Card>
         </InlineGrid>

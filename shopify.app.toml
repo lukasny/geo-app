@@ -67,7 +67,11 @@ api_version = "2025-07"
 # requires `shopify app deploy` and a merchant re-auth before they take effect.
 # read_themes was dropped 2026-06-12: no code reads the Themes API (theme app
 # extensions don't need it), and unused scopes are an App Store rejection risk.
-scopes = "write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations"
+# write_online_store_navigation powers urlRedirectCreate, used once per store
+# to redirect /llms.txt -> /a/llms-txt (AI crawlers only probe the root path).
+# Rides the pending re-auth; until merchants approve it the redirect attempt
+# logs a warning and generation continues unaffected.
+scopes = "write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations,write_online_store_navigation"
 
 [auth]
 redirect_urls = [

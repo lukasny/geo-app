@@ -747,6 +747,75 @@ function buildBotPermissions(settings: {
   return `# AI Bot Access\n${lines.join("\n")}`;
 }
 
+// ─── Root /llms.txt Redirect ──────────────────────────────────────────────────
+
+const URL_REDIRECT_CREATE_MUTATION = `
+  mutation CreateLlmsTxtRedirect($urlRedirect: UrlRedirectInput!) {
+    urlRedirectCreate(urlRedirect: $urlRedirect) {
+      urlRedirect { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+/** Shopify reports a duplicate redirect path only via the userError message
+ *  ("Path has already been taken" / "already in use"); UrlRedirectErrorCode
+ *  on 2025-07 has no dedicated duplicate value, so message text is the only
+ *  signal we can key on. */
+function isDuplicatePathError(message: string): boolean {
+  return /already (been taken|exists|in use)/i.test(message);
+}
+
+/** Create the storefront redirect /llms.txt -> /a/llms-txt. AI crawlers
+ *  request the root path, never the app-proxy path, so without this redirect
+ *  the generated file is invisible to them. Requires the
+ *  write_online_store_navigation scope (urlRedirectCreate).
+ *
+ *  Returns true when the redirect now exists (created, or a duplicate-path
+ *  userError meaning it already existed) so the caller can stop retrying;
+ *  returns false on any real failure (most commonly a missing-scope access
+ *  error before the merchant re-authorizes) so it is reattempted on a later
+ *  generation. Never throws: the generation that triggered it must not fail
+ *  over a missing redirect. No withRetry: a missing-scope error is not
+ *  transient, and the per-generation retry loop is the recovery path. */
+export async function ensureRootLlmsRedirect(
+  domain: string,
+  accessToken: string
+): Promise<boolean> {
+  try {
+    const data = await shopifyGraphql<{
+      urlRedirectCreate: {
+        urlRedirect: { id: string } | null;
+        userErrors: { field: string[] | null; message: string }[];
+      };
+    }>(domain, accessToken, URL_REDIRECT_CREATE_MUTATION, {
+      urlRedirect: { path: "/llms.txt", target: "/a/llms-txt" },
+    });
+
+    const failures = data.urlRedirectCreate.userErrors.filter(
+      (e) => !isDuplicatePathError(e.message)
+    );
+    if (failures.length > 0) {
+      console.warn(
+        `[llms.txt] root redirect creation failed for ${domain}: ${failures
+          .map((e) => e.message)
+          .join("; ")}`
+      );
+      return false;
+    }
+    // Created, or a tolerated duplicate-path error: the redirect exists.
+    return true;
+  } catch (err) {
+    // Also lands here when the merchant has not yet re-authorized the
+    // write_online_store_navigation scope (top-level access error).
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[llms.txt] root redirect creation failed for ${domain}: ${message}`
+    );
+    return false;
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function getOrCreateLlmsFile(
@@ -908,6 +977,21 @@ export async function generateLlmsTxt(
       lastGeneratedAt: new Date(),
     },
   });
+
+  // Default market only, attempted whenever the redirect is not yet known
+  // to exist. This covers stores that generated before the feature shipped
+  // (rootRedirectCreated defaults false) and stores whose first attempt
+  // failed because the write_online_store_navigation scope was not yet
+  // approved; once it succeeds the flag is set and no further calls are made.
+  if (!isMarketFile && !llmsFile.rootRedirectCreated) {
+    const created = await ensureRootLlmsRedirect(domain, token);
+    if (created) {
+      await prisma.llmsFile.update({
+        where: { id: llmsFile.id },
+        data: { rootRedirectCreated: true },
+      });
+    }
+  }
 
   return {
     content,
