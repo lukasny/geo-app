@@ -1,173 +1,126 @@
 # GEO Rise: Session Handoff
 
-**Date:** 2026-05-18
-**Head commit:** `acca940` (pushed to origin/main)
-**Shopify app version:** `geo-rise-5` (deployed)
+**Date:** 2026-06-14
+**Head commit:** `e607aac` (pushed to origin/main)
 **Production:** https://geo-app-hkhi.onrender.com (Render auto-deploys from main)
 **Dev store:** boda-brands.myshopify.com (storefront password: `etwawy`, on Growth plan via test billing)
 
-Deep context lives in the memory files at
-`C:\Users\nyima\.claude\projects\-Users-lukas-Desktop-geo-app\memory\` (start with
-`project_checkpoint.md`). This file is the single-session snapshot.
+This file supersedes the 2026-05-18 handoff. The repo is now self-sufficient:
+this file plus `docs/` (especially `docs/product-roadmap-2026-06.md`,
+`docs/launch-checklist.md`, and `docs/superpowers/specs|plans/`) and `CLAUDE.md`
+are the authoritative pickup point. The `project_checkpoint.md` style memory
+files the old handoff referenced live on a separate (Windows) machine and are
+NOT needed to continue.
 
-> **Correction (2026-06-12, verified on macOS):** the memory path above is on the
-> Windows machine and is NOT available on the Mac. If working on the Mac, the
-> referenced files (`project_checkpoint.md`, `project_known_fixes.md`,
-> `project_shopify_url_workflow.md`) must be copied over from the Windows machine
-> or their knowledge regenerated. Everything else in this handoff was verified
-> against the repo on 2026-06-12 (all file, commit, config, and build claims check
-> out; one fix applied below to the Task 1 description).
+Verification convention: there are no automated tests. Every change is verified
+with `npx tsc --noEmit` + `npm run build` + a manual smoke test on boda-brands.
+Recent feature work also went through multi-agent adversarial review with Shopify
+API shapes checked against shopify.dev for the pinned `2025-07` version.
 
 ---
 
-## What's built and working (verified)
+## Current state (all verified)
 
-Everything below is deployed, typechecked, built, and where noted, manually tested
-end-to-end on boda-brands.
+`npx tsc --noEmit` clean, `npm run build` clean, working tree clean, HEAD == origin/main.
+Every commit below was deployed and health-checked (production returned HTTP 200).
 
-| Feature | Status | Key files |
+Scopes currently requested in `shopify.app.toml` (NOT yet active in production,
+see Lukas actions): `write_products, read_content, write_content, read_orders,
+read_reports, read_markets, read_translations, write_online_store_navigation`.
+(`read_themes` was removed as unused.) API version pinned to `2025-07`.
+
+Pricing (source of truth `app/services/billing.shared.ts`): Free $0 / Growth $19 /
+Pro $49 / Enterprise $99, 7-day trial on paid tiers.
+
+## What shipped 2026-06-12 to 06-14 (since the May handoff)
+
+| Work | Commit(s) | Notes |
 |---|---|---|
-| llms.txt generator + public proxy | Live | `app/services/llms-generator.server.ts`, `app/routes/proxy.llms-txt.ts` |
-| JSON-LD schema theme extension | Live | `extensions/geo-rise-schema/blocks/schema-injection.liquid` |
-| AI readiness audit + vision auto-fix | Live | `app/services/audit-engine.server.ts` |
-| AI Simulator (multi-AI: Claude + ChatGPT) | Live | `app/services/ai-simulator.server.ts` |
-| AI Visibility Tracking (multi-platform + sentiment + schedule + trends) | Live | `app/services/tracking.server.ts`, `app/routes/app.tracking.tsx` |
-| Competitor monitoring | Live | `app/services/competitor-monitoring.server.ts`, `app/routes/app.competitors.tsx` |
-| Action plan / weekly to-do | Live | `app/services/action-plan.server.ts`, `app/routes/app.action-plan.tsx` |
-| Weekly insight emails (Resend) | Live | `app/services/insight-email.server.ts`, `app/services/scheduler.server.ts` |
-| **Blog post generation (this session)** | Live, user-tested 9/9 | `app/services/blog-generation.server.ts`, `app/routes/app.blog-generator.tsx` |
-| **Onboarding wizard refresh (this session)** | Live, user-tested | `app/routes/app._index.tsx` (OnboardingWizard, Step2, Step3 components) |
-| **Dashboard discovery cards (this session)** | Live, user-tested | `app/routes/app._index.tsx` (DiscoveryCards + 6 card subcomponents) |
-| **Intent Lab (this session)** | Live, NOT yet user-tested | `app/services/tracking.server.ts` (cascade), `app/routes/app.tracking.tsx` (badges) |
-| Billing (4 tiers, Shopify native) | Live | `app/services/billing.server.ts`, `app/services/billing.shared.ts` |
+| Stale-docs + dependency vulnerability fixes | `2cd10eb` | |
+| Task 1: Product-level AI citation stats | `52c0740..ae44f61` | "Top cited products" on /app/tracking; `product-citations.server.ts` |
+| Task 2: Multi-market llms.txt | `b3e6c92..ddc31e8` | per-market files, market picker, `?market=` proxy; DORMANT until re-auth grants market scopes |
+| Task 3: Bulk editing UI | `376ce3c..b5bd912` | /app/bulk-edit; extracted `product-mutations.server.ts` shared by auto-fix |
+| UX polish batch (cross-page review) | `7efd66d` | ~70 findings; shared utils (platforms/severity/money/ScorePill), honest pricing, nav order |
+| Billing: paid-to-paid downgrade fix | `d692f72` | "Switch to X" replaces the subscription instead of cancelling to Free |
+| Launch checklist + App Store listing rewrite | `8018b43` | current prices/features; `read_themes` dropped |
+| Full-app deep review: 46 confirmed bugs fixed | `14567c9` (28) + `b7fb28d` (18) | + honesty pass on pricing/revenue/email. See below. |
+| Product roadmap | `bb4d2c1` | `docs/product-roadmap-2026-06.md` |
+| Roadmap items 1+2: crawler visibility | `257ec79` + `e607aac` | robots.txt checker + snippet, crawler analytics (daily-counter), /llms.txt root redirect |
 
-Pricing: Free / Growth $19 / Pro $49 / Enterprise $99. Plan caps enforced at the
-service layer (post-Phase-E pattern), not just routes.
+### Notable fixes from the deep review (were live bugs in the May-era code)
+- Paid audits were 100% broken: the products GraphQL query requested ~6,900 cost
+  points against Shopify's 1,000 cap. Now page size 15 + `variants(first: 25)` +
+  real throttle handling. Lesson: check GraphQL requested cost for any
+  `maxAuditProducts: Infinity` path; dev-store testing missed this because only
+  FREE's 3-product pages fit the cap.
+- Plan switches fired a CANCELLED webhook for the replaced subscription that
+  downgraded paying merchants to Free; now identity-checked against the stored
+  subscription id.
+- Persisted `Store.shopifyAccessToken` went stale ~60 min after install (expiring
+  offline tokens); services now fetch a fresh token via
+  `offline-admin.server.ts` `getFreshAccessToken`.
+- Auto-fix could overwrite a real product description with a stripped template;
+  unusable AI output now fails instead of degrading merchant data.
+- orders/paid (when enabled) now dedupes orderId; both cron paths are
+  double-run-proof; weekly email has List-Unsubscribe + a signed `/unsubscribe`.
 
-## What's mid-flight
+## What is next (NOT started)
 
-### 1. Revenue attribution (code complete, webhook blocked on Shopify approval)
+The build queue lives in `docs/product-roadmap-2026-06.md`. Items 1 and 2 are
+done (crawler checker + analytics, plus the root-redirect half of item 8).
+Remaining, in ranked order:
 
-The full feature shipped this session (commits `b1f9c68`..`a2dd9db`) but it is only
-HALF-ACTIVE in production:
+3. AI traffic beacon (visits now, revenue later) - Growth/Pro
+4. Product FAQ generator + FAQPage JSON-LD (+ Offer shippingDetails/returns) - Growth
+5. GEO score history + trend (ScoreSnapshot + dashboard sparkline + email delta) - all plans
+6. llms-full.txt + per-entry updated dates - Growth
+7. Public shareable GEO score badge/page - Free
+8. Verify schema embed + llms.txt are live (redirect half DONE; storefront-fetch verification of the embed remains) - all plans
+9. Gemini tracking platform - Pro
+10. Brand entity pack (sameAs/logo/description in Organization schema) - Growth
+11. Bing presence check + IndexNow on product change - Pro
+12. Shopify Flow triggers - Enterprise, only after 1-11
 
-- **Working now:** theme extension tracker script (deployed as `geo-rise-4`) detects
-  AI referrers (ChatGPT / Perplexity / Claude / Gemini / Grok domains + utm_source
-  fallback), writes a 30-day first-party cookie `__geo_rise_ai_ref` and a Shopify
-  cart attribute. Dashboard "AI Revenue" card + `/app/revenue` page render (empty
-  state). Privacy policy updated.
-- **Blocked:** the `orders/paid` webhook that captures attributed orders into
-  `AiTrafficEvent` rows. Shopify rejected the deploy: order webhooks require
-  **Protected Customer Data access** approval. The handler file
-  `app/routes/webhooks.orders.paid.tsx` exists but is never invoked.
-- **Lukas's action:** apply in Partner Dashboard > Apps > GEO Rise > Configuration >
-  Protected customer data access (purpose statement drafted in the session, see
-  memory `project_checkpoint.md` changelog for 2026-05-18 evening).
-- **After approval:** restore the commented-out subscription block in
-  `shopify.app.toml` (search for "orders/paid subscription is intentionally
-  OMITTED") and run `npx shopify app deploy --allow-updates --force`.
+Plus three retention fixes that are not features (same doc): chunk auto-fix into
+progress batches + write-then-swap full audit; auto-run Intent Lab in onboarding;
+citation alerts (first/lost citation, competitor overtake).
 
-### 2. Intent Lab (deployed, awaiting re-auth + smoke test)
+Sequence agreed with Lukas: build features, then brand identity (Lukas owns this),
+then App Store submission. Lukas paused the build queue here pending Fable 5
+availability.
 
-Shipped as `geo-rise-5` with the new `read_reports` scope. Lukas must:
-1. Open GEO Rise admin on boda-brands and accept the "requires additional
-   permissions" prompt (grants read_reports).
-2. Go to AI Tracking, click "Suggest prompts for me", verify the source summary
-   line and per-suggestion source badges (From your store / From r/... /
-   AI suggested) appear.
+## Lukas-side actions (only Lukas can do these)
 
-If every suggestion shows "AI suggested", check Render logs for `[Intent Lab]`
-warnings: either ShopifyQL returned nothing (store may have no search history)
-or Reddit was unreachable.
+1. `npx shopify app deploy --allow-updates` from the geo-app folder: pushes the new
+   scopes, `api_version 2025-07`, webhook config, and the theme extension to Shopify.
+2. Update the Render `SCOPES` env var to match `shopify.app.toml`:
+   `write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations,write_online_store_navigation`
+3. Open GEO Rise on boda-brands and accept the new-permissions prompt. This
+   activates multi-market llms.txt and the /llms.txt root redirect (both dormant
+   until then).
+4. Apply for Protected Customer Data access (Partner Dashboard > Apps > GEO Rise >
+   Configuration). Required to enable orders/paid (revenue attribution) AND to
+   justify `read_orders` in App Store review. After approval, un-comment the
+   orders/paid block in `shopify.app.toml` and redeploy.
+5. Manual test pass per `docs/launch-checklist.md` PART 3. Most June work is
+   verified by typecheck/build/review but not yet smoke-tested on the store;
+   priorities: one full audit on a paid test plan, a plan switch, the bulk editor,
+   the crawler checker, and a market file.
 
-## Key decisions made this session
+## Conventions and sharp edges to respect
 
-1. **Em-dash ban is absolute** (Lukas directive, earlier session, carried through
-   everything): no em-dashes in code, comments, UI copy, AI-generated content, or
-   chat. Three-layer defense on generated content: prompt instruction + sanitizer +
-   regex strip (`stripEmDashes` in blog-generation, similar elsewhere).
-2. **Plan caps at the service layer, not routes.** `generateBlogPostDraft` throws
-   `BlogPostCapReachedError` before the Claude call; `publishBlogPostToShopify`
-   takes `storeId` and uses `findFirst({id, storeId})` for tenant isolation.
-   Pattern documented in `project_known_fixes.md`.
-3. **Blog soft-delete preserves quota.** Deleted drafts stay as rows with
-   `status="deleted"`; `countBlogPostsThisMonth` excludes only `"generating"`.
-   Deleting a draft does NOT refund the monthly slot (Anthropic was already paid).
-4. **Revenue attribution = cart-attribute approach, not Web Pixel.** Faster to ship,
-   reuses existing theme extension. 30-day last-AI-touch attribution window.
-   Multi-currency safe (per-currency aggregation, no FX conversion). Refunds out
-   of scope (documented limitation).
-5. **Intent Lab replaces the brainstorm backend instead of adding a new surface.**
-   Same "Suggest prompts" button; three-stage cascade (ShopifyQL search analytics +
-   Reddit public JSON in parallel, Claude polish with per-signal source citation,
-   pure-brainstorm fallback when both sources are empty).
-6. **Wizard wow-step is bounded:** `runStarterAudit` caps at 5 products,
-   `runWizardAutoFix` at 5 issues (new `maxIssues` option on `AutoFixOptions`),
-   so step runtimes stay ~60s regardless of catalog size.
-
-## Known bugs / sharp edges
-
-- **No known open bugs.** Two found-and-fixed this session: Shopify
-  `ArticleCreateInput.author` is required (fixed `fcc6a44`); wizard step 2 showed
-  "Run an audit to find gaps" right after running an audit (fixed `5ea3184`).
-- **Sharp edge: re-running the wizard overwrites audit data.** The wizard's
-  5-product starter audit replaces all `AuditResult` rows and `store.geoScore`.
-  Fine for new merchants, surprising when testing via the
-  `onboardingCompleted=false` DB tweak. Fix: re-run a full audit from `/app/audit`
-  afterward.
-- **Sharp edge: ShopifyQL table/column names in Intent Lab Stage 1 are best-effort**
-  (`online_store_search` / `search_term`). If Shopify's schema differs, the stage
-  logs a ParseError and degrades to Reddit-only. Watch Render logs on first run.
-- **TS cannot catch malformed Shopify GraphQL inputs** (the `author` bug proved
-  it). Before claiming any new Shopify mutation works, verify the input shape
-  against https://shopify.dev/docs/api/admin-graphql/2025-01.
-- **No automated tests exist.** All verification is `npx tsc --noEmit` +
-  `npm run build` + manual smoke tests. A Vitest suite is on the someday list.
-
-## Next 3 tasks (in Lukas's approved order)
-
-The agreed sequence: finish these features, then UI/UX polish, then brand identity,
-then App Store submission. Each follows the same workflow: brainstorm skill →
-spec in `docs/superpowers/specs/` → plan in `docs/superpowers/plans/` → inline
-execution with per-task commits.
-
-### Task 1: Product-level AI citation stats (~1 session)
-
-"Your Videographer Snowboard was cited 12 times across ChatGPT and Perplexity
-this month."
-
-- Data already exists: `AiCitation.productsCited` (Json field, populated inline by
-  `processPlatformCitation` in `app/services/tracking.server.ts`).
-- Build an aggregation (likely new `app/services/product-citations.server.ts` or
-  extend tracking.server.ts) that groups citations per product across platforms
-  and time.
-- Surface: either a new section on `/app/tracking` or a per-product drill-in on
-  the audit page (`app/routes/app.audit.tsx`). Decide in brainstorm.
-- Schema: `prisma/schema.prisma` AiCitation model; no migration expected.
-
-### Task 2: Multi-market llms.txt (~1-2 sessions)
-
-Per-market llms.txt files for Shopify Markets (languages/currencies/subsets).
-
-- `LlmsFile` model already has `marketCode` (unique per `[storeId, marketCode]`),
-  default "default". Schema ready, zero rows use other codes yet.
-- `app/services/llms-generator.server.ts` needs a market-aware variant: query
-  Shopify Markets via GraphQL, generate one file per market.
-- `app/routes/proxy.llms-txt.ts` needs market resolution (likely via query param
-  or domain detection).
-- `app/routes/app.llms-txt.tsx` needs a market picker UI.
-- Plan flag already advertised: `PLAN_LIMITS[plan].multiMarketLlmsTxt` (Growth+).
-
-### Task 3: Bulk editing UI (~1-2 sessions)
-
-40rty-style grid: select N products, apply manual edits (meta title pattern,
-alt-text template) without going through AI auto-fix.
-
-- New route `app/routes/app.bulk-edit.tsx` (IndexTable with bulk selection).
-- Reuse mutation helpers from `app/services/audit-engine.server.ts` (the
-  productUpdate / media-alt mutations and the both-SEO-fields quirk documented
-  in `project_known_fixes.md`).
-- Plan flag exists: `PLAN_LIMITS[plan].bulkOptimization` (Growth+).
+- **Em-dash ban is absolute**: none in code, comments, UI copy, AI-generated
+  content, docs, or commit messages. Use commas, colons, or hyphens.
+- **Verify Shopify GraphQL shapes against shopify.dev for `2025-07`** before
+  claiming a mutation/query works. TypeScript cannot catch malformed GraphQL; this
+  class of bug (wrong field, over-cost query, wrong scope) caused several of the
+  deep-review criticals.
+- **Plan caps enforced at the service layer**, not just routes.
+- **Revenue attribution is half-active by design** until Protected Customer Data
+  approval; all surfaces disclose this honestly. Do not re-enable orders/paid in
+  the toml before approval.
+- **Retention engine (cron) is in-process on a single Render instance**; deploys
+  skip ticks. Acceptable now.
 
 ## Quick-start for the next session
 
@@ -175,11 +128,10 @@ alt-text template) without going through AI auto-fix.
 cd geo-app
 git pull
 npx tsc --noEmit        # should be clean
+npm run build           # should be clean
 npm run dev             # or: npx shopify app dev
 ```
 
-- After any dev session: `npx shopify app deploy` restores production URLs
-  (see memory `project_shopify_url_workflow.md`).
 - Anthropic credits must be topped up for any AI feature to work:
   https://console.anthropic.com/settings/billing
 - Render dashboard (deploys + logs): https://dashboard.render.com
