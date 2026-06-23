@@ -340,3 +340,16 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - Plan keys: always uppercase (`"FREE"`, `"GROWTH"`, `"PRO"`, `"ENTERPRISE"`)
 - Imports: use `~/` alias for `app/` directory (configured in tsconfig.json paths)
 - No em-dashes, anywhere: not in code, comments, UI copy, docs, or AI-generated content. Use commas, colons, or hyphens instead. This is an absolute project rule.
+
+## Brand and UI constraints (hard rules)
+
+Full spec: `docs/superpowers/specs/2026-06-23-brand-application-design.md`. Tokens: `app/brand/tokens.ts` (client-safe source of truth) and `app/styles/brand-tokens.css` (`--gr-*` vars). Brand components: `app/brand/Mark.tsx`, `app/brand/ScoreRing.tsx`, `app/brand/RiseIllustration.tsx`, `app/brand/BrandEmptyState.tsx`.
+
+- Polaris owns the component layer. Do NOT recolor, restyle, or wrap core Polaris controls (Button, Card, TextField, Select, IndexTable, Badge, Banner, Modal, Tabs). Built for Shopify depends on standard Polaris. For status use the Polaris Badge with standard tones, not custom-colored chips.
+- Brand color and type apply ONLY to the app's own non-Polaris surfaces: custom SVG/canvas data-viz (score ring, charts, sparklines), custom illustrations (empty states, onboarding), and bespoke markup. Use the tokens module or `--gr-*` vars. NEVER override Polaris `--p-*` tokens.
+- Never use the Polaris Grid component (it misrenders in the embedded iframe). Use native CSS grid.
+- Score-band colors come from `scoreColor()` in `app/brand/tokens.ts` only. Do not hardcode band hex anywhere.
+- Empty states use `BrandEmptyState` (its own Card, so never nest it in another Card): explain what the feature is and how to get data in, with one primary action.
+- Accessibility: keep visible focus, labeled inputs; any motion respects prefers-reduced-motion; custom SVG conveying state must not rely on color alone.
+- No favicons in the embedded app: it runs in Shopify's top-level tab, so an app-head favicon shows nothing to merchants. Favicons are marketing-site (georise.app) scope only.
+- A brand surface is not done until tsc and build are clean, the em-dash scan is zero, no Polaris control was recolored, and it passes a dev-store smoke test.
