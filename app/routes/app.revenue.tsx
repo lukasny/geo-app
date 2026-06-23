@@ -22,13 +22,11 @@ import prisma from "~/db.server";
 import { PLAN_LIMITS, PLAN_DEFINITIONS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { getRevenueAttribution } from "~/services/revenue-attribution.server";
-import type {
-  AiPlatform,
-  RevenueSummary,
-} from "~/services/revenue-attribution.server";
+import type { RevenueSummary } from "~/services/revenue-attribution.server";
 import { timeAgo } from "~/utils/time";
 import { formatMoney } from "~/utils/money";
 import { platformLabel } from "~/utils/platforms";
+import { platformColors, brand } from "~/brand/tokens";
 
 interface LoaderData {
   plan: PlanKey;
@@ -66,15 +64,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     planAllowsFeature,
     summary,
   } satisfies LoaderData;
-};
-
-const PLATFORM_COLORS: Record<AiPlatform, string> = {
-  CHATGPT: "#00C853",
-  PERPLEXITY: "#7E57C2",
-  CLAUDE: "#FF7043",
-  GEMINI: "#4285F4",
-  GROK: "#FF1744",
-  GOOGLE_AI_OVERVIEW: "#9E9E9E",
 };
 
 export default function RevenuePage() {
@@ -233,7 +222,8 @@ export default function RevenuePage() {
                       width: 12,
                       height: 12,
                       borderRadius: 2,
-                      background: PLATFORM_COLORS[p.platform] ?? "#9E9E9E",
+                      background:
+                        platformColors[p.platform] ?? brand.neutral[400],
                       display: "inline-block",
                     }}
                   />
@@ -333,9 +323,7 @@ function RevenueChart({
                     y={yCursor}
                     width={barWidth}
                     height={h}
-                    fill={
-                      PLATFORM_COLORS[platform as AiPlatform] ?? "#9E9E9E"
-                    }
+                    fill={platformColors[platform] ?? brand.neutral[400]}
                   >
                     <title>{hoverParts.join("\n")}</title>
                   </rect>
