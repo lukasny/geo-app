@@ -1,11 +1,11 @@
 // Shared score pill. Replaces per-route copies of scoreColor/ScorePill so
 // AI readiness scores look identical on every page that shows them.
 
-export function scoreColor(score: number): string {
-  if (score < 40) return "#E24B4A";
-  if (score < 70) return "#EF9F27";
-  return "#1D9E75";
-}
+import { scoreColor } from "~/brand/tokens";
+
+// Re-exported so existing consumers (app.audit.tsx) keep importing it from
+// here, now backed by the brand-token thresholds instead of local hex.
+export { scoreColor };
 
 export function ScorePill({ score }: { score: number }) {
   return (
