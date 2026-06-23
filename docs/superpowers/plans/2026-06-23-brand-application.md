@@ -27,16 +27,17 @@
 
 ## Phase B: logo-dependent surfaces (after the real assets land in the repo)
 
-Waiting on: `geo-rise-mark.svg`, `favicon-16/32.png`, `apple-touch-icon-180.png` (user is dropping these into the repo). The `geo-rise-tokens.css` is derived in A1, not needed from the user.
+Corrections from the design phase (2026-06-23): the logo is delivered as a ready React component (`Mark.tsx`), not a binary SVG transfer, so there is nothing to misplace. Favicons are DROPPED from the app pass: the embedded app runs in an iframe inside admin.shopify.com, so the browser-tab favicon is Shopify's top-level page, not ours; a favicon in the app head shows nothing to merchants. The favicon set belongs to the marketing site (georise.app) and is staged outside this repo.
 
-### Task B1: Mark component
-- `app/brand/Mark.tsx` from `geo-rise-mark.svg`: inline, inherits currentColor, `tone` prop ("color" indigo strokes + cyan node, "ink", "white").
+### Task B1: Mark component (DONE)
+- `app/brand/Mark.tsx` placed as provided: inline SVG, `tone` prop ("color" indigo strokes + cyan node, "ink", "white"), `size` + `title` props. Raw `geo-rise-mark.svg` kept in `app/brand/` for reference.
 
-### Task B2: RiseIllustration component
-- `app/brand/RiseIllustration.tsx` from the rising-to-node scene (faint indigo chevron, solid indigo chevron, cyan node). One reusable graphic, visually consistent with the Mark.
+### Task B2: RiseIllustration + BrandEmptyState (DONE)
+- `app/brand/RiseIllustration.tsx`: the rising-to-node scene (faint indigo chevron, solid indigo chevron, cyan node) on a mist backdrop, from brand tokens, aria-hidden (decorative).
+- `app/brand/BrandEmptyState.tsx`: reusable empty state (RiseIllustration + heading + body + one primary action) using Polaris Card/Text/Button normally. Used to replace bare/generic empty states.
 
-### Task B3: Favicons in the document head
-- Copy the favicon set into `public/`; wire favicon + apple-touch icon into the root route head.
+### Task B3: Favicons - DROPPED
+- Not wired into the embedded app (see correction above). The favicon set + `geo-rise-favicon.svg` are for georise.app, staged outside this repo.
 
 ### Task B4: Empty states
 - Every page with one (tracking, competitors, revenue, citation stats, blog, simulator, bulk edit): RiseIllustration + the standard copy pattern (what the feature is, how to get data in, one primary action). Replace bare/generic empty states.
