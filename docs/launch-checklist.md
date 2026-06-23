@@ -23,10 +23,10 @@ Legend: [DONE] verified in code or production. [TEST] needs a manual pass on bod
 Do these in order; the multi-market feature stays dormant until they happen.
 
 1. From the geo-app folder run: `npx shopify app deploy --allow-updates`
-   This pushes to Shopify: the new scopes (read_markets, read_translations), api_version 2025-07, the webhook config, and the theme extension.
+   This pushes to Shopify: the new scopes (read_markets, read_translations, write_online_store_navigation), api_version 2025-07, the webhook config, the app proxy, and the theme extension (GEO Rise Schema).
 2. In the Render dashboard, update the SCOPES env var to match shopify.app.toml:
-   write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations
-3. Open GEO Rise on boda-brands and accept the new-permissions prompt.
+   write_products,read_content,write_content,read_orders,read_reports,read_markets,read_translations,write_online_store_navigation
+3. Open GEO Rise on boda-brands and accept the new-permissions prompt. This grants the market scopes (multi-market llms.txt) and write_online_store_navigation (the /llms.txt root redirect, created on the next generation).
 4. Apply for Protected Customer Data access (Partner Dashboard > Apps > GEO Rise > Configuration). Required for read_orders/orders.paid; without it, revenue attribution stays half-active AND the App Store review may reject the read_orders scope. After approval, un-comment the orders/paid block in shopify.app.toml and deploy again.
 
 ## PART 3: Manual test pass on boda-brands [TEST]
