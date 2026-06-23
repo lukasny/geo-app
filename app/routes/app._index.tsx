@@ -24,6 +24,7 @@ import {
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import { ScoreRing } from "~/brand/ScoreRing";
+import { Mark } from "~/brand/Mark";
 import { scoreColor, semantic } from "~/brand/tokens";
 import prisma from "~/db.server";
 import { generateAllLlmsFiles } from "~/services/llms-generator.server";
@@ -590,6 +591,9 @@ function OnboardingWizard({
             {/* Step 1 - Welcome */}
             {step === 1 && (
               <BlockStack gap="400">
+                <InlineStack align="center">
+                  <Mark size={40} />
+                </InlineStack>
                 <BlockStack gap="100">
                   <Text as="p" variant="bodySm" tone="subdued">
                     Step 1 of 3
@@ -984,9 +988,12 @@ function DiscoveryCards({
     <Card>
       <BlockStack gap="400">
         <BlockStack gap="100">
-          <Text as="h2" variant="headingMd">
-            Get more from GEO Rise
-          </Text>
+          <InlineStack gap="200" blockAlign="center">
+            <Mark size={20} />
+            <Text as="h2" variant="headingMd">
+              Get more from GEO Rise
+            </Text>
+          </InlineStack>
           <Text as="p" variant="bodySm" tone="subdued">
             Features that take a few minutes to set up and pay off every week
             after.
