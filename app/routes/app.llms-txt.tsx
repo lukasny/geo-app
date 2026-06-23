@@ -683,6 +683,21 @@ export default function LlmsTxtPage() {
           </Banner>
         )}
 
+        {/* ── Unpublished-products hint ── */}
+        {hasFile &&
+          llmsFile?.includeProducts &&
+          llmsFile.productCount === 0 &&
+          (store?.totalProducts ?? 0) > 0 && (
+            <Banner tone="warning">
+              <Text as="p" variant="bodyMd">
+                Your products aren&apos;t in this llms.txt yet. Only products
+                published to your Online Store sales channel are included, so
+                AI search engines never get a dead link. Publish your products
+                to the Online Store, then regenerate.
+              </Text>
+            </Banner>
+          )}
+
         {/* ── Market Picker ── */}
         {planAllowsMultiMarket && markets.length > 0 && (
           <Card>
