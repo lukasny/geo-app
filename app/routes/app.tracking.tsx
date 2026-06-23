@@ -14,11 +14,12 @@ import {
   Banner,
   Box,
   Divider,
-  EmptyState,
   ButtonGroup,
   Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
+
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
@@ -772,19 +773,20 @@ export default function TrackingPage() {
 
         {/* ── Prompts list ── */}
         {prompts.length === 0 && canAddPrompts ? (
-          <Card>
-            <EmptyState
-              heading="No tracking prompts yet"
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            >
-              <Text as="p" variant="bodyMd">
-                Add your first prompt above to start tracking how AI search
-                engines answer questions in your category. Good starting points:
-                comparison queries, "best of" questions, and product
-                recommendations.
-              </Text>
-            </EmptyState>
-          </Card>
+          <BrandEmptyState
+            heading="No tracking prompts yet"
+            body='AI tracking checks whether assistants like ChatGPT, Perplexity, Claude, and Gemini cite your store when shoppers ask questions in your category. Add your first prompt to start tracking. Good starting points: comparison queries, "best of" questions, and product recommendations.'
+            primaryAction={{
+              content: "Add your first prompt",
+              onClick: () => {
+                const el = document.getElementsByName(
+                  "prompt"
+                )[0] as HTMLTextAreaElement | undefined;
+                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                el?.focus();
+              },
+            }}
+          />
         ) : (
           prompts.map((p) => (
             <PromptCard
@@ -812,6 +814,15 @@ export default function TrackingPage() {
 // ─── Top Cited Products ───────────────────────────────────────────────────────
 
 function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
+  if (stats.products.length === 0) {
+    return (
+      <BrandEmptyState
+        heading="Top cited products"
+        body={`This shows which of your products AI assistants name in their answers, summarized across all your prompts over the last ${stats.rangeDays} days. No product mentions detected yet. Run a check on one of your prompts below, and when an AI answer names one of your products it shows up here.`}
+      />
+    );
+  }
+
   return (
     <Card>
       <BlockStack gap="400">
@@ -826,14 +837,8 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
           </Text>
         </BlockStack>
 
-        {stats.products.length === 0 ? (
-          <Text as="p" variant="bodyMd" tone="subdued">
-            No product mentions detected yet. Run checks on your prompts - when
-            an AI answer names one of your products, it shows up here.
-          </Text>
-        ) : (
-          <BlockStack gap="300">
-            {stats.products.map((p) => (
+        <BlockStack gap="300">
+          {stats.products.map((p) => (
               <Box
                 key={p.title.toLowerCase()}
                 padding="300"
@@ -876,8 +881,7 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
                 </BlockStack>
               </Box>
             ))}
-          </BlockStack>
-        )}
+        </BlockStack>
       </BlockStack>
     </Card>
   );

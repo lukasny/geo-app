@@ -32,6 +32,7 @@ import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
 import { scoreColor } from "~/brand/tokens";
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 import type { FieldComparison, SimulationResult } from "~/services/ai-simulator.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import { severityLabel } from "~/utils/severity";
@@ -591,6 +592,19 @@ export default function SimulatorPage() {
 
         {/* ── Loading skeleton ── */}
         {isSimulating && <SimulationSkeleton />}
+
+        {/* ── Empty state: products exist but no simulation has run yet ── */}
+        {!isSimulating && !hasResult && !hasError && products.length > 0 && (
+          <BrandEmptyState
+            heading="No simulation run yet"
+            body="The AI Simulator shows you which product details ChatGPT, Perplexity, and Gemini can and cannot see, then scores how visible your product is to AI search. Pick a product above and run it to see the field by field breakdown."
+            primaryAction={{
+              content: "Run simulation",
+              onClick: runSimulation,
+              loading: isSimulating,
+            }}
+          />
+        )}
 
         {/* ── Results ── */}
         {!isSimulating && hasResult && (() => {

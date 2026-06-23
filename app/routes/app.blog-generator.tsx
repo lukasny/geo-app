@@ -13,7 +13,6 @@ import {
   Badge,
   Banner,
   Box,
-  EmptyState,
   ButtonGroup,
   Divider,
   Modal,
@@ -33,6 +32,7 @@ import {
   type BlogPostLength,
 } from "~/services/blog-generation.server";
 import { sanitizeAiVendorError } from "~/services/ai-retry.server";
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
@@ -525,6 +525,7 @@ export default function BlogGeneratorPage() {
               <BlockStack gap="300">
                 <TextField
                   label="Topic"
+                  id="blog-topic"
                   name="topic"
                   value={topicDraft}
                   onChange={setTopicDraft}
@@ -580,18 +581,18 @@ export default function BlogGeneratorPage() {
 
         {/* ── Posts list ── */}
         {posts.length === 0 ? (
-          <Card>
-            <EmptyState
-              heading="No posts yet"
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            >
-              <Text as="p" variant="bodyMd">
-                Once you generate a post above, it&apos;ll appear here as a
-                draft. Review the content, then publish to your Shopify blog
-                when ready.
-              </Text>
-            </EmptyState>
-          </Card>
+          <BrandEmptyState
+            heading="No blog posts yet"
+            body="The blog generator writes full blog posts that answer real shopper questions, mention your products where they fit, and are structured for AI search engines to cite. Draft one now and it will appear here, ready to review and publish to your Shopify blog."
+            primaryAction={{
+              content: "Draft your first post",
+              onClick: () => {
+                const field = document.getElementById("blog-topic");
+                field?.scrollIntoView({ behavior: "smooth", block: "center" });
+                field?.focus();
+              },
+            }}
+          />
         ) : (
           posts.map((post) => (
             <BlogPostCard

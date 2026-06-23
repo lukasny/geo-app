@@ -10,7 +10,6 @@ import {
   InlineGrid,
   Badge,
   Banner,
-  EmptyState,
   IndexTable,
   Link,
   useIndexResourceState,
@@ -27,6 +26,7 @@ import { timeAgo } from "~/utils/time";
 import { formatMoney } from "~/utils/money";
 import { platformLabel } from "~/utils/platforms";
 import { platformColors, brand } from "~/brand/tokens";
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 
 interface LoaderData {
   plan: PlanKey;
@@ -103,29 +103,24 @@ export default function RevenuePage() {
     return (
       <Page>
         <TitleBar title="AI Revenue" />
-        <Card>
-          <EmptyState
-            heading="No AI-attributed revenue yet"
-            image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            action={{
-              content: "Open theme editor",
-              url: `https://${shopifyDomain}/admin/themes/current/editor?context=apps`,
-              external: true,
-            }}
-          >
-            <Text as="p" variant="bodyMd">
-              Once a shopper reaches your store from ChatGPT, Perplexity,
-              Claude, Gemini, or Grok and places an order, it&apos;ll appear
-              here. Make sure the GEO Rise Schema app embed is enabled so the
-              tracker can detect AI referrals.
+        <BrandEmptyState
+          heading="No AI-attributed revenue yet"
+          body="AI Revenue shows orders placed by shoppers who reached your store from ChatGPT, Perplexity, Claude, Gemini, or Grok. Those AI referrals are already being tagged."
+          primaryAction={{
+            content: "Open theme editor",
+            url: `https://${shopifyDomain}/admin/themes/current/editor?context=apps`,
+            external: true,
+          }}
+        >
+          <div style={{ maxWidth: "34rem" }}>
+            <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+              Order tracking is awaiting Shopify&apos;s approval for protected
+              order data and activates automatically once granted. AI referrals
+              are already being tagged in the meantime, so attributed orders will
+              appear here once that access is in place.
             </Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Note: order tracking is awaiting Shopify&apos;s approval for
-              protected order data and activates automatically once granted.
-              AI referrals are already being tagged in the meantime.
-            </Text>
-          </EmptyState>
-        </Card>
+          </div>
+        </BrandEmptyState>
       </Page>
     );
   }

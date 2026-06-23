@@ -12,7 +12,6 @@ import {
   Badge,
   Banner,
   Box,
-  EmptyState,
   ButtonGroup,
   Modal,
 } from "@shopify/polaris";
@@ -27,6 +26,7 @@ import {
   type CompetitorOverview,
   type SuggestedCompetitor,
 } from "~/services/competitor-monitoring.server";
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
@@ -380,6 +380,7 @@ export default function CompetitorsPage() {
                   <TextField
                     label="Domain"
                     name="domain"
+                    id="competitor-domain"
                     value={domainDraft}
                     onChange={setDomainDraft}
                     placeholder="e.g. burton.com"
@@ -478,20 +479,16 @@ export default function CompetitorsPage() {
 
         {/* ── Tracked competitors list ── */}
         {canTrack && overview.competitors.length === 0 && (
-          <Card>
-            <EmptyState
-              heading="No competitors tracked yet"
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            >
-              <Text as="p" variant="bodyMd">
-                Add competitor domains above to see how often AI search
-                engines mention them in answers to your tracked prompts. If
-                you&apos;ve already run a few tracking checks, the
-                &ldquo;Discovered competitors&rdquo; section will populate
-                automatically.
-              </Text>
-            </EmptyState>
-          </Card>
+          <BrandEmptyState
+            heading="No competitors tracked yet"
+            body="Competitor monitoring shows how often AI search engines name a rival store in answers to your tracked prompts, alongside or instead of yours. Add a competitor domain above to start counting their citations. If you have already run a few tracking checks, the discovered competitors section fills in automatically."
+            primaryAction={{
+              content: "Add a competitor",
+              onClick: () => {
+                document.getElementById("competitor-domain")?.focus();
+              },
+            }}
+          />
         )}
 
         {canTrack &&

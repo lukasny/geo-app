@@ -17,7 +17,6 @@ import {
   useIndexResourceState,
   Modal,
   Spinner,
-  EmptyState,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
@@ -30,6 +29,7 @@ import {
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
 import { ScorePill } from "~/components/ScorePill";
+import { BrandEmptyState } from "~/brand/BrandEmptyState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -399,22 +399,11 @@ export default function BulkEditPage() {
 
         {/* ── Product grid ── */}
         {products.length === 0 ? (
-          <Card>
-            <EmptyState
-              heading="No products to edit yet"
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            >
-              <Text as="p" variant="bodyMd">
-                The bulk editor works on your audited product catalog. Run an
-                audit first, then come back here.
-              </Text>
-              <Box paddingBlockStart="300">
-                <Link to="/app/audit">
-                  <Button variant="primary">Go to AI audit</Button>
-                </Link>
-              </Box>
-            </EmptyState>
-          </Card>
+          <BrandEmptyState
+            heading="No products to edit yet"
+            body="Bulk edit works on your audited catalog. Run an audit first, then come back here to apply meta title and alt text templates across many products at once."
+            primaryAction={{ content: "Go to AI audit", url: "/app/audit" }}
+          />
         ) : (
           <Card padding="0">
             <Box padding="400">
