@@ -23,6 +23,8 @@ import {
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
+import { ScoreRing } from "~/brand/ScoreRing";
+import { scoreColor } from "~/brand/tokens";
 import prisma from "~/db.server";
 import { generateAllLlmsFiles } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
@@ -502,12 +504,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function scoreColor(score: number) {
-  if (score < 40) return "#E24B4A";
-  if (score < 70) return "#EF9F27";
-  return "#1D9E75";
-}
-
 function scoreLabel(score: number) {
   if (score < 50)
     return "Your products are mostly invisible to AI search. Run an audit to see what's wrong.";
@@ -532,61 +528,6 @@ function nextSendHint(lastSentIso: string): string {
   if (hrs < 24) return `scheduled in ~${hrs}h`;
   const days = Math.round(hrs / 24);
   return `scheduled in ~${days}d`;
-}
-
-// ─── Circular Progress Ring ───────────────────────────────────────────────────
-
-function GeoScoreRing({ score }: { score: number }) {
-  const r = 60;
-  const c = 2 * Math.PI * r;
-  const offset = c - (score / 100) * c;
-  const color = scoreColor(score);
-
-  return (
-    <svg
-      width="160"
-      height="160"
-      viewBox="0 0 160 160"
-      aria-label={`GEO score: ${score} out of 100`}
-      style={{ display: "block", margin: "0 auto" }}
-    >
-      <circle cx="80" cy="80" r={r} fill="none" stroke="#E4E5E7" strokeWidth="14" />
-      <circle
-        cx="80"
-        cy="80"
-        r={r}
-        fill="none"
-        stroke={color}
-        strokeWidth="14"
-        strokeDasharray={c}
-        strokeDashoffset={offset}
-        strokeLinecap="round"
-        transform="rotate(-90 80 80)"
-        style={{ transition: "stroke-dashoffset 0.6s ease" }}
-      />
-      <text
-        x="80"
-        y="72"
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize="30"
-        fontWeight="700"
-        fill={color}
-      >
-        {score}
-      </text>
-      <text
-        x="80"
-        y="95"
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize="12"
-        fill="#6D7175"
-      >
-        / 100
-      </text>
-    </svg>
-  );
 }
 
 // ─── Onboarding Wizard ────────────────────────────────────────────────────────
@@ -853,7 +794,7 @@ function Step2({
       </BlockStack>
       <Box padding="400" background="bg-surface-secondary" borderRadius="200">
         <BlockStack gap="200" align="center">
-          <GeoScoreRing score={score} />
+          <ScoreRing score={score} />
           <Text as="p" variant="headingMd" alignment="center">
             Your starting GEO score: {score} of 100
           </Text>
@@ -890,7 +831,6 @@ function Step3({
   // connection): no payload ever arrives, so without this flag the
   // merchant would be stuck on the "Claude is rewriting" spinner forever.
   const [httpError, setHttpError] = useState(false);
-  const [animatedScore, setAnimatedScore] = useState(beforeScore);
   const data = fetcher.data as Record<string, unknown> | undefined;
   const lastIntent = fetcher.formData?.get("intent") as string | undefined;
   const isFixing =
@@ -938,30 +878,6 @@ function Step3({
     }
   }, [fetcher.state, fetcher.formData, data]);
 
-  // Animate the score ring from before to after over 1.2s once afterScore
-  // arrives. Uses requestAnimationFrame; no new dependency.
-  useEffect(() => {
-    if (afterScore === null) return;
-    if (afterScore === beforeScore) {
-      setAnimatedScore(afterScore);
-      return;
-    }
-    const start = performance.now();
-    const duration = 1200;
-    let frame = 0;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - (1 - t) * (1 - t); // ease-out quadratic
-      const current = Math.round(
-        beforeScore + (afterScore - beforeScore) * eased
-      );
-      setAnimatedScore(current);
-      if (t < 1) frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [afterScore, beforeScore]);
-
   // Auto-fix returned an error, failed at the HTTP layer, OR fixed 0
   // issues. Either way, no wow. Don't block the merchant; let them
   // continue to the dashboard with their original score.
@@ -990,7 +906,7 @@ function Step3({
           borderRadius="200"
         >
           <BlockStack gap="200" align="center">
-            <GeoScoreRing score={beforeScore} />
+            <ScoreRing score={beforeScore} />
             <Text as="p" variant="headingMd" alignment="center">
               Your starting GEO score: {beforeScore} of 100
             </Text>
@@ -1036,7 +952,7 @@ function Step3({
       </BlockStack>
       <Box padding="400" background="bg-surface-secondary" borderRadius="200">
         <BlockStack gap="200" align="center">
-          <GeoScoreRing score={animatedScore} />
+          <ScoreRing score={afterScore} animate />
           <Text as="p" variant="headingMd" alignment="center">
             Your GEO score went from {beforeScore} to {afterScore}
           </Text>
@@ -1433,7 +1349,7 @@ export default function Index() {
             <Layout.Section variant="oneThird">
               <Box padding="400">
                 <div style={{ textAlign: "center" }}>
-                  <GeoScoreRing score={store.geoScore} />
+                  <ScoreRing score={store.geoScore} />
                   <Text as="p" variant="bodySm" tone="subdued" alignment="center">
                     GEO score
                   </Text>
