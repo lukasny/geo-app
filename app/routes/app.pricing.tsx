@@ -25,6 +25,7 @@ import {
 } from "~/services/billing.server";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import type { PlanKey } from "~/services/billing.shared";
+import { semantic } from "~/brand/tokens";
 import prisma from "~/db.server";
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ function FeatureCell({ value }: { value: FeatureValue }) {
   }
   if (value) {
     return (
-      <span style={{ color: "#1D9E75", fontWeight: 700, fontSize: 16 }}>✓</span>
+      <span style={{ color: semantic.success, fontWeight: 700, fontSize: 16 }}>✓</span>
     );
   }
   return (

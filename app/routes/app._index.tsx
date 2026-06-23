@@ -24,7 +24,7 @@ import {
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import { ScoreRing } from "~/brand/ScoreRing";
-import { scoreColor } from "~/brand/tokens";
+import { scoreColor, semantic } from "~/brand/tokens";
 import prisma from "~/db.server";
 import { generateAllLlmsFiles } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
@@ -578,7 +578,7 @@ function OnboardingWizard({
                     fontSize: 13,
                     fontWeight: 600,
                     background:
-                      step > n ? "#1D9E75" : step === n ? "#008060" : "#E4E5E7",
+                      step > n ? semantic.success : step === n ? "#008060" : "#E4E5E7",
                     color: step >= n ? "#fff" : "#6D7175",
                   }}
                 >

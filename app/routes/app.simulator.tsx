@@ -31,6 +31,7 @@ import { Prisma } from "@prisma/client";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
+import { scoreColor } from "~/brand/tokens";
 import type { FieldComparison, SimulationResult } from "~/services/ai-simulator.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import { severityLabel } from "~/utils/severity";
@@ -375,12 +376,6 @@ function formatValue(val: unknown): string {
   if (Array.isArray(val)) return val.length > 0 ? val.slice(0, 3).join(", ") : "None";
   if (typeof val === "boolean") return val ? "Yes" : "No";
   return String(val).slice(0, 80);
-}
-
-function scoreColor(score: number): string {
-  if (score < 40) return "#E24B4A";
-  if (score < 70) return "#EF9F27";
-  return "#1D9E75";
 }
 
 const FIX_RECOMMENDATIONS: Record<string, string> = {

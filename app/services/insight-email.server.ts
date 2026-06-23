@@ -4,6 +4,7 @@ import prisma from "~/db.server";
 import { PLAN_LIMITS } from "./billing.shared";
 import { getActionPlan } from "./action-plan.server";
 import { getCompetitorOverview } from "./competitor-monitoring.server";
+import { scoreColor as scoreBandColor } from "~/brand/tokens";
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
@@ -205,8 +206,7 @@ export async function composeInsightEmail(
   // ── Build HTML ──
   // Minimal inline-styled email - emails clients are notoriously
   // stylesheet-stripping, so all styling is inline.
-  const scoreColor =
-    store.geoScore < 40 ? "#E24B4A" : store.geoScore < 70 ? "#EF9F27" : "#1D9E75";
+  const scoreColor = scoreBandColor(store.geoScore);
   const actionItemsHtml = actionPlan.actions
     .slice(0, 3)
     .map(
