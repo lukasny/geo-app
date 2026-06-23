@@ -298,7 +298,7 @@ function RevenueChart({
                   y={padding + usableHeight - 2}
                   width={barWidth}
                   height={2}
-                  fill="#E4E5E7"
+                  fill={brand.neutral[200]}
                 >
                   <title>{hoverParts[0] + "\nNo revenue"}</title>
                 </rect>

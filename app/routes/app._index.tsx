@@ -25,7 +25,7 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import { ScoreRing } from "~/brand/ScoreRing";
 import { Mark } from "~/brand/Mark";
-import { scoreColor, semantic } from "~/brand/tokens";
+import { scoreColor, semantic, brand } from "~/brand/tokens";
 import prisma from "~/db.server";
 import { generateAllLlmsFiles } from "~/services/llms-generator.server";
 import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
@@ -505,10 +505,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Bands match scoreColor() in ~/brand/tokens (40 / 70), so the colored
+// number, the ScoreRing, and this sentence always describe the same band.
 function scoreLabel(score: number) {
-  if (score < 50)
+  if (score < 40)
     return "Your products are mostly invisible to AI search. Run an audit to see what's wrong.";
-  if (score < 75)
+  if (score < 70)
     return "Good start, but AI still misses key product details. Run an audit to find gaps.";
   return "Great! Your store is well-optimized for AI discovery. Keep it up.";
 }
@@ -579,8 +581,12 @@ function OnboardingWizard({
                     fontSize: 13,
                     fontWeight: 600,
                     background:
-                      step > n ? semantic.success : step === n ? "#008060" : "#E4E5E7",
-                    color: step >= n ? "#fff" : "#6D7175",
+                      step > n
+                        ? semantic.success
+                        : step === n
+                        ? brand.indigo[600]
+                        : brand.neutral[200],
+                    color: step >= n ? "#fff" : brand.neutral[500],
                   }}
                 >
                   {step > n ? "✓" : n}

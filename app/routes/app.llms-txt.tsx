@@ -30,6 +30,7 @@ import {
   getOrCreateLlmsFile,
 } from "~/services/llms-generator.server";
 import { listMarkets } from "~/services/markets.server";
+import { brand } from "~/brand/tokens";
 import {
   checkCrawlerAccess,
   buildRobotsSnippet,
@@ -1238,7 +1239,7 @@ export default function LlmsTxtPage() {
                   >
                     {previewLines}
                     {llmsFile!.content.split("\n").length > 50 && (
-                      <span style={{ color: "#888" }}>
+                      <span style={{ color: brand.neutral[500] }}>
                         {"\n"}… and {llmsFile!.content.split("\n").length - 50}{" "}
                         more lines
                       </span>

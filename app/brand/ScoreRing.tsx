@@ -105,7 +105,10 @@ export function ScoreRing({ score, animate = false }: ScoreRingProps) {
         strokeDashoffset={offset}
         strokeLinecap="round"
         transform={`rotate(-90 ${CENTER} ${CENTER})`}
-        style={{ transition: "stroke-dashoffset 0.6s ease" }}
+        // While counting up, the rAF loop drives the arc frame by frame, so a
+        // CSS transition would make the arc lag behind the cyan node. Only
+        // ease on a static prop change.
+        style={animate ? undefined : { transition: "stroke-dashoffset 0.6s ease" }}
       />
       {/* Cyan node at the current value's position */}
       <circle cx={nodeX} cy={nodeY} r={STROKE / 2 + 2} fill={brand.cyan[500]} />

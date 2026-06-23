@@ -27,6 +27,7 @@ import { timeAgo as timeAgoUtil } from "~/utils/time";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import { severityTone, severityLabel } from "~/utils/severity";
 import { ScorePill, scoreColor } from "~/components/ScorePill";
+import { brand } from "~/brand/tokens";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -782,7 +783,7 @@ export default function AuditPage() {
                       style={{
                         fontSize: "24px",
                         fontWeight: 400,
-                        color: "#6d7175",
+                        color: brand.neutral[500],
                       }}
                     >
                       /100

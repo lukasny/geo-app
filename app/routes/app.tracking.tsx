@@ -20,6 +20,7 @@ import {
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
 import { BrandEmptyState } from "~/brand/BrandEmptyState";
+import { semantic, brand } from "~/brand/tokens";
 
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
@@ -376,12 +377,14 @@ const SCHEDULE_OPTIONS = [
 // regardless of Polaris theme - these are deliberately close to
 // success/caution semantics but tuned so a "cited but neutral" reading is
 // visually distinct from "cited and positive."
+// Brand tokens, so a "cited/good" dot matches the success green used by the
+// score ring and pills, and "cautionary" matches the warning amber.
 const TIMELINE_FILLS = {
-  POSITIVE_CITED: "#108043", // success-green - best signal
-  NEUTRAL_CITED: "#6a9a7a",  // muted green - cited but flat
-  NEGATIVE_CITED: "#b98900", // amber - cited but cautionary
+  POSITIVE_CITED: semantic.success, // cited, positive tone
+  NEUTRAL_CITED: brand.neutral[500], // cited but flat
+  NEGATIVE_CITED: semantic.warning, // cited but cautionary
   NOT_CITED_FILL: "transparent",
-  NOT_CITED_STROKE: "#9ea3a8", // gray outline
+  NOT_CITED_STROKE: brand.neutral[400], // hollow outline
 } as const;
 
 function formatTooltipDate(iso: string): string {
