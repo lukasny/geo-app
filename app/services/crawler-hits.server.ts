@@ -17,11 +17,27 @@ import prisma from "~/db.server";
  *  from storing arbitrarily long User-Agent headers. */
 const MAX_USER_AGENT_LENGTH = 250;
 
+/** What a bot's visit means for the merchant, per each vendor's own bot
+ *  documentation (sources in the AI_CRAWLER_PATTERNS comment):
+ *  - "training": collects content to train future AI models. Blocking it
+ *    affects model training, not whether AI answers can cite the store.
+ *  - "retrieval": builds or feeds the live content AI assistants use when
+ *    answering. Blocking it can remove the store from AI answers today.
+ *  - "user_fetch": fetches a page on demand when a user asks the AI about
+ *    it. Blocking it asks assistants not to read pages on request, though
+ *    Perplexity documents that its user fetcher generally ignores
+ *    robots.txt.
+ *  - "general": general-purpose crawling used across a vendor's products,
+ *    with no single documented AI role. */
+export type CrawlerBotType = "training" | "retrieval" | "user_fetch" | "general";
+
 export interface CrawlerPattern {
   /** Case-insensitive substring matched against the User-Agent header. */
   pattern: string;
   /** Canonical bot id stored in AiCrawlerHit.botName. */
   botName: string;
+  /** Role of this bot in the AI stack; see CrawlerBotType. */
+  type: CrawlerBotType;
 }
 
 /**
@@ -46,7 +62,8 @@ export interface CrawlerPattern {
  *   https://zhanzhang.toutiao.com/").
  * - Meta (developers.facebook.com/docs/sharing/webmasters/web-crawlers):
  *   meta-externalagent
- * - Amazon (developer.amazon.com/amazonbot): Amazonbot
+ * - Amazon (developer.amazon.com/amazonbot, re-verified 2026-07-02):
+ *   Amazonbot, Amzn-SearchBot, Amzn-User
  * - Apple (support.apple.com/en-us/119829): Applebot-Extended. Like
  *   Google-Extended, Apple documents that it "does not crawl webpages"
  *   (robots.txt-only token; the live crawler UA is plain Applebot, which
@@ -56,32 +73,45 @@ export interface CrawlerPattern {
  * so list order carries no precedence semantics.
  */
 export const AI_CRAWLER_PATTERNS: CrawlerPattern[] = [
-  // OpenAI
-  { pattern: "GPTBot", botName: "GPTBot" },
-  { pattern: "OAI-SearchBot", botName: "OAI-SearchBot" },
-  { pattern: "ChatGPT-User", botName: "ChatGPT-User" },
-  // Anthropic
-  { pattern: "ClaudeBot", botName: "ClaudeBot" },
-  { pattern: "Claude-User", botName: "Claude-User" },
-  { pattern: "Claude-SearchBot", botName: "Claude-SearchBot" },
-  // Perplexity
-  { pattern: "PerplexityBot", botName: "PerplexityBot" },
-  { pattern: "Perplexity-User", botName: "Perplexity-User" },
-  // Google
-  { pattern: "Google-Extended", botName: "Google-Extended" },
-  { pattern: "GoogleOther", botName: "GoogleOther" },
-  // Microsoft
-  { pattern: "bingbot", botName: "Bingbot" },
-  // Common Crawl
-  { pattern: "CCBot", botName: "CCBot" },
-  // ByteDance
-  { pattern: "Bytespider", botName: "Bytespider" },
-  // Meta
-  { pattern: "meta-externalagent", botName: "meta-externalagent" },
-  // Amazon
-  { pattern: "Amazonbot", botName: "Amazonbot" },
-  // Apple
-  { pattern: "Applebot-Extended", botName: "Applebot-Extended" },
+  // OpenAI: GPTBot trains models; OAI-SearchBot indexes for ChatGPT
+  // search; ChatGPT-User fetches on a user's request.
+  { pattern: "GPTBot", botName: "GPTBot", type: "training" },
+  { pattern: "OAI-SearchBot", botName: "OAI-SearchBot", type: "retrieval" },
+  { pattern: "ChatGPT-User", botName: "ChatGPT-User", type: "user_fetch" },
+  // Anthropic: same three-way split per support.claude.com article 8896518.
+  { pattern: "ClaudeBot", botName: "ClaudeBot", type: "training" },
+  { pattern: "Claude-User", botName: "Claude-User", type: "user_fetch" },
+  { pattern: "Claude-SearchBot", botName: "Claude-SearchBot", type: "retrieval" },
+  // Perplexity: PerplexityBot builds the answer index; Perplexity-User
+  // fetches on request.
+  { pattern: "PerplexityBot", botName: "PerplexityBot", type: "retrieval" },
+  { pattern: "Perplexity-User", botName: "Perplexity-User", type: "user_fetch" },
+  // Google: Google-Extended is the robots-only token controlling BOTH
+  // Gemini training AND grounding (live content use in Gemini answers),
+  // per Google's common-crawlers doc. Grouped as retrieval because the
+  // decision-relevant effect of blocking it is dropping out of Gemini
+  // answers. GoogleOther is Google's generic multi-product crawler.
+  { pattern: "Google-Extended", botName: "Google-Extended", type: "retrieval" },
+  { pattern: "GoogleOther", botName: "GoogleOther", type: "general" },
+  // Microsoft: Bingbot builds the Bing index, which ChatGPT search runs on.
+  { pattern: "bingbot", botName: "Bingbot", type: "retrieval" },
+  // Common Crawl: the CCBot corpus feeds many model training sets.
+  { pattern: "CCBot", botName: "CCBot", type: "training" },
+  // ByteDance: data collection for model training.
+  { pattern: "Bytespider", botName: "Bytespider", type: "training" },
+  // Meta: documented as crawling to train AI models.
+  { pattern: "meta-externalagent", botName: "meta-externalagent", type: "training" },
+  // Amazon, per developer.amazon.com/amazonbot (re-verified 2026-07-02):
+  // Amazonbot "improves our products and services... may be used to train
+  // Amazon AI models"; the Alexa answer roles moved to two newer agents,
+  // Amzn-SearchBot (eligibility to appear in Alexa search experiences) and
+  // Amzn-User (user-requested fetches), both documented as NOT crawling
+  // for generative AI training.
+  { pattern: "Amazonbot", botName: "Amazonbot", type: "training" },
+  { pattern: "Amzn-SearchBot", botName: "Amzn-SearchBot", type: "retrieval" },
+  { pattern: "Amzn-User", botName: "Amzn-User", type: "user_fetch" },
+  // Apple: robots-only token controlling Apple AI TRAINING use.
+  { pattern: "Applebot-Extended", botName: "Applebot-Extended", type: "training" },
 ];
 
 // Lowercased once at module load; classifyCrawler runs on every public

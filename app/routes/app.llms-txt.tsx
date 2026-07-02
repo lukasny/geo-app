@@ -37,6 +37,7 @@ import {
   TOGGLE_CRAWLER_MAP,
   type CrawlerAccessResult,
 } from "~/services/crawler-access.server";
+import type { CrawlerBotType } from "~/services/crawler-hits.server";
 import {
   getCrawlerStats,
   type CrawlerStats,
@@ -156,6 +157,47 @@ function toLlmsFileData(raw: {
     lastGeneratedAt: raw.lastGeneratedAt?.toISOString() ?? null,
   };
 }
+
+// ─── Bot type groups ──────────────────────────────────────────────────────────
+
+// Honest one-line explainers for the robots.txt checker, keyed on the
+// server's shared CrawlerBotType so a renamed or added type is a compile
+// error here instead of a silently hidden bot. "retrieval" leads because
+// blocking those bots is what actually removes a store from AI answers.
+const BOT_TYPE_COPY = {
+  retrieval: {
+    heading: "Search index crawlers",
+    explainer:
+      "Build or feed the live content AI assistants use when answering. Blocking these can remove your store from AI answers.",
+  },
+  user_fetch: {
+    heading: "On-demand fetchers",
+    explainer:
+      "Fetch a page live when a user asks the AI about it. Blocking these asks assistants not to read your pages on request, though Perplexity states its user fetcher generally ignores robots.txt.",
+  },
+  training: {
+    heading: "Training crawlers",
+    explainer:
+      "Collect content to train future AI models. Blocking these affects model training, not whether AI answers can cite you today.",
+  },
+  general: {
+    heading: "General crawlers",
+    explainer:
+      "General-purpose crawling used across a vendor's products, with no single documented AI role.",
+  },
+} satisfies Record<CrawlerBotType, { heading: string; explainer: string }>;
+
+const BOT_TYPE_ORDER = [
+  "retrieval",
+  "user_fetch",
+  "training",
+  "general",
+] as const satisfies readonly CrawlerBotType[];
+
+const BOT_TYPE_GROUPS = BOT_TYPE_ORDER.map((type) => ({
+  type,
+  ...BOT_TYPE_COPY[type],
+}));
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
@@ -981,32 +1023,50 @@ export default function LlmsTxtPage() {
                           </Link>
                         </Text>
                       )}
-                      {crawlerCheck.result.bots.map(({ botName, status }) => (
-                        <InlineStack
-                          key={botName}
-                          align="space-between"
-                          blockAlign="center"
-                        >
-                          <Text as="span" variant="bodySm">
-                            {botName}
-                          </Text>
-                          <Badge
-                            tone={
-                              status === "allowed"
-                                ? "success"
-                                : status === "blocked"
-                                ? "critical"
-                                : undefined
-                            }
-                          >
-                            {status === "allowed"
-                              ? "Allowed"
-                              : status === "blocked"
-                              ? "Blocked"
-                              : "Unknown"}
-                          </Badge>
-                        </InlineStack>
-                      ))}
+                      {BOT_TYPE_GROUPS.map(({ type, heading, explainer }) => {
+                        const botsOfType = crawlerCheck.result.bots.filter(
+                          (b) => b.type === type
+                        );
+                        if (botsOfType.length === 0) return null;
+                        return (
+                          <BlockStack gap="150" key={type}>
+                            <BlockStack gap="050">
+                              <Text as="h3" variant="headingSm">
+                                {heading}
+                              </Text>
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                {explainer}
+                              </Text>
+                            </BlockStack>
+                            {botsOfType.map(({ botName, status }) => (
+                              <InlineStack
+                                key={botName}
+                                align="space-between"
+                                blockAlign="center"
+                              >
+                                <Text as="span" variant="bodySm">
+                                  {botName}
+                                </Text>
+                                <Badge
+                                  tone={
+                                    status === "allowed"
+                                      ? "success"
+                                      : status === "blocked"
+                                      ? "critical"
+                                      : undefined
+                                  }
+                                >
+                                  {status === "allowed"
+                                    ? "Allowed"
+                                    : status === "blocked"
+                                    ? "Blocked"
+                                    : "Unknown"}
+                                </Badge>
+                              </InlineStack>
+                            ))}
+                          </BlockStack>
+                        );
+                      })}
                     </BlockStack>
                   )}
 

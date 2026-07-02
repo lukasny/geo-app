@@ -12,7 +12,10 @@
  */
 import prisma from "~/db.server";
 import { getFreshAccessToken } from "~/services/offline-admin.server";
-import { AI_CRAWLER_PATTERNS } from "~/services/crawler-hits.server";
+import {
+  AI_CRAWLER_PATTERNS,
+  type CrawlerBotType,
+} from "~/services/crawler-hits.server";
 
 const ROBOTS_FETCH_TIMEOUT_MS = 5000;
 
@@ -61,6 +64,9 @@ export type BotAccessStatus = "allowed" | "blocked" | "unknown";
 
 export interface BotAccess {
   botName: string;
+  /** Role of this bot in the AI stack (training / retrieval / user fetch /
+   *  general), from the shared crawler pattern list. */
+  type: CrawlerBotType;
   status: BotAccessStatus;
 }
 
@@ -74,9 +80,13 @@ export interface CrawlerAccessResult {
   bots: BotAccess[];
 }
 
-/** Canonical bot names come from the proxy's UA classification list so the
- *  checker, the hit log, and the snippet can never drift apart. */
-const BOT_NAMES = AI_CRAWLER_PATTERNS.map((p) => p.botName);
+/** Canonical bot names and types come from the proxy's UA classification
+ *  list so the checker, the hit log, and the snippet can never drift
+ *  apart. */
+const BOTS = AI_CRAWLER_PATTERNS.map((p) => ({
+  botName: p.botName,
+  type: p.type,
+}));
 
 // ─── Storefront base URL ─────────────────────────────────────────────────────
 
@@ -245,8 +255,9 @@ export async function checkCrawlerAccess(
     return {
       fetched: false,
       robotsUrl,
-      bots: BOT_NAMES.map((botName) => ({
+      bots: BOTS.map(({ botName, type }) => ({
         botName,
+        type,
         status: "unknown" as const,
       })),
     };
@@ -256,8 +267,9 @@ export async function checkCrawlerAccess(
   return {
     fetched: true,
     robotsUrl,
-    bots: BOT_NAMES.map((botName) => ({
+    bots: BOTS.map(({ botName, type }) => ({
       botName,
+      type,
       status: statusFor(botName, groups),
     })),
   };
