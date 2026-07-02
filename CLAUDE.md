@@ -77,7 +77,7 @@ geo-rise/
 │   ├── entry.server.tsx           # Boots the scheduler via side-effect import
 │   └── db.server.ts               # Singleton Prisma client
 ├── prisma/
-│   └── schema.prisma              # Full DB schema (14 models, 7 enums)
+│   └── schema.prisma              # Full DB schema (16 models, 7 enums)
 ├── extensions/
 │   └── geo-rise-schema/           # Theme app extension
 │       ├── blocks/schema-injection.liquid  # JSON-LD injection + AI referral tracker
@@ -330,6 +330,8 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - [x] Multi-market llms.txt (per-market files, market picker, `?market=` proxy) - DORMANT until merchant re-auth grants the market scopes
 - [x] AI crawler access checker (robots.txt per-bot status + copy-paste `robots.txt.liquid` snippet, free on all plans) + crawler activity analytics (`AiCrawlerHit`, per-bot detail Growth+)
 - [x] GEO score history (`ScoreSnapshot` + dashboard sparkline) + citation alerts (dashboard banner + weekly email lead) + onboarding prompt seeding
+- [x] Citation source radar (`/app/tracking` "Where AI answers come from" card): persists cited source URLs (`AiCitation.sourcesCited`), classifies domains (Reddit/review/marketplace/editorial/competitor), on-demand `SourcePresence` checker
+- [x] FAQ generator (`/app/faq-generator`, Growth+, monthly cap): Claude drafts product FAQs (`ProductFaq`), publishes to a storefront-readable `geo_rise.faq` product metafield (the app's only metafield WRITE), renders as FAQPage JSON-LD from the theme extension
 
 ### Planned / Not yet built ❌
 - [ ] Activate `orders/paid` webhook (after Protected Customer Data approval) to complete revenue attribution

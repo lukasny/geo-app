@@ -4,6 +4,32 @@ Compressed state of the June build sessions so any fresh session (no chat
 context) can resume exactly here. Supersedes HANDOFF.md's "what shipped"
 through this date. Repo: /Users/lukas/Desktop/geo-app (lukasny/geo-app, main).
 
+## UPDATE 2026-07-02 (session 2): copy pass + F3 + F6 shipped
+
+Since the retention batch, all pushed to main and health-checked:
+- Honest-copy pass (2ec5262): every merchant surface describes llms.txt and
+  schema by what they ARE, no "gets you cited" causal claims, unsourced
+  "significantly more likely to be cited" stats reframed to sourced AI
+  shopping ranking inputs. Two rounds of adversarial sweep.
+- F3 citation source radar (1cad78e, 1887d9f, 319fc3a): the tracking page
+  "Where AI answers come from" card. New AiCitation.sourcesCited + SourcePresence
+  model. Presence checker has an SSRF guard (manual redirect + per-hop
+  revalidation, no internal hosts) added in review.
+- F6 FAQ generator (b6dd438, 3ba848e, 7667968): /app/faq-generator, ProductFaq
+  model, the app's FIRST metafield write (geo_rise.faq, storefront-readable
+  definition created lazily once per shop, TAKEN treated as success), FAQPage
+  JSON-LD in the theme extension. GraphQL doc-verified against shopify.dev
+  2025-07 in an understand phase before building.
+- Evidence brief adopted as docs/geo-evidence-2026-07.md (ad1fa15), referenced
+  from CLAUDE.md. It is the ranked build queue: next up F4 (catalog/AI-shopping
+  readiness audit), F7 (prompt tuning, cheap), F1 bot-type labels (filler).
+
+PENDING LUKAS DEPLOY: F6 touched the theme extension, so storefronts need one
+`npx shopify app deploy --allow-updates` (from ~/Desktop/geo-app ONLY) before
+FAQPage JSON-LD renders. F3 needed no deploy. Smoke test F6: generate FAQs for
+a product, publish, confirm the metafield write, and post-deploy confirm the
+FAQPage schema renders on the product page.
+
 ## Where the product is RIGHT NOW
 
 - DEPLOYED TO SHOPIFY: app version **geo-rise-6** released via
