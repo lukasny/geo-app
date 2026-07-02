@@ -4,6 +4,8 @@
 
 GEO Rise is a Shopify app that helps merchants get their products discovered and recommended by AI search engines (ChatGPT, Gemini, Perplexity, Claude). The practice is called Generative Engine Optimization (GEO).
 
+**Evidence base:** `docs/geo-evidence-2026-07.md` is the core reference for WHY features exist and what actually moves AI visibility (the five-layer model, proven non-levers, feature candidates with repo-verified build notes). Read it before proposing or building any GEO-facing feature. Key rule from it: never claim llms.txt or schema drives citations in merchant-facing copy.
+
 **Business goal:** 30,000 NOK/month via $19/mo Growth and $49/mo Pro subscriptions.
 **Developer:** Lukas (Boda Apps, Norway) - non-technical founder using Claude Code to build.
 
@@ -75,7 +77,7 @@ geo-rise/
 │   ├── entry.server.tsx           # Boots the scheduler via side-effect import
 │   └── db.server.ts               # Singleton Prisma client
 ├── prisma/
-│   └── schema.prisma              # Full DB schema (12 models, 7 enums)
+│   └── schema.prisma              # Full DB schema (14 models, 7 enums)
 ├── extensions/
 │   └── geo-rise-schema/           # Theme app extension
 │       ├── blocks/schema-injection.liquid  # JSON-LD injection + AI referral tracker
@@ -127,6 +129,8 @@ See `prisma/schema.prisma` for full definitions. Key models:
 | `Subscription` | Mirrors Shopify subscription status in our DB |
 | `BlogPost` | Generated blog posts. Soft-delete via status `"deleted"`; the monthly plan cap counts all rows this month except status `"generating"` placeholders |
 | `SimulationUsage` | One row per AI Simulator run, counted monthly to enforce plan caps |
+| `AiCrawlerHit` | Daily counter of AI-crawler fetches of the public llms.txt proxy, per store/bot/UTC day |
+| `ScoreSnapshot` | One row per full audit (score, audited products, issue count) - powers the dashboard sparkline and weekly email delta |
 
 **Enums (7):** `Plan` (FREE/GROWTH/PRO/ENTERPRISE), `Severity` (CRITICAL/HIGH/MEDIUM/LOW), `AiPlatform`, `AuditCategory`, `Sentiment`, `TrackingSchedule` (MANUAL/DAILY/WEEKLY), `SubscriptionStatus`
 
@@ -137,7 +141,7 @@ See `prisma/schema.prisma` for full definitions. Key models:
 ### `llms-generator.server.ts`
 - `generateLlmsTxt(storeId)` - fetches products/collections/blog posts via Shopify Admin GraphQL, formats as llms.txt, saves to DB
 - Uses exponential backoff (`withRetry`) for rate limit handling
-- API version: 2025-01
+- API version: 2025-07
 
 ### `audit-engine.server.ts`
 - `runFullAudit(storeId, admin)` - scores all products across 5 rubric categories (Content 35, Meta 15, Images 20, Variants 15, Reviews 15 pts)
@@ -145,7 +149,7 @@ See `prisma/schema.prisma` for full definitions. Key models:
 - Rate limiting: reads `extensions.cost.throttleStatus` from the GraphQL response body (pauses when remaining budget is below 2 pages) and retries THROTTLED pages on a 2s/4s/8s backoff; page size capped at 15 to stay under Shopify's 1,000-point query cost ceiling
 
 ### `ai-simulator.server.ts`
-- `simulateAiView(productUrl, shopifyProductData)` - fetches live HTML, sends it to one or more AI platforms, compares 22 fields
+- `simulateAiView(productUrl, shopifyProductData)` - fetches live HTML, sends it to one or more AI platforms, extracts 22 fields and compares up to 19
 - Multi-AI: Claude (`claude-sonnet-4-6`) always runs; ChatGPT (`gpt-4o-mini`) runs when `OPENAI_API_KEY` is set
 - Returns visibility score + field-by-field comparison per platform
 - max_tokens: 1024; usage metered via `SimulationUsage` rows against monthly plan caps
@@ -322,11 +326,13 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - [x] Action plan page (`/app/action-plan`)
 - [x] Weekly insight email system (Resend + node-cron scheduler)
 - [x] AI blog post generation (`/app/blog-generator`, monthly plan caps)
-- [x] AI revenue attribution (`/app/revenue`) - HALF-ACTIVE: theme-extension tracker is live, but the `orders/paid` webhook subscription is intentionally disabled in `shopify.app.toml` pending Shopify Protected Customer Data approval, so no `AiTrafficEvent` rows are created yet
+- [x] AI revenue attribution (`/app/revenue`) - HALF-ACTIVE: the theme-extension tracker and visit beacon are live (AI-referred VISIT rows are recorded via `/a/llms-txt/visit` and shown on the revenue page and dashboard), but the `orders/paid` webhook subscription is intentionally disabled in `shopify.app.toml` pending Shopify Protected Customer Data approval, so no ORDER revenue rows exist yet
+- [x] Multi-market llms.txt (per-market files, market picker, `?market=` proxy) - DORMANT until merchant re-auth grants the market scopes
+- [x] AI crawler access checker (robots.txt per-bot status + copy-paste `robots.txt.liquid` snippet, free on all plans) + crawler activity analytics (`AiCrawlerHit`, per-bot detail Growth+)
+- [x] GEO score history (`ScoreSnapshot` + dashboard sparkline) + citation alerts (dashboard banner + weekly email lead) + onboarding prompt seeding
 
 ### Planned / Not yet built ❌
 - [ ] Activate `orders/paid` webhook (after Protected Customer Data approval) to complete revenue attribution
-- [ ] Multi-market llms.txt
 - [ ] EU compliance module
 - [ ] Shopify Flow integration
 
@@ -339,7 +345,7 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - All GraphQL: use `admin.graphql()` with `#graphql` tag for syntax highlighting
 - Plan keys: always uppercase (`"FREE"`, `"GROWTH"`, `"PRO"`, `"ENTERPRISE"`)
 - Imports: use `~/` alias for `app/` directory (configured in tsconfig.json paths)
-- No em-dashes, anywhere: not in code, comments, UI copy, docs, or AI-generated content. Use commas, colons, or hyphens instead. This is an absolute project rule.
+- No em dashes or en dashes, anywhere: not in code, comments, UI copy, docs, or AI-generated content. Use commas, colons, or hyphens instead. This is an absolute project rule for all NEW text. (Pre-existing en dashes remain in some older audit copy pending a cleanup pass; do not add more, and do not let them fail a scan of your own changed files.)
 
 ## Brand and UI constraints (hard rules)
 
