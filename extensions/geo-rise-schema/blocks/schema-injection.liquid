@@ -417,30 +417,87 @@
     }
   }
 
+  function runTracking(freshPlatform, platform) {
+    writeCookie(COOKIE_NAME, platform + ":" + Math.floor(Date.now() / 1000));
+
+    fetch("/cart/update.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        attributes: { "__geo_rise_ai_ref": platform }
+      }),
+      credentials: "same-origin"
+    }).catch(function () {
+      // Silent: tracking failure must never break the storefront page.
+    });
+
+    // Beacon only on fresh detection. The cookie fallback exists for
+    // last-AI-touch cart attribution; letting it fire the beacon would count
+    // every direct return session within the 30-day cookie as a new AI
+    // visit, contradicting the revenue page's "counted once per browser
+    // session when a shopper lands from an AI platform" copy.
+    if (freshPlatform) {
+      sendVisitBeacon(freshPlatform);
+    }
+  }
+
   var freshPlatform = platformFromReferrer() || platformFromUtm();
   var platform = freshPlatform || platformFromCookie();
   if (!platform) return;
 
-  writeCookie(COOKIE_NAME, platform + ":" + Math.floor(Date.now() / 1000));
+  // Consent gate. This tracker sets a non-essential analytics cookie, so in
+  // consent-required regions (EU/EEA) it must wait for consent. Shopify's
+  // Customer Privacy API is the source of truth, but it loads ASYNCHRONOUSLY
+  // (window.Shopify.customerPrivacy is not guaranteed to exist when this head
+  // script runs), so we must NOT treat "not loaded yet" as "no consent
+  // regime". We load the API explicitly via Shopify.loadFeatures and gate
+  // inside the callback; only when the API genuinely cannot be loaded (no
+  // consent framework on the store) do we fail open and track as before.
+  // Every path is guarded by `tracked` so nothing double-fires.
+  var tracked = false;
 
-  fetch("/cart/update.js", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      attributes: { "__geo_rise_ai_ref": platform }
-    }),
-    credentials: "same-origin"
-  }).catch(function () {
-    // Silent: tracking failure must never break the storefront page.
-  });
+  function runIfAllowed() {
+    if (tracked) return;
+    var cp = window.Shopify && window.Shopify.customerPrivacy;
+    if (!cp || typeof cp.analyticsProcessingAllowed !== "function") return;
+    var ok = false;
+    try {
+      ok = cp.analyticsProcessingAllowed() === true;
+    } catch (e) {
+      ok = false;
+    }
+    if (ok) {
+      tracked = true;
+      runTracking(freshPlatform, platform);
+    }
+  }
 
-  // Beacon only on fresh detection. The cookie fallback exists for
-  // last-AI-touch cart attribution; letting it fire the beacon would count
-  // every direct return session within the 30-day cookie as a new AI
-  // visit, contradicting the revenue page's "counted once per browser
-  // session when a shopper lands from an AI platform" copy.
-  if (freshPlatform) {
-    sendVisitBeacon(freshPlatform);
+  function failOpen() {
+    if (tracked) return;
+    tracked = true;
+    runTracking(freshPlatform, platform);
+  }
+
+  // A later consent change (decline then accept) re-checks and tracks once.
+  document.addEventListener("visitorConsentCollected", runIfAllowed);
+
+  if (window.Shopify && typeof window.Shopify.loadFeatures === "function") {
+    window.Shopify.loadFeatures(
+      [{ name: "consent-tracking-api", version: "0.1" }],
+      function (error) {
+        var cp = window.Shopify && window.Shopify.customerPrivacy;
+        if (error || !cp || typeof cp.analyticsProcessingAllowed !== "function") {
+          // No consent framework available on this store: fail open.
+          failOpen();
+          return;
+        }
+        // API is ready: track now if allowed, else wait for the consent event.
+        runIfAllowed();
+      }
+    );
+  } else {
+    // No Shopify.loadFeatures at all: no consent framework, fail open.
+    failOpen();
   }
 })();
 </script>
