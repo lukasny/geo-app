@@ -33,7 +33,12 @@ import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
 import { scoreColor } from "~/brand/tokens";
 import { BrandEmptyState } from "~/brand/BrandEmptyState";
-import type { FieldComparison, SimulationResult } from "~/services/ai-simulator.server";
+import type {
+  FieldComparison,
+  SimulationResult,
+  RawHtmlAnalysis,
+  RawHtmlCheck,
+} from "~/services/ai-simulator.server";
 import { PLAN_LIMITS } from "~/services/billing.shared";
 import { severityLabel } from "~/utils/severity";
 
@@ -402,6 +407,27 @@ const FIX_RECOMMENDATIONS: Record<string, string> = {
     "Add dimensions, size specifications, or weight to your product description. Buyers use this information when making AI-assisted purchase decisions.",
 };
 
+// Labels for the five deterministic raw-HTML checks, keyed by the check key
+// the service emits. Rendered in service order.
+const RAW_CHECK_LABELS: Record<RawHtmlCheck["key"], string> = {
+  json_ld: "Structured data (JSON-LD)",
+  title: "Product title",
+  price: "Price",
+  description: "Description",
+  review_markup: "Review markup",
+};
+
+function rawCheckBadge(status: RawHtmlCheck["status"]) {
+  switch (status) {
+    case "present":
+      return <Badge tone="success">In the raw HTML</Badge>;
+    case "missing":
+      return <Badge tone="critical">Missing from raw HTML</Badge>;
+    case "not_checked":
+      return <Badge>Not checked</Badge>;
+  }
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function SimulationSkeleton() {
@@ -475,6 +501,92 @@ function FieldRow({ field }: { field: FieldComparison }) {
         {importanceBadge(field.importance)}
       </InlineStack>
     </Box>
+  );
+}
+
+/** Raw-HTML visibility card - deterministic checks of the bytes an AI
+ *  crawler receives before any JavaScript runs. Three honest states:
+ *  ran (per-check rows), thin_html (suspected bot protection or JS shell,
+ *  warning instead of a false wall of missing), and fallback (no raw HTML
+ *  was fetched, so nothing is claimed either way). */
+function RawHtmlCard({ analysis }: { analysis: RawHtmlAnalysis }) {
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            What the AI bot actually sees
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            AI crawlers read your page&apos;s raw HTML without running
+            JavaScript. Content that only appears after JavaScript runs is
+            invisible to them.
+          </Text>
+        </BlockStack>
+        <Divider />
+
+        {analysis.ran ? (
+          <BlockStack gap="300">
+            <BlockStack gap="200">
+              {analysis.checks.map((check) => (
+                <Box
+                  key={check.key}
+                  padding="300"
+                  background="bg-surface-secondary"
+                  borderRadius="200"
+                >
+                  <BlockStack gap="100">
+                    <InlineStack
+                      align="space-between"
+                      blockAlign="center"
+                      gap="200"
+                    >
+                      <Text as="span" variant="bodySm" fontWeight="semibold">
+                        {RAW_CHECK_LABELS[check.key]}
+                      </Text>
+                      {rawCheckBadge(check.status)}
+                    </InlineStack>
+                    {check.key === "review_markup" &&
+                      check.status === "missing" && (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Your reviews appear to render with JavaScript only,
+                          so AI crawlers cannot see them. A review app that
+                          outputs aggregateRating markup fixes this.
+                        </Text>
+                      )}
+                  </BlockStack>
+                </Box>
+              ))}
+            </BlockStack>
+            <BlockStack gap="050">
+              <Text as="p" variant="bodySm" tone="subdued">
+                Price, description, and review matching is text-based and
+                can miss unusual formats.
+              </Text>
+              {analysis.truncated && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Checked the first 1 MB of the page.
+                </Text>
+              )}
+            </BlockStack>
+          </BlockStack>
+        ) : analysis.skipReason === "thin_html" ? (
+          <Banner tone="warning">
+            <Text as="p" variant="bodyMd">
+              This page returned almost no HTML. Your store may be blocking
+              automated fetchers, or the page may be built entirely with
+              JavaScript. AI crawlers would see the same near-empty page.
+            </Text>
+          </Banner>
+        ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Not checked: this simulation used Shopify data directly because
+            the live page could not be fetched, so there is no raw HTML to
+            analyze.
+          </Text>
+        )}
+      </BlockStack>
+    </Card>
   );
 }
 
@@ -729,6 +841,14 @@ export default function SimulatorPage() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
+              )}
+
+              {/* ── Raw HTML visibility - what the crawler receives before
+                  JavaScript runs. Platform-independent, sits above the LLM
+                  field comparison. Absent on results produced before this
+                  field existed, so gate on presence and render nothing. ── */}
+              {result.rawAnalysis && (
+                <RawHtmlCard analysis={result.rawAnalysis} />
               )}
 
               {/* Two-column layout */}
