@@ -8,14 +8,14 @@ Last updated: 2026-06-12 (prices, features, and scopes match billing.shared.ts a
 GEO Rise
 
 ## Tagline (80 chars max)
-Get your products recommended by ChatGPT, Gemini & AI search engines
+Make your store readable and recommendable for AI search engines
 
 ---
 
 ## Key benefits (bullet points shown on listing)
 
-- Get discovered when shoppers ask AI for product recommendations
-- One-click llms.txt generation: the AI equivalent of a sitemap, per market and language
+- Find out how AI search engines read your store, and fix what they miss
+- One-click llms.txt generation, per market and language, served at your store's /llms.txt
 - AI readiness audit scores every product on discoverability, with one-click auto-fix
 - See exactly what AI sees on your product pages with the AI Simulator
 - Track whether ChatGPT, Claude, and Perplexity actually cite your store and products
@@ -27,13 +27,13 @@ Get your products recommended by ChatGPT, Gemini & AI search engines
 
 **AI search is changing how shoppers find products. Is your store ready?**
 
-When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand", your store either shows up or it doesn't. Most Shopify stores are invisible to AI. GEO Rise changes that.
+When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand", your store either shows up or it doesn't. Small brands get cited far less often than big ones, and most stores never even check where they stand. GEO Rise changes that.
 
 **What GEO Rise does**
 
 GEO Rise is built for Generative Engine Optimization (GEO): making your store readable, trustworthy, and recommendable for AI search engines.
 
-**llms.txt generator.** Create a machine-readable file that tells ChatGPT, Gemini, Perplexity, and Claude exactly what you sell. Selling in multiple countries? Generate one llms.txt per Shopify Market, with translated content, local prices, and market URLs.
+**llms.txt generator.** Publish a machine-readable index of exactly what you sell: products, collections, and blog posts in one plain-text file AI crawlers can read without JavaScript. Selling in multiple countries? Generate one llms.txt per Shopify Market, with translated content, local prices, and market URLs.
 
 **AI readiness audit + auto-fix.** Every product scored across content, meta data, images, variants, and reviews. Get a store-wide GEO score and a prioritized action plan, then auto-fix missing meta descriptions and alt text with one click.
 
@@ -41,7 +41,7 @@ GEO Rise is built for Generative Engine Optimization (GEO): making your store re
 
 **AI Simulator.** See your product pages the way AI assistants see them, field by field, with specific fix recommendations.
 
-**JSON-LD schema injection.** Structured data on every product, collection, and blog page, so AI engines extract accurate prices, availability, and brand details.
+**JSON-LD schema injection.** Structured data on every product, collection, and blog page, in the standard machine-readable format crawlers parse for prices, availability, and brand details.
 
 **AI visibility tracking.** Monitor whether AI assistants cite your store, track sentiment, see which products get mentioned, and let Intent Lab suggest the prompts your real shoppers ask. Watch competitors too.
 
@@ -51,7 +51,7 @@ GEO Rise is built for Generative Engine Optimization (GEO): making your store re
 
 The free plan includes llms.txt generation, schema injection, and a starter audit. Growth ($19/mo) unlocks tracking, bulk editing, and multi-market llms.txt. Pro ($49/mo) adds competitor monitoring and AI revenue attribution. Every paid plan starts with a 7-day free trial.
 
-Install GEO Rise free today and get found by AI.
+Install GEO Rise free today and see where your store stands with AI search.
 
 ---
 
@@ -105,4 +105,4 @@ Prices are defined in `app/services/billing.shared.ts`; keep this table in sync 
 - Show: Run audit, issues appear
 - Show: Auto-fix button, score jumps
 - Show: AI Tracking, a prompt gets cited with the store's product named
-- End: "GEO Rise. Get found by AI. Free to install."
+- End: "GEO Rise. Know where you stand with AI search. Free to install."

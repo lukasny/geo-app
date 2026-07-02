@@ -595,7 +595,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // number, the ScoreRing, and this sentence always describe the same band.
 function scoreLabel(score: number) {
   if (score < 40)
-    return "Your products are mostly invisible to AI search. Run an audit to see what's wrong.";
+    return "AI crawlers can read very little of your product pages. Run an audit to see what's wrong.";
   if (score < 70)
     return "Good start, but AI still misses key product details. Run an audit to find gaps.";
   return "Great! Your store is well-optimized for AI discovery. Keep it up.";
@@ -1215,10 +1215,10 @@ function DiscoveryCardSchema({ themeEditorUrl }: { themeEditorUrl: string }) {
         Turn on GEO Rise Schema
       </Text>
       <Text as="p" variant="bodySm" tone="subdued">
-        Add structured data to your product pages so ChatGPT, Gemini, and
-        Perplexity can fully understand what you sell. Takes 30 seconds:
-        toggle on the &quot;GEO Rise Schema&quot; app embed in your Shopify
-        theme editor.
+        Add JSON-LD structured data to your product pages, the standard
+        machine-readable format crawlers parse for prices, availability,
+        and brand details. Takes 30 seconds: toggle on the &quot;GEO Rise
+        Schema&quot; app embed in your Shopify theme editor.
       </Text>
       <InlineStack gap="200">
         <Button url={themeEditorUrl} target="_blank">

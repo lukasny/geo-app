@@ -459,8 +459,8 @@ export default function BlogGeneratorPage() {
               <Text as="p" variant="bodyMd">
                 AI-written blog posts are a Growth/Pro/Enterprise feature.
                 Generate posts that answer real shopper questions, mention your
-                products naturally, and get indexed by AI search engines like
-                ChatGPT and Perplexity.
+                products naturally, and are structured for AI search engines
+                to cite.
               </Text>
               <Text as="p" variant="bodyMd">
                 {PLAN_DEFINITIONS.GROWTH.name} (${PLAN_DEFINITIONS.GROWTH.price}

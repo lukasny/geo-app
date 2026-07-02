@@ -668,17 +668,18 @@ export default function LlmsTxtPage() {
           <Banner tone="warning">
             <Text as="p" variant="bodyMd">
               Your llms.txt hasn&apos;t been updated in {lastGenerated} days.
-              Regenerate to keep AI search engines up to date.
+              Regenerate to keep it in sync with your current catalog and
+              prices.
             </Text>
           </Banner>
         )}
         {!hasFile && (
           <Banner tone="info">
             <Text as="p" variant="bodyMd">
-              llms.txt is a simple text file on your store that tells AI
-              search engines what you sell. Generate yours so ChatGPT,
-              Gemini, and Perplexity can discover and recommend your
-              products.
+              llms.txt is a plain-text index of your store that AI crawlers
+              can read without JavaScript: your products, collections, and
+              blog posts in one file at a standard address. Generate yours
+              to keep a crawler-friendly copy of your catalog available.
             </Text>
           </Banner>
         )}
@@ -692,7 +693,7 @@ export default function LlmsTxtPage() {
               <Text as="p" variant="bodyMd">
                 Your products aren&apos;t in this llms.txt yet. Only products
                 published to your Online Store sales channel are included, so
-                AI search engines never get a dead link. Publish your products
+                the file never contains a dead link. Publish your products
                 to the Online Store, then regenerate.
               </Text>
             </Banner>
@@ -864,7 +865,8 @@ export default function LlmsTxtPage() {
                     AI bot access
                   </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Choose which AI engines can read your store data
+                    Set your per-bot preferences, enforced via robots.txt
+                    below
                   </Text>
                 </BlockStack>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
@@ -1114,8 +1116,8 @@ export default function LlmsTxtPage() {
               {crawlerStats.totalHits === 0 ? (
                 <Text as="p" variant="bodyMd" tone="subdued">
                   No fetches recorded yet. Every request for your llms.txt
-                  is counted from now on, so check back once AI crawlers
-                  start picking it up.
+                  is counted from now on, so if AI crawlers fetch it,
+                  you&apos;ll see them here.
                 </Text>
               ) : planAllowsCrawlerDetail ? (
                 <BlockStack gap="300">
@@ -1296,8 +1298,8 @@ export default function LlmsTxtPage() {
             <Text as="p" variant="bodyMd">
               Your free plan includes {PLAN_LIMITS.FREE.maxProductsInLlmsTxt}{" "}
               products in llms.txt. Upgrade to Growth to include all{" "}
-              {store?.totalProducts} products and get discovered by more AI
-              search engines.
+              {store?.totalProducts} products, so the file covers your full
+              catalog instead of a sample.
             </Text>
           </CalloutCard>
         )}

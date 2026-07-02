@@ -385,9 +385,9 @@ const FIX_RECOMMENDATIONS: Record<string, string> = {
   structuredDataFound:
     "Enable GEO Rise's JSON-LD Schema Injector in your theme. Go to Online Store → Themes → Customize → App Embeds and turn on 'GEO Rise Schema'.",
   reviewCount:
-    "Install a review app (Judge.me, Loox, or Okendo) and send post-purchase review request emails. Even 3-5 reviews significantly improve AI visibility.",
+    "Install a review app (Judge.me, Loox, or Okendo) and send post-purchase review request emails. Review count is one of the documented ranking inputs for AI shopping surfaces.",
   rating:
-    "Collect customer reviews using a review app. Products with ratings are significantly more likely to be cited by AI search engines.",
+    "Collect customer reviews using a review app. Star rating is a documented ranking input for AI shopping surfaces; products without one compete at a disadvantage.",
   imagesHaveAltText:
     "Add descriptive alt text to all product images. GEO Rise can auto-generate these for you - go to the Audit page and click 'Auto-fix All'.",
   brand:
@@ -395,7 +395,7 @@ const FIX_RECOMMENDATIONS: Record<string, string> = {
   shippingInfo:
     "Add shipping information to your product description or store policies. AI agents use this to answer customer questions about delivery.",
   returnPolicy:
-    "Add your return policy to the product description or ensure your store's return policy page is linked. AI agents cite return policies in purchase decisions.",
+    "Add your return policy to the product description or ensure your store's return policy page is linked. Shoppers ask AI assistants about returns; make sure the answer is on the page to be read.",
   materials:
     "Mention the materials, fabrics, or ingredients in your product description. Specific material information makes AI recommendations more accurate.",
   dimensions:
@@ -620,7 +620,7 @@ export default function SimulatorPage() {
 
           const scoreMessage =
             result.visibilityScore < 40
-              ? `AI can only see ${result.foundFields} of ${result.totalFields} product attributes. Your product is nearly invisible to AI search.`
+              ? `AI can only see ${result.foundFields} of ${result.totalFields} product attributes. Most of this page is unreadable to AI crawlers.`
               : result.visibilityScore < 70
               ? `AI found ${result.foundFields} of ${result.totalFields} attributes. There's significant room for improvement.`
               : `AI can see ${result.foundFields} of ${result.totalFields} attributes. Good foundation - let's make it even better.`;

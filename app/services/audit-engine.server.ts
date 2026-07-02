@@ -300,7 +300,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       severity: "CRITICAL",
       title: "Missing product description",
       description:
-        "This product has no description. AI search engines like ChatGPT and Perplexity rely on product descriptions to understand what the product is and who it is for. Without a description, this product is nearly invisible to AI-powered search.",
+        "This product has no description. AI crawlers read the raw page text to understand what a product is and who it is for. Without a description, they have almost nothing on this page to read.",
       recommendation:
         "Write a description of at least 100 words in natural, conversational language. Describe what the product is, who it is for, key features, materials, and use cases.",
       autoFixable: true,
@@ -313,7 +313,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       category: "CONTENT",
       severity: "HIGH",
       title: "Description too short (under 50 words)",
-      description: `This product description is only ${wc} words. AI search engines need enough context to confidently cite and recommend your product. Short descriptions lead to lower AI visibility.`,
+      description: `This product description is only ${wc} words. AI crawlers read the raw page text, so a short description gives them little to parse and compare against a shopper's question.`,
       recommendation:
         "Expand the description to at least 100 words. Include the product's key features, materials, use cases, and who it is designed for.",
       autoFixable: true,
@@ -411,7 +411,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         category: "META",
         severity: "LOW",
         title: "Meta description length outside 120-160 characters",
-        description: `Your meta description is ${seoDesc.length} characters (${seoDesc.length < 120 ? "too short" : "too long"}). The ideal range is 120–160 characters. AI search engines use meta descriptions to generate product summaries.`,
+        description: `Your meta description is ${seoDesc.length} characters (${seoDesc.length < 120 ? "too short" : "too long"}). The ideal range is 120-160 characters: the standard summary length search results and crawlers work with.`,
         recommendation:
           "Rewrite the meta description to be 120–160 characters. Make it a concise, informative summary of the product's key benefit.",
         autoFixable: true,
@@ -423,7 +423,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       severity: "HIGH",
       title: "Missing meta description",
       description:
-        "This product has no custom meta description. AI search engines like Perplexity and Google AI Overviews use meta descriptions to generate product summaries. Without one, AI may skip your product or generate an inaccurate description.",
+        "This product has no custom meta description. The meta description is the standard page summary crawlers read, so without one, whatever summarizes your page has to guess and may describe the product inaccurately.",
       recommendation:
         `Add a 120–160 character meta description that summarizes the product's key features and target audience. Example: "${product.title} - ${plainDesc.slice(0, 80).trim()}... Shop at ${shopName}."`,
       autoFixable: true,
@@ -452,7 +452,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       category: "IMAGES",
       severity: "MEDIUM",
       title: "Fewer than 3 product images",
-      description: `This product has only ${images.length} image${images.length === 1 ? "" : "s"}. Products with 3+ images perform significantly better in AI search results. More images help AI agents build a complete picture of your product.`,
+      description: `This product has only ${images.length} image${images.length === 1 ? "" : "s"}. Multiple angles give AI agents a more complete picture of your product, and images are a required input for shopping feeds and AI shopping surfaces.`,
       recommendation:
         "Add at least 3 images: a main product shot, detail/close-up shots, and a lifestyle or in-use shot.",
       autoFixable: false,
@@ -470,7 +470,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       category: "IMAGES",
       severity: "HIGH",
       title: "Images missing alt text",
-      description: `${images.length - imagesWithAlt.length} of ${images.length} image${images.length === 1 ? "" : "s"} on this product ${images.length - imagesWithAlt.length === 1 ? "is" : "are"} missing alt text. Alt text is how AI systems read your images. Without alt text, AI search engines cannot understand what your images show, reducing your product's visibility in AI-powered image search and shopping results.`,
+      description: `${images.length - imagesWithAlt.length} of ${images.length} image${images.length === 1 ? "" : "s"} on this product ${images.length - imagesWithAlt.length === 1 ? "is" : "are"} missing alt text. Alt text is the text form of your images that crawlers can read; images without it are opaque to text-only AI crawlers.`,
       recommendation:
         "Add descriptive alt text to every image. Each alt text should describe what the image shows, not just repeat the product title. Example: 'Blue running shoe side view showing mesh upper and rubber sole'.",
       autoFixable: true,
@@ -506,9 +506,9 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       severity: "MEDIUM",
       title: "Missing brand/vendor name",
       description:
-        "This product has no vendor/brand set. AI search engines specifically look for brand information to answer queries like 'best [product type] by [brand]'. Missing brand data reduces brand citation frequency.",
+        "This product has no vendor/brand set. AI search engines look for brand information to answer queries like 'best [product type] by [brand]', and maker or primary-seller status is a documented ranking input for AI shopping surfaces.",
       recommendation:
-        "Set the vendor field to your brand name. This is one of the most important fields for AI brand citation.",
+        "Set the vendor field to your brand name so AI shopping surfaces can identify who makes and sells this product.",
       autoFixable: false,
     });
   }
@@ -521,9 +521,9 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       severity: "LOW",
       title: "No product tags",
       description:
-        "Tags help AI systems categorize and discover your product. They act as structured keywords that AI search engines use to match products to queries.",
+        "Tags are structured keywords on your product that surface in your storefront's collections, search, and feeds, and they round out the product data available to crawlers.",
       recommendation:
-        "Add 5–10 relevant tags including category, material, use case, and audience. Example: 'yoga, fitness, non-slip, eco-friendly, beginner'.",
+        "Add 5-10 relevant tags including category, material, use case, and audience. Example: 'yoga, fitness, non-slip, eco-friendly, beginner'.",
       autoFixable: false,
     });
   }
@@ -577,7 +577,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         severity: "LOW",
         title: "Fewer than 5 reviews",
         description:
-          "Products with 5+ reviews are significantly more likely to be cited by AI search engines. Reviews provide social proof signals that AI uses to rank recommendations.",
+          "Review count and rating are quality signals AI shopping surfaces rank on. More authentic reviews strengthen this product's case when AI compares it against alternatives.",
         recommendation:
           "Set up a post-purchase review request flow to collect more reviews. Consider a review app like Judge.me, Okendo, or Loox.",
         autoFixable: false,
@@ -589,9 +589,9 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       severity: "HIGH",
       title: "No customer reviews",
       description:
-        "This product has no reviews detected. AI search engines weight social proof heavily when recommending products. A product with zero reviews is rarely cited in 'best X' or 'recommended Y' queries.",
+        "This product has no reviews detected. Review stats are a documented ranking input for AI shopping surfaces, so a product with zero reviews competes at a disadvantage in 'best X' or 'recommended Y' answers.",
       recommendation:
-        "Install a review app (Judge.me, Okendo, Loox, or Yotpo) and send post-purchase review requests. Even 3–5 authentic reviews significantly improve AI visibility.",
+        "Install a review app (Judge.me, Okendo, Loox, or Yotpo) and send post-purchase review requests. Even 3-5 authentic reviews give AI shopping surfaces real quality signals to rank on.",
       autoFixable: false,
     });
   }
