@@ -32,6 +32,12 @@ import { autoFixIssues, runFullAudit } from "~/services/audit-engine.server";
 import { getRevenueAttribution } from "~/services/revenue-attribution.server";
 import type { RevenueSummary } from "~/services/revenue-attribution.server";
 import { getBotFetchCount } from "~/services/crawler-hits.server";
+import { getScoreTrend } from "~/services/score-history.server";
+import type { ScoreTrend } from "~/services/score-history.server";
+import { computeCitationAlerts } from "~/services/citation-alerts.server";
+import type { CitationAlert } from "~/services/citation-alerts.server";
+import { suggestTrackingPrompts } from "~/services/tracking.server";
+import { computeNextRunAt } from "~/services/tracking-scheduler.shared";
 import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 import { timeAgo } from "~/utils/time";
 import { formatMoney } from "~/utils/money";
@@ -93,6 +99,14 @@ interface LoaderData {
    *  days. Shown to all plans - it's the acquisition teaser for the
    *  crawler-activity detail on the llms.txt manager page. */
   botFetches30d: number;
+  /** GEO score snapshots (ascending) plus the delta vs the previous full
+   *  audit. The hero sparkline only renders with 2+ snapshots. Dates are
+   *  already ISO strings (serialized in the service). */
+  scoreTrend: ScoreTrend;
+  /** Newest citation alert from the last 7 days, or null when nothing
+   *  alert-worthy happened. Only the top alert is shown on the dashboard;
+   *  the rest go to the weekly email. */
+  topAlert: CitationAlert | null;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -159,6 +173,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     blogPostCount,
     simulationCount,
     botFetches30d,
+    scoreTrend,
+    citationAlerts,
   ] = await Promise.all([
     prisma.llmsFile.findFirst({
       where: { storeId: store.id, marketCode: "default" },
@@ -200,6 +216,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // raw proxy traffic. Sums the daily counters (excludes the unclassified
     // bucket) over the last 30 days.
     getBotFetchCount(store.id, 30),
+    // Both are cheap bounded queries (last 12 snapshots; last 500 citation
+    // rows), fine to run on every dashboard load.
+    getScoreTrend(store.id),
+    computeCitationAlerts(store.id),
   ]);
 
   const severityCount = (severity: string) =>
@@ -260,10 +280,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     : null;
 
   return {
+    // Explicit field pick, never a row spread: the raw Store row carries
+    // shopifyAccessToken, which must never be serialized to the browser.
     store: {
-      ...store,
+      id: store.id,
+      shopifyDomain: store.shopifyDomain,
+      shopName: store.shopName,
+      email: store.email,
+      plan: store.plan,
+      geoScore: store.geoScore,
+      totalProducts: store.totalProducts,
+      auditedProducts: store.auditedProducts,
+      onboardingCompleted: store.onboardingCompleted,
       installedAt: store.installedAt.toISOString(),
+      weeklyInsightEnabled: store.weeklyInsightEnabled,
       lastInsightSentAt: store.lastInsightSentAt?.toISOString() ?? null,
+      schemaInjectionEnabled: store.schemaInjectionEnabled,
     },
     llmsFile: llmsFile
       ? {
@@ -281,6 +313,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     discoveryCards,
     revenueSummary,
     botFetches30d,
+    scoreTrend,
+    // computeCitationAlerts returns newest-first capped at 3; the dashboard
+    // banner only shows the most recent one.
+    topAlert: citationAlerts[0] ?? null,
   } satisfies LoaderData;
 };
 
@@ -445,6 +481,56 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: store.id },
       data: { onboardingCompleted: true },
     });
+    // Seed Intent Lab with up to 3 suggested tracking prompts so the
+    // tracking page isn't empty on first visit and weekly checks start
+    // accruing data unattended. Fire-and-forget: suggestTrackingPrompts
+    // calls Claude and can take ~10s or fail entirely, and neither may
+    // block or fail onboarding. FREE stores skip silently (no prompts
+    // allowed on that plan). The count check runs inside the async body
+    // and doubles as an idempotency guard against a stale wizard tab
+    // re-firing completeOnboarding.
+    const planLimits =
+      PLAN_LIMITS[store.plan as keyof typeof PLAN_LIMITS] ?? PLAN_LIMITS.FREE;
+    if (planLimits.maxTrackingPrompts > 0) {
+      void (async () => {
+        const existingPrompts = await prisma.trackingPrompt.count({
+          where: { storeId: store.id },
+        });
+        if (existingPrompts > 0) return;
+        const suggestions = await suggestTrackingPrompts(store.id, admin);
+        // Re-check after the ~10s Claude call: two concurrent
+        // completeOnboarding submissions (wizard open in two tabs) both
+        // pass the count check above before either inserts. Re-counting
+        // right before the writes shrinks that race to milliseconds and
+        // keeps parity with addPrompt's cap enforcement on /app/tracking.
+        const promptsAfterSuggest = await prisma.trackingPrompt.count({
+          where: { storeId: store.id },
+        });
+        if (promptsAfterSuggest > 0) return;
+        // Mirrors the addPrompt action on /app/tracking: WEEKLY schedule
+        // with a computed nextRunAt so the scheduler picks them up, and
+        // the same 500-char cap the manual form enforces.
+        for (const suggestion of suggestions.slice(0, 3)) {
+          const promptText = suggestion.prompt.trim().slice(0, 500);
+          if (!promptText) continue;
+          await prisma.trackingPrompt.create({
+            data: {
+              storeId: store.id,
+              prompt: promptText,
+              category: suggestion.category ?? null,
+              isActive: true,
+              schedule: "WEEKLY",
+              nextRunAt: computeNextRunAt("WEEKLY"),
+            },
+          });
+        }
+      })().catch((err) => {
+        console.error(
+          "[GEO Rise] Onboarding tracking-prompt seeding failed:",
+          err
+        );
+      });
+    }
     return { success: true, intent };
   }
 
@@ -531,6 +617,73 @@ function nextSendHint(lastSentIso: string): string {
   if (hrs < 24) return `scheduled in ~${hrs}h`;
   const days = Math.round(hrs / 24);
   return `scheduled in ~${days}d`;
+}
+
+// ─── Score Sparkline ──────────────────────────────────────────────────────────
+
+/**
+ * Bespoke SVG sparkline of recent GEO score snapshots for the dashboard
+ * hero. Brand tokens only (this is our own SVG surface, not a Polaris
+ * recolor): indigo line, cyan node on the latest point. Decorative
+ * (aria-hidden): the text delta next to it carries the meaning.
+ * Callers only render this with 2+ snapshots.
+ */
+function ScoreSparkline({
+  snapshots,
+}: {
+  snapshots: { score: number; createdAt: string }[];
+}) {
+  const width = 120;
+  const height = 36;
+  const pad = 4;
+  const scores = snapshots.map((s) => s.score);
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const stepX = (width - pad * 2) / (snapshots.length - 1);
+  const points = scores.map((score, i) => ({
+    x: pad + i * stepX,
+    // Flat history (max === min) renders as a centered line instead of
+    // dividing by zero.
+    y:
+      max === min
+        ? height / 2
+        : pad + (height - pad * 2) * (1 - (score - min) / (max - min)),
+  }));
+  const latest = points[points.length - 1];
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <polyline
+        points={points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="none"
+        stroke={brand.indigo[600]}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx={latest.x} cy={latest.y} r="3" fill={brand.cyan[500]} />
+    </svg>
+  );
+}
+
+/** Plain-words delta copy: the direction word (not just color) carries the
+ *  meaning, per the color-only accessibility rule. */
+function deltaLabel(delta: number): string {
+  if (delta > 0) return `up ${delta} since your last audit`;
+  if (delta < 0) return `down ${Math.abs(delta)} since your last audit`;
+  return "unchanged since your last audit";
+}
+
+function deltaTone(delta: number): "success" | "caution" | "subdued" {
+  if (delta > 0) return "success";
+  if (delta < 0) return "caution";
+  return "subdued";
 }
 
 // ─── Onboarding Wizard ────────────────────────────────────────────────────────
@@ -1235,6 +1388,18 @@ function AiRevenueCard({
     summary.allTimeTotal !== null &&
     summary.byCurrency.length > 0;
 
+  // AI-referred storefront visits are live before order attribution is
+  // (visits come from the theme-extension beacon; orders wait on Shopify's
+  // protected-order-data approval), so surface them in both states.
+  const visits30d = summary?.visits30d ?? 0;
+  const visitsLine =
+    visits30d > 0 ? (
+      <Text as="p" variant="bodySm">
+        {visits30d} AI-referred {visits30d === 1 ? "visit" : "visits"}, last
+        30 days
+      </Text>
+    ) : null;
+
   if (!hasData) {
     return (
       <Card>
@@ -1247,6 +1412,7 @@ function AiRevenueCard({
               View full report
             </Button>
           </InlineStack>
+          {visitsLine}
           <Text as="p" variant="bodySm" tone="subdued">
             No AI-attributed revenue yet. Order tracking is awaiting
             Shopify&apos;s approval for protected order data and activates
@@ -1294,6 +1460,7 @@ function AiRevenueCard({
             ))}
           </InlineStack>
         )}
+        {visitsLine}
       </BlockStack>
     </Card>
   );
@@ -1302,7 +1469,7 @@ function AiRevenueCard({
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Index() {
-  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards, revenueSummary, botFetches30d } =
+  const { store, llmsFile, citationCount, issueCounts, recentActivity, discoveryCards, revenueSummary, botFetches30d, scoreTrend, topAlert } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -1366,6 +1533,24 @@ export default function Index() {
                   <Text as="p" variant="bodySm" tone="subdued" alignment="center">
                     GEO score
                   </Text>
+                  {/* Score trend: only with 2+ full-audit snapshots, so a
+                      brand-new install never sees a fake flat line. The
+                      sparkline is decorative; the delta sentence carries
+                      the meaning (direction word + tone, not color-only). */}
+                  {scoreTrend.snapshots.length >= 2 &&
+                    scoreTrend.deltaSincePrevious !== null && (
+                      <div style={{ marginTop: 8 }}>
+                        <ScoreSparkline snapshots={scoreTrend.snapshots} />
+                        <Text
+                          as="p"
+                          variant="bodySm"
+                          tone={deltaTone(scoreTrend.deltaSincePrevious)}
+                          alignment="center"
+                        >
+                          {deltaLabel(scoreTrend.deltaSincePrevious)}
+                        </Text>
+                      </div>
+                    )}
                 </div>
               </Box>
             </Layout.Section>
@@ -1409,6 +1594,24 @@ export default function Index() {
             </Layout.Section>
           </Layout>
         </Card>
+
+        {/* ── ROW 1.5: Citation alert ── */}
+        {/* Newest alert from the last 7 days: first citation (good news),
+            lost citation, or a competitor cited where the store was not.
+            One banner only; the weekly email carries the full list. */}
+        {topAlert && (
+          <Banner
+            tone={topAlert.type === "first_citation" ? "success" : "warning"}
+            title={topAlert.title}
+          >
+            <BlockStack gap="200" inlineAlign="start">
+              <Text as="p" variant="bodyMd">
+                {topAlert.detail}
+              </Text>
+              <Button url="/app/tracking">View tracking</Button>
+            </BlockStack>
+          </Banner>
+        )}
 
         {/* ── ROW 2: Stats grid ── */}
         <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
