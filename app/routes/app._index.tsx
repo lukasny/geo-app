@@ -15,8 +15,6 @@ import {
   Banner,
   CalloutCard,
   InlineGrid,
-  ResourceList,
-  ResourceItem,
   Box,
   Divider,
   Spinner,
@@ -125,7 +123,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     store = await prisma.store.create({
       data: {
         shopifyDomain: session.shop,
-        shopifyAccessToken: session.accessToken ?? "",
+        // Dead credential copy: nothing reads Store.shopifyAccessToken (all
+        // consumers use getFreshAccessToken), so never persist the real
+        // token here. Write an empty string to keep the column non-null.
+        shopifyAccessToken: "",
         shopName: session.shop.replace(".myshopify.com", ""),
       },
     });
@@ -392,8 +393,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         productCount: result.defaultResult.productCount,
       };
     } catch (err) {
+      // Never surface raw Shopify GraphQL/fetch error text to the merchant;
+      // log it server-side and return a generic, safe message.
+      console.error("[GEO Rise] Dashboard llms.txt generation failed:", err);
       return {
-        error: err instanceof Error ? err.message : "Generation failed.",
+        error:
+          "We couldn't generate your llms.txt file just now. Please try again in a moment.",
         intent,
       };
     }
@@ -412,8 +417,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
+      // Keep raw error text out of the merchant-facing toast/banner; log it
+      // server-side and return a generic, safe message.
+      console.error("[GEO Rise] Dashboard audit failed:", err);
       return {
-        error: err instanceof Error ? err.message : "Audit failed.",
+        error:
+          "We couldn't finish the audit just now. Please try again in a moment.",
         intent,
       };
     }
@@ -434,8 +443,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       return { success: true, intent, storeScore: summary.storeScore };
     } catch (err) {
+      // Same guardrail as the full audit: log the raw error server-side and
+      // hand the wizard banner a generic, safe message.
+      console.error("[GEO Rise] Wizard starter audit failed:", err);
       return {
-        error: err instanceof Error ? err.message : "Audit failed.",
+        error:
+          "We couldn't finish the audit just now. Please try again in a moment.",
         intent,
       };
     }
@@ -596,7 +609,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // Bands match scoreColor() in ~/brand/tokens (40 / 70), so the colored
 // number, the ScoreRing, and this sentence always describe the same band.
-function scoreLabel(score: number) {
+// A store with no products has nothing to score yet, so the "0% ready"
+// band copy would be misleading; short-circuit to an add-products message.
+function scoreLabel(score: number, totalProducts: number) {
+  if (totalProducts === 0)
+    return "You don't have any products to score yet. Add products to your store, then run an audit.";
   if (score < 40)
     return "AI crawlers can read very little of your product pages. Run an audit to see what's wrong.";
   if (score < 70)
@@ -693,9 +710,12 @@ function deltaTone(delta: number): "success" | "caution" | "subdued" {
 
 function OnboardingWizard({
   shopName,
+  shopifyDomain,
+  totalProducts,
 }: {
   shopName: string;
   shopifyDomain: string;
+  totalProducts: number;
 }) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [beforeScore, setBeforeScore] = useState<number | null>(null);
@@ -779,6 +799,8 @@ function OnboardingWizard({
             {step === 2 && (
               <Step2
                 fetcher={fetcher}
+                shopifyDomain={shopifyDomain}
+                totalProducts={totalProducts}
                 onNext={(score) => {
                   setBeforeScore(score);
                   setStep(3);
@@ -791,6 +813,8 @@ function OnboardingWizard({
               <Step3
                 fetcher={fetcher}
                 beforeScore={beforeScore}
+                shopifyDomain={shopifyDomain}
+                totalProducts={totalProducts}
                 onComplete={() => {
                   fetcher.submit(
                     { intent: "completeOnboarding" },
@@ -808,11 +832,19 @@ function OnboardingWizard({
 
 function Step2({
   fetcher,
+  shopifyDomain,
+  totalProducts,
   onNext,
 }: {
   fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  shopifyDomain: string;
+  totalProducts: number;
   onNext: (score: number) => void;
 }) {
+  // A store with no products has nothing to audit. Skip the starter audit
+  // entirely and show an "add products first" panel instead of revealing a
+  // meaningless 0-of-100 score. Merchant can still continue to the dashboard.
+  const hasNoProducts = totalProducts === 0;
   const [hasFiredAudit, setHasFiredAudit] = useState(false);
   const [hasFiredLlms, setHasFiredLlms] = useState(false);
   // Set when a runStarterAudit submission settles without any response
@@ -864,6 +896,8 @@ function Step2({
   // is silent (no toast, no UI; merchant finds the result on the llms.txt
   // Manager page later).
   useEffect(() => {
+    // Nothing to audit or generate on an empty catalog: skip both round-trips.
+    if (hasNoProducts) return;
     if (!hasFiredAudit) {
       fetcher.submit({ intent: "runStarterAudit" }, { method: "POST" });
       setHasFiredAudit(true);
@@ -874,7 +908,7 @@ function Step2({
       llmsFetcher.submit({ intent: "generateLlms" }, { method: "POST" });
       setHasFiredLlms(true);
     }
-  }, [fetcher, llmsFetcher, hasFiredAudit, hasFiredLlms]);
+  }, [fetcher, llmsFetcher, hasFiredAudit, hasFiredLlms, hasNoProducts]);
 
   // Silent by design: no toast on success. The action returns errors as
   // data rather than throwing, so log them here for diagnosability.
@@ -887,6 +921,41 @@ function Step2({
       );
     }
   }, [llmsFetcher.state, llmsData]);
+
+  // Empty catalog: there's nothing to score, so send the merchant to add
+  // products before we can audit anything. Continuing hands Step 3 a score
+  // of 0 (used only as the "before" baseline; Step 3 also handles the
+  // no-products case).
+  if (hasNoProducts) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 2 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            You don&apos;t have any products yet
+          </Text>
+        </BlockStack>
+        <Text as="p" variant="bodyMd">
+          GEO Rise scores and optimizes your product pages, so there&apos;s
+          nothing to audit until your store has products. Add a few, then come
+          back and run an audit from the dashboard.
+        </Text>
+        <InlineStack gap="200">
+          <Button
+            url={`https://${shopifyDomain}/admin/products`}
+            target="_blank"
+          >
+            Add products in Shopify
+          </Button>
+          <Button variant="primary" onClick={() => onNext(0)}>
+            Continue
+          </Button>
+        </InlineStack>
+      </BlockStack>
+    );
+  }
 
   // Don't show the stale error while a retry submission is in flight -
   // `data` still holds the previous failure until the new response lands.
@@ -986,12 +1055,20 @@ function Step2({
 function Step3({
   fetcher,
   beforeScore,
+  shopifyDomain,
+  totalProducts,
   onComplete,
 }: {
   fetcher: ReturnType<typeof useFetcher<typeof action>>;
   beforeScore: number;
+  shopifyDomain: string;
+  totalProducts: number;
   onComplete: () => void;
 }) {
+  // With no products there was nothing to audit in Step 2 and there's
+  // nothing to auto-fix here, so skip the auto-fix and show an
+  // "add products first" wrap-up instead of a fabricated score delta.
+  const hasNoProducts = totalProducts === 0;
   const [hasFired, setHasFired] = useState(false);
   // HTTP-layer failure of the auto-fix request (timeout, dropped
   // connection): no payload ever arrives, so without this flag the
@@ -1015,13 +1092,15 @@ function Step3({
       ? (data.error as string)
       : null;
 
-  // Fire the auto-fix exactly once on mount.
+  // Fire the auto-fix exactly once on mount. Never fire on an empty catalog:
+  // there are no issues to fix and the zero-products wrap-up renders below.
   useEffect(() => {
+    if (hasNoProducts) return;
     if (!hasFired) {
       fetcher.submit({ intent: "runWizardAutoFix" }, { method: "POST" });
       setHasFired(true);
     }
-  }, [fetcher, hasFired]);
+  }, [fetcher, hasFired, hasNoProducts]);
 
   // Detect a runWizardAutoFix submission that settled back to idle without
   // its response payload (HTTP-level failure). Scoped to that intent only,
@@ -1043,6 +1122,42 @@ function Step3({
       setHttpError(true);
     }
   }, [fetcher.state, fetcher.formData, data]);
+
+  // Empty catalog: no audit ran and no auto-fix fired, so there's no score
+  // delta to celebrate. Close out the wizard honestly, pointing the merchant
+  // to add products before there's anything to optimize.
+  if (hasNoProducts) {
+    return (
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Step 3 of 3
+          </Text>
+          <Text as="h2" variant="headingXl">
+            You&apos;re all set up
+          </Text>
+        </BlockStack>
+        <Banner tone="info">
+          <Text as="p" variant="bodyMd">
+            Once you add products to your store, run an audit from the
+            dashboard and GEO Rise will score them and auto-fix the biggest
+            issues for you.
+          </Text>
+        </Banner>
+        <InlineStack gap="200">
+          <Button
+            url={`https://${shopifyDomain}/admin/products`}
+            target="_blank"
+          >
+            Add products in Shopify
+          </Button>
+          <Button variant="primary" onClick={onComplete}>
+            Open the dashboard
+          </Button>
+        </InlineStack>
+      </BlockStack>
+    );
+  }
 
   // Auto-fix returned an error, failed at the HTTP layer, OR fixed 0
   // issues. Either way, no wow. Don't block the merchant; let them
@@ -1510,6 +1625,7 @@ export default function Index() {
       <OnboardingWizard
         shopName={store?.shopName ?? "your store"}
         shopifyDomain={store?.shopifyDomain ?? ""}
+        totalProducts={store?.totalProducts ?? 0}
       />
     );
   }
@@ -1570,7 +1686,7 @@ export default function Index() {
                       for AI discovery
                     </Text>
                     <Text as="p" variant="bodyMd" tone="subdued">
-                      {scoreLabel(store.geoScore)}
+                      {scoreLabel(store.geoScore, store.totalProducts)}
                     </Text>
                   </BlockStack>
 
@@ -1856,7 +1972,7 @@ export default function Index() {
         {isFreePlan ? (
           <CalloutCard
             title="Unlock the full GEO Rise experience"
-            illustration="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be5a34ec20c05b94298cb8ept14702f09612f04cf1c04049e5a42f98c.png"
+            illustration=""
             primaryAction={{ content: "Start 7-day free trial", url: "/app/pricing" }}
           >
             <Text as="p" variant="bodyMd">
@@ -1893,11 +2009,14 @@ export default function Index() {
           <Card>
             <BlockStack gap="300">
               <Text as="h2" variant="headingMd">Recent activity</Text>
-              <ResourceList
-                resourceName={{ singular: "event", plural: "events" }}
-                items={recentActivity}
-                renderItem={(item) => (
-                  <ResourceItem id={item.id} onClick={() => {}} shortcutActions={[]}>
+              {/* Plain non-interactive rows: these events aren't clickable
+                  anywhere, so a ResourceItem's click affordance would be a
+                  dead control. Divider between rows for the same visual
+                  separation ResourceList gave. */}
+              <BlockStack gap="300">
+                {recentActivity.map((item, i) => (
+                  <BlockStack gap="300" key={item.id}>
+                    {i > 0 && <Divider />}
                     <InlineStack align="space-between" blockAlign="center">
                       <BlockStack gap="050">
                         <Text as="p" variant="bodyMd" fontWeight="semibold">{item.title}</Text>
@@ -1905,9 +2024,9 @@ export default function Index() {
                       </BlockStack>
                       <Text as="p" variant="bodySm" tone="subdued">{timeAgo(item.timestamp)}</Text>
                     </InlineStack>
-                  </ResourceItem>
-                )}
-              />
+                  </BlockStack>
+                ))}
+              </BlockStack>
             </BlockStack>
           </Card>
         )}

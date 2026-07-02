@@ -554,10 +554,19 @@ export default function AuditPage() {
     if ("error" in data && data.error) {
       shopify.toast.show(data.error as string, { isError: true });
     } else if ("summary" in data && data.summary) {
-      const s = data.summary as { storeScore: number };
-      shopify.toast.show(
-        `Audit complete! Your GEO score is ${s.storeScore}/100`
-      );
+      const s = data.summary as { storeScore: number; totalProducts: number };
+      // Zero-product store: an audit found nothing to score, so a "GEO score
+      // is 0/100" toast would be misleading (there's no store to score, not a
+      // failing one). Tell the merchant to add products instead.
+      if (s.totalProducts === 0) {
+        shopify.toast.show(
+          "No active products found to audit. Add products to your store, then run the audit again."
+        );
+      } else {
+        shopify.toast.show(
+          `Audit complete! Your GEO score is ${s.storeScore}/100`
+        );
+      }
       // Audit just finished - the post-fix banner is stale info, clear it.
       setLastFixResult(null);
     } else if ("fixed" in data) {
@@ -587,6 +596,13 @@ export default function AuditPage() {
 
   // ── Filtered / paginated products ──
   const isFreePlan = store?.plan === "FREE";
+
+  // A store with an empty catalog: an audit has nothing to score, so the
+  // empty-state CTA points to adding products instead of running an audit
+  // (which would silently do nothing and leave the merchant on this screen).
+  // Gate on totalProducts once an audit has recorded it; before any audit
+  // it stays 0, which is exactly the "add products first" case we want.
+  const hasNoProducts = (store?.totalProducts ?? 0) === 0;
 
   const filteredProducts = useMemo(() => {
     let list = [...products];
@@ -836,7 +852,30 @@ export default function AuditPage() {
         )}
 
         {/* ── No audit yet ── */}
-        {!hasRunAudit && !isRunningAudit && (
+        {/* A zero-product store needs a different first move: running an
+            audit on an empty catalog does nothing (no product rows means
+            hasRunAudit never flips), so send the merchant to add products
+            first rather than looping on "Run first audit". */}
+        {!hasRunAudit && !isRunningAudit && hasNoProducts && (
+          <Card>
+            <EmptyState
+              heading="Add products to run your first audit"
+              action={{
+                content: "Add products in Shopify admin",
+                url: `https://${store?.shopifyDomain}/admin/products`,
+                external: true,
+              }}
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            >
+              <Text as="p" variant="bodyMd">
+                Your store has no active products yet. Add products to your
+                store, then run your first audit to get a detailed AI readiness
+                score for each one.
+              </Text>
+            </EmptyState>
+          </Card>
+        )}
+        {!hasRunAudit && !isRunningAudit && !hasNoProducts && (
           <Card>
             <EmptyState
               heading="Ready to see how AI sees your store?"

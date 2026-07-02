@@ -385,8 +385,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         message: `llms.txt generated with ${result.productCount} products, ${result.collectionCount} collections, and ${result.blogPostCount} blog posts.`,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return { error: `Generation failed: ${message}` };
+      // Log the raw error server-side; never surface Shopify GraphQL/fetch
+      // internals to the merchant toast.
+      console.error("llms.txt generation failed:", err);
+      return {
+        error: "Could not generate your llms.txt. Please try again.",
+      };
     }
   }
 
@@ -1349,7 +1353,7 @@ export default function LlmsTxtPage() {
         {isFreePlanLimited && (
           <CalloutCard
             title="Unlock all your products in llms.txt"
-            illustration="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be5a34ec20c05b94298cb8ept14702f09612f04cf1c04049e5a42f98c.png"
+            illustration=""
             primaryAction={{
               content: "Upgrade to Growth",
               url: "/app/pricing",

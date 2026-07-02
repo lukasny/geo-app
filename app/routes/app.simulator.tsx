@@ -31,6 +31,7 @@ import { Prisma } from "@prisma/client";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 import { simulateAiView } from "~/services/ai-simulator.server";
+import { sanitizeAiVendorError } from "~/services/ai-retry.server";
 import { scoreColor } from "~/brand/tokens";
 import { BrandEmptyState } from "~/brand/BrandEmptyState";
 import type {
@@ -61,6 +62,7 @@ interface LoaderData {
     shopifyDomain: string;
     shopName: string;
     plan: string;
+    totalProducts: number;
   } | null;
   simulationsUsedThisMonth: number;
 }
@@ -83,7 +85,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const store = await prisma.store.findUnique({
     where: { shopifyDomain: session.shop },
-    select: { id: true, shopifyDomain: true, shopName: true, plan: true },
+    select: {
+      id: true,
+      shopifyDomain: true,
+      shopName: true,
+      plan: true,
+      totalProducts: true,
+    },
   });
 
   if (!store) {
@@ -340,8 +348,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         .deleteMany({ where: { id: reservationId, storeId: store.id } })
         .catch(() => {});
     }
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return { error: `Simulation failed: ${msg}. Please try again.` };
+    // Raw vendor errors ("Your credit balance is too low", "Plans & Billing")
+    // would render verbatim in the critical Banner and read like a Shopify
+    // billing problem. Sanitize like the other AI features (blog/FAQ/tracking);
+    // the raw error is logged server-side inside the helper.
+    return {
+      error: sanitizeAiVendorError(err, {
+        context: "Simulation",
+        logTag: "simulator",
+      }),
+    };
   }
 };
 
@@ -657,12 +673,37 @@ export default function SimulatorPage() {
             <InlineStack gap="300" blockAlign="end">
               <div style={{ flex: 1 }}>
                 {products.length === 0 ? (
-                  <Banner tone="warning">
-                    <Text as="p" variant="bodyMd">
-                      Run an audit first to populate your product list.{" "}
-                      <Link url="/app/audit">Go to AI Audit</Link>
-                    </Text>
-                  </Banner>
+                  // Two honest empty states. The product list is populated by
+                  // the audit run, not by webhooks, so an empty list on a store
+                  // that HAS products just means no audit has synced them yet
+                  // (point to the audit). But when the last audit found zero
+                  // active products, telling the merchant to "run an audit" is
+                  // circular: they have nothing to audit. Send them to add
+                  // products instead. totalProducts is 0 for a brand-new store
+                  // too, where the add-products link is the right next step.
+                  store && store.totalProducts === 0 ? (
+                    <Banner tone="warning">
+                      <Text as="p" variant="bodyMd">
+                        Your store has no products yet. Add a product, then run
+                        an audit to simulate how AI sees it.{" "}
+                        {/* target="_blank" is mandatory: an in-frame navigation
+                            to the Shopify admin breaks the embedded app session. */}
+                        <Link
+                          url={`https://${store.shopifyDomain}/admin/products`}
+                          target="_blank"
+                        >
+                          Add products
+                        </Link>
+                      </Text>
+                    </Banner>
+                  ) : (
+                    <Banner tone="warning">
+                      <Text as="p" variant="bodyMd">
+                        Run an audit first to populate your product list.{" "}
+                        <Link url="/app/audit">Go to AI Audit</Link>
+                      </Text>
+                    </Banner>
+                  )
                 ) : (
                   <Select
                     label="Select a product"

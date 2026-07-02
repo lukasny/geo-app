@@ -39,7 +39,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const sitemap = store
     ? await checkSitemap(store.shopifyDomain)
-    : { fetched: false, sitemapUrl: "", kind: "unknown" as const, entryCount: 0 };
+    : {
+        fetched: false,
+        sitemapUrl: "",
+        kind: "unknown" as const,
+        entryCount: 0,
+        passwordProtected: false,
+      };
 
   return { sitemap };
 };
@@ -81,6 +87,8 @@ export default function BingIndexingPage() {
                   </Text>
                   {sitemap.fetched ? (
                     <Badge tone="success">Sitemap is live</Badge>
+                  ) : sitemap.passwordProtected ? (
+                    <Badge tone="info">Storefront password on</Badge>
                   ) : (
                     <Badge tone="warning">Could not reach your sitemap</Badge>
                   )}
@@ -94,6 +102,12 @@ export default function BingIndexingPage() {
                     </Link>{" "}
                     and lists {sitemap.entryCount} {sitemapEntryLabel}. Submit
                     this URL to Bing Webmaster Tools in the steps below.
+                  </Text>
+                ) : sitemap.passwordProtected ? (
+                  <Text as="p" variant="bodyMd">
+                    Your storefront is password-protected, so your sitemap is
+                    not publicly reachable yet. It becomes available
+                    automatically when you remove the storefront password.
                   </Text>
                 ) : (
                   <Text as="p" variant="bodyMd">

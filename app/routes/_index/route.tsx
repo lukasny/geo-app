@@ -22,9 +22,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>GEO Rise</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Make your Shopify store readable and recommendable for AI search
+          engines like ChatGPT and Perplexity.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -40,16 +41,17 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>AI readiness audit</strong>. Scores your products for AI
+            discoverability and fixes common gaps in one click.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>llms.txt and structured data</strong>. Publishes a public
+            llms.txt file and JSON-LD schema so AI crawlers can read your
+            catalog.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Citation tracking</strong>. Tracks whether AI assistants
+            mention your store when shoppers ask about products like yours.
           </li>
         </ul>
       </div>

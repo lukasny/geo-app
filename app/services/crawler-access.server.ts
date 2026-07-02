@@ -295,6 +295,28 @@ export interface SitemapCheckResult {
   /** Count of `<loc>` entries: child sitemaps for an index, pages for a
    *  urlset. */
   entryCount: number;
+  /** True when the fetch landed on Shopify's storefront password page (the
+   *  origin 302s /sitemap.xml to /password until the merchant removes the
+   *  storefront password). Implies `fetched: false`: it is not a real
+   *  sitemap read, just a distinct, non-alarming reason for the miss. */
+  passwordProtected: boolean;
+}
+
+/** Shopify's storefront password page (the interstitial every dev store and
+ *  pre-launch merchant sits behind) returns a 200 with login HTML, so a
+ *  redirected sitemap/robots fetch reads as an empty document. Detect it by
+ *  the same markers the AI simulator uses so we can name the real cause
+ *  instead of blaming the merchant's domain. Deliberately a small local
+ *  copy: the simulator's isPasswordPage is not exported and crossing that
+ *  server boundary for one heuristic is not worth the coupling. */
+function looksLikePasswordPage(body: string): boolean {
+  const html = body.toLowerCase();
+  return (
+    html.includes('name="password"') ||
+    html.includes("enter using password") ||
+    html.includes("storefront access denied") ||
+    html.includes("password-protected")
+  );
 }
 
 /** Check that the storefront's sitemap.xml is reachable and report what it
@@ -324,14 +346,27 @@ export async function checkSitemap(
     // Timeout / DNS / TLS failures fall through to the not-fetched result.
   }
 
+  // A password-protected storefront 302s /sitemap.xml to /password, so a
+  // 200 body that is really the password page is the common miss for dev
+  // stores and pre-launch merchants. Flag it distinctly so the UI can say
+  // "not public yet" instead of "your domain is down".
+  const passwordProtected = body !== null && looksLikePasswordPage(body);
+
   const entryCount = body ? (body.match(/<loc[\s>]/gi) ?? []).length : 0;
   // A usable sitemap read means a 200 with at least one <loc> entry. An
   // empty body (a genuinely blank 200, or the readBoundedText fast path
   // returning "" when Content-Length exceeds the cap) or a body with zero
   // entries is not a clean "live" result: reporting "live, 0 entries" would
-  // be self-contradictory, so treat it as not fetched.
+  // be self-contradictory, so treat it as not fetched. The password page
+  // reads as zero entries too, and carries its own reason flag.
   if (body === null || entryCount === 0) {
-    return { fetched: false, sitemapUrl, kind: "unknown", entryCount: 0 };
+    return {
+      fetched: false,
+      sitemapUrl,
+      kind: "unknown",
+      entryCount: 0,
+      passwordProtected,
+    };
   }
 
   const kind: SitemapCheckResult["kind"] = /<sitemapindex[\s>]/i.test(body)
@@ -340,7 +375,7 @@ export async function checkSitemap(
       ? "urlset"
       : "unknown";
 
-  return { fetched: true, sitemapUrl, kind, entryCount };
+  return { fetched: true, sitemapUrl, kind, entryCount, passwordProtected: false };
 }
 
 // ─── robots.txt.liquid snippet ────────────────────────────────────────────────

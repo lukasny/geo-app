@@ -972,8 +972,15 @@ export async function simulateAiView(
   //    shared (we only paid one fetch); each platform extracts independently.
   const platforms = enabledSimulatorPlatforms();
   if (platforms.length === 0) {
+    // The env detail (which keys are missing) is for us, not the merchant:
+    // surfacing "set ANTHROPIC_API_KEY" in a banner leaks our internal config
+    // and tells a merchant to fix something they can't touch. Log it here,
+    // throw a generic message.
+    console.error(
+      "[ai-simulator] no platforms configured - ANTHROPIC_API_KEY missing (and OPENAI_API_KEY optional for ChatGPT)"
+    );
     throw new Error(
-      "No AI simulator platforms configured - set ANTHROPIC_API_KEY (and optionally OPENAI_API_KEY for ChatGPT)"
+      "AI simulation is temporarily unavailable. Please try again later."
     );
   }
 
