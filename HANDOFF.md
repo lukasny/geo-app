@@ -1,5 +1,10 @@
 # GEO Rise: Session Handoff
 
+> **Read `docs/session-checkpoint-2026-06-23.md` FIRST.** It is the compressed
+> state of everything after this snapshot: the Shopify deploy (geo-rise-6),
+> the brand application, crawler visibility, and the agreed next step (the
+> retention batch). This file remains accurate for the 2026-06-14 baseline.
+
 **Date:** 2026-06-14
 **Head commit:** `e607aac` (pushed to origin/main)
 **Production:** https://geo-app-hkhi.onrender.com (Render auto-deploys from main)
