@@ -24,11 +24,11 @@ Since the retention batch, all pushed to main and health-checked:
   from CLAUDE.md. It is the ranked build queue: next up F4 (catalog/AI-shopping
   readiness audit), F7 (prompt tuning, cheap), F1 bot-type labels (filler).
 
-PENDING LUKAS DEPLOY: F6 touched the theme extension, so storefronts need one
-`npx shopify app deploy --allow-updates` (from ~/Desktop/geo-app ONLY) before
-FAQPage JSON-LD renders. F3 needed no deploy. Smoke test F6: generate FAQs for
-a product, publish, confirm the metafield write, and post-deploy confirm the
-FAQPage schema renders on the product page.
+F6 FULLY VERIFIED 2026-07-02: Lukas released geo-rise-10 from geo-app (the
+correct folder), then smoke-tested on boda-brands: FAQs generated, published,
+and the FAQPage JSON-LD confirmed rendering in the product page source. F3
+needed no deploy. F4 (AI shopping readiness, parallel score) spec 4fa9176,
+build in flight the same day.
 
 ## Where the product is RIGHT NOW
 
