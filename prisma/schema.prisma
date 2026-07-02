@@ -114,6 +114,7 @@ model Store {
   simulationUsages SimulationUsage[]
   blogPosts        BlogPost[]
   aiCrawlerHits    AiCrawlerHit[]
+  scoreSnapshots   ScoreSnapshot[]
   subscription     Subscription?
 }
 
@@ -351,6 +352,25 @@ model AiCrawlerHit {
 
   @@unique([storeId, botName, day])
   @@index([storeId, day])
+}
+
+// One row per successful full audit, written fire-and-forget by
+// audit-engine right after the store score persists. Powers the dashboard
+// score sparkline and the weekly email delta. The wizard's 5-product
+// starter audit (and any audit capped at 5 products or fewer, including
+// the FREE plan's 3-product cap) never writes a row, so the trend only
+// compares like-for-like full audits.
+model ScoreSnapshot {
+  id              String   @id @default(cuid())
+  storeId         String
+  score           Int
+  auditedProducts Int
+  issueCount      Int
+  createdAt       DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
 }
 
 // One row per generated blog post. Stored locally as a draft until the

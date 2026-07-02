@@ -991,6 +991,27 @@ export async function runFullAudit(
     },
   });
 
+  // 6b. Record a ScoreSnapshot for the dashboard trend + weekly email delta.
+  // Skipped when the caller capped the audit at 5 products or fewer (the
+  // wizard's starter audit, and the FREE plan's 3-product cap): a score from
+  // a handful of products isn't comparable to a full audit and would pollute
+  // the trend line. Fire-and-forget: a snapshot failure must never fail the
+  // audit itself, so the error is logged and swallowed.
+  if (maxProducts > 5) {
+    try {
+      await prisma.scoreSnapshot.create({
+        data: {
+          storeId,
+          score: storeScore,
+          auditedProducts: products.length,
+          issueCount: auditResultsToCreate.length,
+        },
+      });
+    } catch (err) {
+      console.error("[GEO Rise audit] score snapshot write failed:", err);
+    }
+  }
+
   // 7. Build summary
   const criticalCount = auditResultsToCreate.filter((r: { severity: string }) => r.severity === "CRITICAL").length;
   const highCount = auditResultsToCreate.filter((r: { severity: string }) => r.severity === "HIGH").length;
