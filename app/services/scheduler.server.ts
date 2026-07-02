@@ -73,7 +73,7 @@ if (ENABLED && !state.registered) {
 
   // Daily insight-digest tick at 09:00 UTC. The runner finds stores whose
   // last digest was >6.5 days ago, so running this daily means each store's
-  // cycle slides between 6.5–7.5 days. Daily-ish cadence beats weekly-strict
+  // cycle slides between 6.5-7.5 days. Daily-ish cadence beats weekly-strict
   // for missed-tick recovery.
   cron.schedule("0 9 * * *", async () => {
     if (state.isDigestRunning) {

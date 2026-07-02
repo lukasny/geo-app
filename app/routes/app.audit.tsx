@@ -1060,9 +1060,9 @@ export default function AuditPage() {
                         title="Score range"
                         titleHidden
                         choices={[
-                          { label: "Critical (0–39)", value: "critical" },
-                          { label: "Needs work (40–69)", value: "medium" },
-                          { label: "Good (70–100)", value: "good" },
+                          { label: "Critical (0-39)", value: "critical" },
+                          { label: "Needs work (40-69)", value: "medium" },
+                          { label: "Good (70-100)", value: "good" },
                         ]}
                         selected={scoreFilter}
                         onChange={(v) => {
@@ -1156,7 +1156,7 @@ export default function AuditPage() {
                   </Text>{" "}
                   product description
                   {autoFixBreakdown.descriptions !== 1 ? "s" : ""} (writes a new
-                  2–3 paragraph blurb using Claude vision on the product image)
+                  2-3 paragraph blurb using Claude vision on the product image)
                 </Text>
               )}
               {autoFixBreakdown.metaDescriptions > 0 && (
@@ -1167,7 +1167,7 @@ export default function AuditPage() {
                   </Text>{" "}
                   meta description
                   {autoFixBreakdown.metaDescriptions !== 1 ? "s" : ""}{" "}
-                  (120–158 chars, what shows up in search results)
+                  (120-158 chars, what shows up in search results)
                 </Text>
               )}
               {autoFixBreakdown.seoTitles > 0 && (
@@ -1177,7 +1177,7 @@ export default function AuditPage() {
                     {autoFixBreakdown.seoTitles}
                   </Text>{" "}
                   SEO title{autoFixBreakdown.seoTitles !== 1 ? "s" : ""}{" "}
-                  (30–58 chars, the clickable headline in Google)
+                  (30-58 chars, the clickable headline in Google)
                 </Text>
               )}
               {autoFixBreakdown.altTexts > 0 && (

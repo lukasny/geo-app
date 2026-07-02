@@ -587,7 +587,7 @@ export interface DigestRunResult {
  *  more than 6.5 days ago (or never sent). */
 export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
   // 6.5-day cutoff gives some slack - running the cron daily-ish means
-  // each store's digest cycle slides between 6.5–7.5 days, not strictly
+  // each store's digest cycle slides between 6.5-7.5 days, not strictly
   // 7. Avoids a "missed by 90 minutes, has to wait another full week"
   // failure mode.
   const cutoff = new Date(Date.now() - 6.5 * 24 * 60 * 60 * 1000);

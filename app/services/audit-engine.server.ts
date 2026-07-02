@@ -131,7 +131,7 @@ export interface AutoFixSummary {
 // Allowlist for HTML tags Claude is permitted to emit into product
 // descriptions. Everything else gets stripped before we POST to Shopify.
 // Deliberately conservative: no <a>, no <img>, no <table>, no inline styles
-// or event handlers. Claude's prompt asks for 2–3 paragraphs of plain prose
+// or event handlers. Claude's prompt asks for 2-3 paragraphs of plain prose
 // in <p> tags; the whitelist covers what reliably fits that mold.
 const ALLOWED_LLM_TAGS = new Set([
   "p", "br",
@@ -392,7 +392,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         category: "META",
         severity: "LOW",
         title: "SEO title length outside 30-60 characters",
-        description: `Your SEO title is ${seoTitle.length} characters (${seoTitle.length < 30 ? "too short" : "too long"}). The ideal range is 30–60 characters for maximum readability in AI search results and Google snippets.`,
+        description: `Your SEO title is ${seoTitle.length} characters (${seoTitle.length < 30 ? "too short" : "too long"}). The ideal range is 30-60 characters for maximum readability in AI search results and Google snippets.`,
         recommendation: `Adjust your SEO title to be between 30 and 60 characters. Current title: "${seoTitle}"`,
         autoFixable: true,
       });
@@ -405,7 +405,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       description:
         "This product is using its default title as the SEO title, or has no SEO title set. A custom SEO title optimized for AI search helps AI engines classify and surface your product for the right queries.",
       recommendation:
-        "Set a custom SEO title that includes the product's key benefit or differentiator (e.g., 'Organic Cotton Yoga Mat – Non-Slip, Eco-Friendly | Brand'). Keep it between 30–60 characters.",
+        "Set a custom SEO title that includes the product's key benefit or differentiator (e.g., 'Organic Cotton Yoga Mat - Non-Slip, Eco-Friendly | Brand'). Keep it between 30-60 characters.",
       autoFixable: true,
     });
   }
@@ -420,7 +420,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
         title: "Meta description length outside 120-160 characters",
         description: `Your meta description is ${seoDesc.length} characters (${seoDesc.length < 120 ? "too short" : "too long"}). The ideal range is 120-160 characters: the standard summary length search results and crawlers work with.`,
         recommendation:
-          "Rewrite the meta description to be 120–160 characters. Make it a concise, informative summary of the product's key benefit.",
+          "Rewrite the meta description to be 120-160 characters. Make it a concise, informative summary of the product's key benefit.",
         autoFixable: true,
       });
     }
@@ -432,7 +432,7 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
       description:
         "This product has no custom meta description. The meta description is the standard page summary crawlers read, so without one, whatever summarizes your page has to guess and may describe the product inaccurately.",
       recommendation:
-        `Add a 120–160 character meta description that summarizes the product's key features and target audience. Example: "${product.title} - ${plainDesc.slice(0, 80).trim()}... Shop at ${shopName}."`,
+        `Add a 120-160 character meta description that summarizes the product's key features and target audience. Example: "${product.title} - ${plainDesc.slice(0, 80).trim()}... Shop at ${shopName}."`,
       autoFixable: true,
     });
   }
@@ -1389,7 +1389,7 @@ async function generateProductDescriptionWithClaude(
     }
     userContent.push({
       type: "text",
-      text: `Write a product description for an e-commerce store. The description should be 150–250 words, formatted as 2–3 short HTML paragraphs (<p>...</p>).
+      text: `Write a product description for an e-commerce store. The description should be 150-250 words, formatted as 2-3 short HTML paragraphs (<p>...</p>).
 
 The first sentence should name the product and state its primary use or benefit directly, so an AI assistant can lift a clean one-line answer; the rest of the first paragraph expands on what it is. The second paragraph should cover features, materials, and what makes it distinctive, stating concrete attributes (materials, colors, form, components) that are present in the data or clearly visible in the image. If applicable, a third paragraph can cover use cases or who the product is for.
 

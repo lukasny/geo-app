@@ -352,7 +352,7 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - All GraphQL: use `admin.graphql()` with `#graphql` tag for syntax highlighting
 - Plan keys: always uppercase (`"FREE"`, `"GROWTH"`, `"PRO"`, `"ENTERPRISE"`)
 - Imports: use `~/` alias for `app/` directory (configured in tsconfig.json paths)
-- No em dashes or en dashes, anywhere: not in code, comments, UI copy, docs, or AI-generated content. Use commas, colons, or hyphens instead. This is an absolute project rule for all NEW text. (Pre-existing en dashes remain in some older audit copy pending a cleanup pass; do not add more, and do not let them fail a scan of your own changed files.)
+- No em dashes or en dashes, anywhere: not in code, comments, UI copy, docs, or AI-generated content. Use commas, colons, or hyphens instead. This is an absolute project rule. (Cleanup completed 2026-07-02: the only legitimate dash characters in the repo are functional, where the character itself is the subject, e.g. the stripEmDashes regexes and the llms-generator ndash entity map. Anything else a scan finds is a violation.)
 
 ## Brand and UI constraints (hard rules)
 

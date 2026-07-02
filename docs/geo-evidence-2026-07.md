@@ -66,16 +66,16 @@ manufactured mentions.
 
 All of these were verified present and accurate in the repo on 2026-07-02.
 
-- No em dashes or en dashes in anything NEW: code, comments, UI copy, docs,
+- No em dashes or en dashes anywhere: code, comments, UI copy, docs,
   AI-generated output. Generated content keeps the three-layer enforcement:
   prompt instruction, sanitizer pipeline, unconditional regex strip on every
   output field (see stripEmDashes in blog-generation.server.ts). Scan before
-  claiming done. Repo state honestly: em dashes are clean today (the only
-  U+2014 is the strip-regex itself), but pre-existing EN dashes remain in
-  older copy (app.audit.tsx score-filter and auto-fix labels, audit-engine
-  issue copy, a few comments) plus a legitimate ndash entity-decode mapping
-  in llms-generator.server.ts. Those are a pending cleanup pass, not
-  license to add more; do not let them fail a scan of YOUR changed files.
+  claiming done. Repo state (cleanup pass completed 2026-07-02): the ONLY
+  legitimate dash characters left are functional code where the character
+  itself is the subject: the strip regexes in blog-generation and
+  faq-generation, the ndash entity-decode mapping in
+  llms-generator.server.ts, and grep commands inside older plan docs that
+  search for the character. Anything else a scan finds is a violation.
 - Polaris only, never the Polaris Grid component (use native CSS grid). All
   plan links go to /app/pricing; there is no /app/billing.
 - Plan gates are enforced server-side in loaders and actions, at public
