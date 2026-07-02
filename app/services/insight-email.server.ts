@@ -4,7 +4,12 @@ import prisma from "~/db.server";
 import { PLAN_LIMITS } from "./billing.shared";
 import { getActionPlan } from "./action-plan.server";
 import { getCompetitorOverview } from "./competitor-monitoring.server";
-import { scoreColor as scoreBandColor } from "~/brand/tokens";
+import { getScoreTrend } from "./score-history.server";
+import {
+  computeCitationAlerts,
+  type CitationAlert,
+} from "./citation-alerts.server";
+import { scoreColor as scoreBandColor, semantic } from "~/brand/tokens";
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
@@ -107,12 +112,15 @@ export async function composeInsightEmail(
     ? planLimits.maxAuditProducts
     : undefined;
 
-  const [actionPlan, competitorOverview] = await Promise.all([
-    getActionPlan(storeId, { productLimit }),
-    planLimits.competitorMonitoring
-      ? getCompetitorOverview(storeId)
-      : Promise.resolve(null),
-  ]);
+  const [actionPlan, competitorOverview, scoreTrend, citationAlerts] =
+    await Promise.all([
+      getActionPlan(storeId, { productLimit }),
+      planLimits.competitorMonitoring
+        ? getCompetitorOverview(storeId)
+        : Promise.resolve(null),
+      getScoreTrend(storeId),
+      computeCitationAlerts(storeId),
+    ]);
 
   // Cited rate from the most recent tracking citations.
   const recentCitations = await prisma.aiCitation.findMany({
@@ -131,6 +139,39 @@ export async function composeInsightEmail(
     .slice()
     .sort((a, b) => b.citedCount - a.citedCount)[0];
 
+  // Score movement since the previous audit snapshot. A delta of exactly 0
+  // is treated as "no news": leading with "rose 0 points" would be noise,
+  // so the subject and lead fall back to the existing behavior.
+  //
+  // Snapshots are written by merchant-triggered audits, not on a schedule,
+  // so the latest one can be months old. "This week" is only honest when
+  // the movement actually happened in the last 7 days; without this guard
+  // a stale delta would repeat as the subject of every weekly digest until
+  // the merchant's next audit.
+  const delta = scoreTrend.deltaSincePrevious;
+  let deltaHeadline: string | null = null;
+  let deltaLead: string | null = null;
+  const latestSnapshot = scoreTrend.snapshots[scoreTrend.snapshots.length - 1];
+  const deltaIsFresh =
+    latestSnapshot !== undefined &&
+    Date.now() - Date.parse(latestSnapshot.createdAt) <=
+      7 * 24 * 60 * 60 * 1000;
+  if (delta !== null && delta !== 0 && deltaIsFresh) {
+    const magnitude = Math.abs(delta);
+    const unit = magnitude === 1 ? "point" : "points";
+    const verb = delta > 0 ? "rose" : "fell";
+    deltaHeadline = `Your GEO score ${verb} ${magnitude} ${unit} this week`;
+    // delta is only non-null with 2+ snapshots, so both reads are safe.
+    const from = scoreTrend.snapshots[scoreTrend.snapshots.length - 2].score;
+    const to = scoreTrend.snapshots[scoreTrend.snapshots.length - 1].score;
+    deltaLead = `${deltaHeadline}, from ${from} to ${to}.`;
+  }
+
+  // Citation alerts arrive newest-first, capped at 3. The top one leads the
+  // email above the action plan; the rest are listed right below it.
+  const topAlert: CitationAlert | undefined = citationAlerts[0];
+  const remainingAlerts = citationAlerts.slice(1);
+
   // Shopify admin deep link. A bare link to the app's public URL dead-ends
   // at the auth bounce (no shop context, no embedded session); the working
   // form for embedded apps is {shop}/admin/apps/{client_id}/{path}, which
@@ -144,21 +185,44 @@ export async function composeInsightEmail(
   const unsubscribeUrl = buildUnsubscribeUrl(storeId);
 
   // ── Build subject ──
-  // Three cases: has actions (top item leads), audit ran with no
-  // unfixed issues left (all clear), or no audit ever ran (welcome
-  // framing instead of misleading "all clear" / "0/100").
+  // Precedence: a first-ever AI citation is a once-per-store event, so it
+  // takes the subject when it is the top alert. Next comes the score delta
+  // ("Your GEO score rose 6 points this week"). Otherwise the existing
+  // three cases: has actions (top item leads), audit ran with no unfixed
+  // issues left (all clear), or no audit ever ran (welcome framing instead
+  // of misleading "all clear" / "0/100").
   const top = actionPlan.actions[0];
   const subject =
-    top !== undefined
-      ? `Your GEO Score ${store.geoScore}/100, top action: ${top.title}`
-      : actionPlan.hasAudit
-      ? `Your GEO Score ${store.geoScore}/100, no unfixed issues`
-      : `Welcome to GEO Rise: run your first audit`;
+    topAlert?.type === "first_citation"
+      ? "Your store was cited by AI for the first time"
+      : deltaHeadline ??
+        (top !== undefined
+          ? `Your GEO Score ${store.geoScore}/100, top action: ${top.title}`
+          : actionPlan.hasAudit
+          ? `Your GEO Score ${store.geoScore}/100, no unfixed issues`
+          : `Welcome to GEO Rise: run your first audit`);
 
   // ── Build plain text (for accessibility / non-HTML clients) ──
+  // Mirrors the HTML order: alerts lead, then the score delta, then stats.
   const textLines: string[] = [];
   textLines.push(`Hi ${store.shopName},`);
   textLines.push("");
+  if (topAlert) {
+    textLines.push(topAlert.title);
+    textLines.push(topAlert.detail);
+    textLines.push("");
+    if (remainingAlerts.length > 0) {
+      textLines.push(`Also this week:`);
+      for (const alert of remainingAlerts) {
+        textLines.push(`  - ${alert.title}: ${alert.detail}`);
+      }
+      textLines.push("");
+    }
+  }
+  if (deltaLead) {
+    textLines.push(deltaLead);
+    textLines.push("");
+  }
   textLines.push(`Your AI visibility update for the past week:`);
   textLines.push("");
   textLines.push(`GEO Score: ${store.geoScore}/100`);
@@ -226,6 +290,48 @@ export async function composeInsightEmail(
     )
     .join("");
 
+  // Top alert leads the email, above the score block and action plan.
+  // Remaining alerts follow as a compact list. Accent colors come from the
+  // brand semantic tokens (this is bespoke email markup, not Polaris) and
+  // mirror the dashboard banner tones.
+  const alertsLeadHtml = topAlert
+    ? `
+      <div style="margin: 0 0 16px; padding: 14px 16px; background: #f6f6f7; border-left: 4px solid ${alertAccentColor(
+        topAlert
+      )}; border-radius: 8px;">
+        <div style="font-size: 16px; font-weight: 600; color: #202223;">
+          ${escapeHtml(topAlert.title)}
+        </div>
+        <div style="font-size: 13px; color: #6D7175; margin-top: 4px;">
+          ${escapeHtml(topAlert.detail)}
+        </div>
+      </div>${
+        remainingAlerts.length > 0
+          ? `
+      <div style="margin: 0 0 20px; font-size: 13px; color: #6D7175;">
+        <div style="font-weight: 600; margin-bottom: 4px;">Also this week</div>
+        <ul style="margin: 0; padding-left: 18px;">
+          ${remainingAlerts
+            .map(
+              (a) =>
+                `<li style="margin-bottom: 4px;">${escapeHtml(
+                  a.title
+                )}: ${escapeHtml(a.detail)}</li>`
+            )
+            .join("")}
+        </ul>
+      </div>`
+          : ""
+      }`
+    : "";
+
+  const deltaLeadHtml = deltaLead
+    ? `
+      <p style="font-size: 14px; color: #202223; margin: 0 0 20px;">
+        ${escapeHtml(deltaLead)}
+      </p>`
+    : "";
+
   const competitorBlockHtml = topCompetitor
     ? `
       <div style="margin: 20px 0; padding: 14px 16px; background: #f6f6f7; border-radius: 8px;">
@@ -272,6 +378,8 @@ export async function composeInsightEmail(
       </div>
 
       <div style="padding: 0 32px;">
+        ${alertsLeadHtml}
+        ${deltaLeadHtml}
         <div style="display: inline-block; padding: 16px 20px; background: #f6f6f7; border-radius: 12px; margin-bottom: 16px;">
           <div style="font-size: 13px; color: #6D7175; margin-bottom: 4px;">GEO Score</div>
           <div style="font-size: 36px; font-weight: 700; color: ${scoreColor}; line-height: 1;">
@@ -555,6 +663,14 @@ export async function runWeeklyInsightDigest(): Promise<DigestRunResult> {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Accent color for the alert card that leads the email. Success for a
+ *  first-ever citation, warning for lost citations and competitor
+ *  overtakes, mirroring the dashboard banner tones. Brand semantic tokens
+ *  are allowed here because the email is bespoke markup, not Polaris. */
+function alertAccentColor(alert: CitationAlert): string {
+  return alert.type === "first_citation" ? semantic.success : semantic.warning;
+}
 
 /** Minimal HTML-entity escape for merchant-provided strings (shop name,
  *  competitor names, action titles). Stops a `</style>` or `<script>` in a
