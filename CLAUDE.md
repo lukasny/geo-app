@@ -77,7 +77,7 @@ geo-rise/
 │   ├── entry.server.tsx           # Boots the scheduler via side-effect import
 │   └── db.server.ts               # Singleton Prisma client
 ├── prisma/
-│   └── schema.prisma              # Full DB schema (16 models, 7 enums)
+│   └── schema.prisma              # Full DB schema (16 models, 7 enums; F4 added readiness columns to Product/Store, no new models)
 ├── extensions/
 │   └── geo-rise-schema/           # Theme app extension
 │       ├── blocks/schema-injection.liquid  # JSON-LD injection + AI referral tracker
@@ -332,6 +332,7 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - [x] GEO score history (`ScoreSnapshot` + dashboard sparkline) + citation alerts (dashboard banner + weekly email lead) + onboarding prompt seeding
 - [x] Citation source radar (`/app/tracking` "Where AI answers come from" card): persists cited source URLs (`AiCitation.sourcesCited`), classifies domains (Reddit/review/marketplace/editorial/competitor), on-demand `SourcePresence` checker
 - [x] FAQ generator (`/app/faq-generator`, Growth+, monthly cap): Claude drafts product FAQs (`ProductFaq`), publishes to a storefront-readable `geo_rise.faq` product metafield (the app's only metafield WRITE), renders as FAQPage JSON-LD from the theme extension
+- [x] AI shopping readiness (F4): a PARALLEL score beside the GEO score computed in the same audit run (category taxonomy + barcode + brand + type + images + SKUs + reviews + spec density), stored on `Product.readinessScore`/`readinessGaps` + `Store.readinessScore`; audit-page card + per-product gap list with admin deep links + dashboard mini-stat. Read-only; weight excluded (query-cost cap). Rubric/`scoreProduct`/`ScoreSnapshot` untouched so GEO history stays like-for-like
 
 ### Planned / Not yet built ❌
 - [ ] Activate `orders/paid` webhook (after Protected Customer Data approval) to complete revenue attribution
