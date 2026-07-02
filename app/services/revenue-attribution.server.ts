@@ -39,6 +39,11 @@ export interface RecentOrder {
   eventAt: string;
 }
 
+export interface VisitPlatformCount {
+  platform: string;
+  count: number;
+}
+
 export interface RevenueSummary {
   /** Currency that contributed the largest revenue across the range, falling
    *  back to all-time events when the range is empty. Null only when the
@@ -57,6 +62,11 @@ export interface RevenueSummary {
   topPlatform: AiPlatform | null;
   /** Most recent attributed orders (newest first). */
   recentOrders: RecentOrder[];
+  /** AI-referred storefront visits (beacon events, no order attached)
+   *  inside the range window. */
+  visits30d: number;
+  /** Per-platform visit counts for the same window, highest first. */
+  visitsByPlatform: VisitPlatformCount[];
 }
 
 export interface GetRevenueAttributionOptions {
@@ -82,29 +92,42 @@ export async function getRevenueAttribution(
   rangeStart.setUTCHours(0, 0, 0, 0);
   rangeStart.setUTCDate(rangeStart.getUTCDate() - (rangeDays - 1));
 
-  const [rangeEvents, allTimeEvents, recentEvents] = await Promise.all([
-    prisma.aiTrafficEvent.findMany({
-      where: {
-        storeId,
-        convertedToOrder: true,
-        eventAt: { gte: rangeStart },
-      },
-      orderBy: { eventAt: "desc" },
-    }),
-    prisma.aiTrafficEvent.findMany({
-      where: { storeId, convertedToOrder: true },
-      select: { orderRevenue: true, orderCurrency: true },
-    }),
-    orderLimit > 0
-      ? prisma.aiTrafficEvent.findMany({
-          where: { storeId, convertedToOrder: true },
-          orderBy: { eventAt: "desc" },
-          take: orderLimit,
-        })
-      : Promise.resolve([] as Awaited<
-          ReturnType<typeof prisma.aiTrafficEvent.findMany>
-        >),
-  ]);
+  const [rangeEvents, allTimeEvents, recentEvents, visitGroups] =
+    await Promise.all([
+      prisma.aiTrafficEvent.findMany({
+        where: {
+          storeId,
+          convertedToOrder: true,
+          eventAt: { gte: rangeStart },
+        },
+        orderBy: { eventAt: "desc" },
+      }),
+      prisma.aiTrafficEvent.findMany({
+        where: { storeId, convertedToOrder: true },
+        select: { orderRevenue: true, orderCurrency: true },
+      }),
+      orderLimit > 0
+        ? prisma.aiTrafficEvent.findMany({
+            where: { storeId, convertedToOrder: true },
+            orderBy: { eventAt: "desc" },
+            take: orderLimit,
+          })
+        : Promise.resolve([] as Awaited<
+            ReturnType<typeof prisma.aiTrafficEvent.findMany>
+          >),
+      // Visit beacons: rows the proxy beacon route creates with
+      // convertedToOrder=false. groupBy keeps this bounded (one row per
+      // platform) no matter how many visits accrue.
+      prisma.aiTrafficEvent.groupBy({
+        by: ["platform"],
+        where: {
+          storeId,
+          convertedToOrder: false,
+          eventAt: { gte: rangeStart },
+        },
+        _count: { _all: true },
+      }),
+    ]);
 
   // 1. Group range events by currency.
   const byCurrencyMap = new Map<
@@ -204,7 +227,13 @@ export async function getRevenueAttribution(
     }
   }
 
-  // 5. Recent orders, newest first, capped at orderLimit.
+  // 5. Visit beacons in the window: total plus per-platform, highest first.
+  const visitsByPlatform: VisitPlatformCount[] = visitGroups
+    .map((g) => ({ platform: g.platform as string, count: g._count._all }))
+    .sort((a, b) => b.count - a.count);
+  const visits30d = visitsByPlatform.reduce((sum, v) => sum + v.count, 0);
+
+  // 6. Recent orders, newest first, capped at orderLimit.
   const recentOrders: RecentOrder[] = recentEvents
     .filter((e) => e.orderId !== null)
     .map((e) => ({
@@ -224,5 +253,7 @@ export async function getRevenueAttribution(
     byDay,
     topPlatform,
     recentOrders,
+    visits30d,
+    visitsByPlatform,
   };
 }

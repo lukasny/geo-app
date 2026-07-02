@@ -95,11 +95,12 @@ export default function RevenuePage() {
     );
   }
 
-  const hasData =
+  const hasOrders =
     summary !== null &&
     (summary.byCurrency.length > 0 || summary.allTimeTotal !== null);
+  const hasVisits = summary !== null && summary.visits30d > 0;
 
-  if (!hasData) {
+  if (!hasOrders && !hasVisits) {
     return (
       <Page>
         <TitleBar title="AI Revenue" />
@@ -114,10 +115,10 @@ export default function RevenuePage() {
         >
           <div style={{ maxWidth: "34rem" }}>
             <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-              Order tracking is awaiting Shopify&apos;s approval for protected
-              order data and activates automatically once granted. AI referrals
-              are already being tagged in the meantime, so attributed orders will
-              appear here once that access is in place.
+              Visit counts appear here as soon as the first shopper arrives
+              from an AI platform. Order tracking is awaiting Shopify&apos;s
+              approval for protected order data and activates automatically
+              once granted.
             </Text>
           </div>
         </BrandEmptyState>
@@ -125,6 +126,9 @@ export default function RevenuePage() {
     );
   }
 
+  // With zero orders ever, there is no real order currency: the "USD" here
+  // is only a type-level fallback and must never surface, so the 30-day
+  // revenue card renders "-" instead of a zero in a guessed currency.
   const dominant = summary!.byCurrency[0] ?? {
     currency: summary!.allTimeTotal?.currency ?? "USD",
     amount: 0,
@@ -135,6 +139,18 @@ export default function RevenuePage() {
     <Page>
       <TitleBar title="AI Revenue" />
       <BlockStack gap="500">
+        {hasVisits && !hasOrders && (
+          <Banner tone="info">
+            <Text as="p" variant="bodySm">
+              AI platforms are already sending shoppers to your store: the
+              visit counts below are live. Order revenue stays at zero for
+              now because it needs Shopify&apos;s approval for protected
+              order data, which is pending and activates automatically once
+              granted.
+            </Text>
+          </Banner>
+        )}
+
         <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="400">
           <Card>
             <BlockStack gap="100">
@@ -142,7 +158,9 @@ export default function RevenuePage() {
                 Revenue, last 30 days
               </Text>
               <Text as="p" variant="headingLg">
-                {formatMoney(dominant.amount, dominant.currency)}
+                {hasOrders
+                  ? formatMoney(dominant.amount, dominant.currency)
+                  : "-"}
               </Text>
             </BlockStack>
           </Card>
@@ -185,7 +203,7 @@ export default function RevenuePage() {
           </Card>
         </InlineGrid>
 
-        {summary!.byCurrency.length === 0 && (
+        {hasOrders && summary!.byCurrency.length === 0 && (
           <Text as="p" variant="bodySm" tone="subdued">
             No AI-attributed orders in the last 30 days. The all-time total and
             recent orders below reflect older activity.
@@ -206,43 +224,87 @@ export default function RevenuePage() {
         <Card>
           <BlockStack gap="300">
             <Text as="h2" variant="headingMd">
-              Daily AI revenue, last 30 days ({dominant.currency})
+              AI-referred visits, last 30 days
             </Text>
-            <RevenueChart byDay={summary!.byDay} currency={dominant.currency} />
-            <InlineStack gap="300" wrap>
-              {summary!.byPlatform.map((p) => (
-                <InlineStack key={p.platform} gap="100" blockAlign="center">
-                  <span
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: 2,
-                      background:
-                        platformColors[p.platform] ?? brand.neutral[400],
-                      display: "inline-block",
-                    }}
-                  />
-                  <Text as="span" variant="bodySm">
-                    {platformLabel(p.platform)}{" "}
-                    <strong>{formatMoney(p.amount, p.currency)}</strong>
-                  </Text>
-                </InlineStack>
-              ))}
-            </InlineStack>
+            <Text as="p" variant="headingLg">
+              {summary!.visits30d}
+            </Text>
+            {summary!.visitsByPlatform.length > 0 && (
+              <InlineStack gap="300" wrap>
+                {summary!.visitsByPlatform.map((v) => (
+                  <InlineStack key={v.platform} gap="100" blockAlign="center">
+                    <span
+                      style={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: 2,
+                        background:
+                          platformColors[v.platform] ?? brand.neutral[400],
+                        display: "inline-block",
+                      }}
+                    />
+                    <Text as="span" variant="bodySm">
+                      {platformLabel(v.platform)} <strong>{v.count}</strong>
+                    </Text>
+                  </InlineStack>
+                ))}
+              </InlineStack>
+            )}
+            <Text as="p" variant="bodySm" tone="subdued">
+              Counted once per browser session when a shopper lands on your
+              storefront from an AI platform. No personal data is stored,
+              only the platform name.
+            </Text>
           </BlockStack>
         </Card>
 
-        <Card>
-          <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">
-              Recent attributed orders
-            </Text>
-            <RevenueOrderTable
-              orders={summary!.recentOrders}
-              shopifyDomain={shopifyDomain}
-            />
-          </BlockStack>
-        </Card>
+        {hasOrders && (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">
+                Daily AI revenue, last 30 days ({dominant.currency})
+              </Text>
+              <RevenueChart
+                byDay={summary!.byDay}
+                currency={dominant.currency}
+              />
+              <InlineStack gap="300" wrap>
+                {summary!.byPlatform.map((p) => (
+                  <InlineStack key={p.platform} gap="100" blockAlign="center">
+                    <span
+                      style={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: 2,
+                        background:
+                          platformColors[p.platform] ?? brand.neutral[400],
+                        display: "inline-block",
+                      }}
+                    />
+                    <Text as="span" variant="bodySm">
+                      {platformLabel(p.platform)}{" "}
+                      <strong>{formatMoney(p.amount, p.currency)}</strong>
+                    </Text>
+                  </InlineStack>
+                ))}
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        )}
+
+        {hasOrders && (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">
+                Recent attributed orders
+              </Text>
+              <RevenueOrderTable
+                orders={summary!.recentOrders}
+                shopifyDomain={shopifyDomain}
+              />
+            </BlockStack>
+          </Card>
+        )}
       </BlockStack>
     </Page>
   );

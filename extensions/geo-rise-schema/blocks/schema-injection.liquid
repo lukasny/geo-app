@@ -294,6 +294,11 @@
   Attribution window: 30 days (cookie max-age)
   Model: last-AI-touch (most recent AI referrer overwrites the cookie)
   PII: none stored. Just the platform name and a unix timestamp.
+
+  Visit beacon: one POST per browser session to the app proxy at
+  /a/llms-txt/visit?platform={PLATFORM} so the app can count AI-referred
+  visits before any order happens. sessionStorage guards against repeat
+  page views re-pinging. Payload is the platform name only, nothing else.
 {%- endcomment -%}
 <script type="text/javascript">
 (function () {
@@ -361,7 +366,35 @@
     return parts[0] || null;
   }
 
-  var platform = platformFromReferrer() || platformFromUtm() || platformFromCookie();
+  function sendVisitBeacon(detectedPlatform) {
+    // One beacon per browser session. If sessionStorage is unavailable
+    // (private mode, storage blocked) skip entirely: undercounting one
+    // visit is better than pinging on every page view.
+    var GUARD_KEY = "__geo_rise_ai_visit_sent";
+    try {
+      if (sessionStorage.getItem(GUARD_KEY)) return;
+      sessionStorage.setItem(GUARD_KEY, "1");
+    } catch (e) {
+      return;
+    }
+    var url = "/a/llms-txt/visit?platform=" + encodeURIComponent(detectedPlatform);
+    var queued = false;
+    if (navigator.sendBeacon) {
+      try {
+        queued = navigator.sendBeacon(url);
+      } catch (e) {
+        queued = false;
+      }
+    }
+    if (!queued) {
+      fetch(url, { method: "POST", keepalive: true }).catch(function () {
+        // Silent: tracking failure must never break the storefront page.
+      });
+    }
+  }
+
+  var freshPlatform = platformFromReferrer() || platformFromUtm();
+  var platform = freshPlatform || platformFromCookie();
   if (!platform) return;
 
   writeCookie(COOKIE_NAME, platform + ":" + Math.floor(Date.now() / 1000));
@@ -376,6 +409,15 @@
   }).catch(function () {
     // Silent: tracking failure must never break the storefront page.
   });
+
+  // Beacon only on fresh detection. The cookie fallback exists for
+  // last-AI-touch cart attribution; letting it fire the beacon would count
+  // every direct return session within the 30-day cookie as a new AI
+  // visit, contradicting the revenue page's "counted once per browser
+  // session when a shopper lands from an AI platform" copy.
+  if (freshPlatform) {
+    sendVisitBeacon(freshPlatform);
+  }
 })();
 </script>
 
