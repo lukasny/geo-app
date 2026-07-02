@@ -81,18 +81,58 @@ export interface SimulationResult {
   usedFallback: boolean;
   /** Human-readable reason for the fallback, when one was used. */
   fallbackReason: string | null;
+
+  /** "What the AI bot actually sees": deterministic checks of the RAW page
+   *  HTML with no JavaScript executed. Platform-independent (the raw bytes
+   *  are shared across platforms), sits beside the per-platform results. */
+  rawAnalysis: RawHtmlAnalysis;
+}
+
+// ─── Raw-HTML Analysis Contract ───────────────────────────────────────────────
+// Five deterministic checks of the raw response body, answering the question
+// the LLM extraction cannot answer reliably: is this content present in the
+// bytes an AI crawler receives, or does it only exist after client-side
+// JavaScript runs (page builders, review widget apps)? No major AI crawler
+// executes JavaScript, so the raw bytes are what they read.
+
+export type RawCheckStatus = "present" | "missing" | "not_checked";
+
+export interface RawHtmlCheck {
+  key: "json_ld" | "title" | "price" | "description" | "review_markup";
+  status: RawCheckStatus;
+}
+
+export interface RawHtmlAnalysis {
+  /** False when the checks could not honestly run: fallback HTML is
+   *  synthetic (scoring it would be a false pass), and thin HTML means
+   *  there was no real page to check (a false wall of "missing"). */
+  ran: boolean;
+  skipReason: "fallback" | "thin_html" | null;
+  checks: RawHtmlCheck[]; // empty when ran=false
+  htmlBytes: number; // 0 when ran=false and no body was read
+  truncated: boolean;
 }
 
 // ─── HTML Cleaning ────────────────────────────────────────────────────────────
 
-function cleanHtml(html: string): string {
-  // Extract JSON-LD blocks first (most valuable for AI)
-  const jsonLdBlocks: string[] = [];
+/** Extract the raw contents of every <script type="application/ld+json">
+ *  block. Shared by cleanHtml (prepends them for the LLM) and analyzeRawHtml
+ *  (the json_ld and review_markup checks) so the two can never disagree
+ *  about what counts as JSON-LD. Fresh regex per call: a shared `g`-flagged
+ *  instance would carry lastIndex state between callers. */
+function extractJsonLdBlocks(html: string): string[] {
+  const blocks: string[] = [];
   const jsonLdRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let m: RegExpExecArray | null;
   while ((m = jsonLdRe.exec(html)) !== null) {
-    jsonLdBlocks.push(m[1].trim());
+    blocks.push(m[1].trim());
   }
+  return blocks;
+}
+
+function cleanHtml(html: string): string {
+  // Extract JSON-LD blocks first (most valuable for AI)
+  const jsonLdBlocks = extractJsonLdBlocks(html);
 
   // Remove tags we definitely don't need
   let cleaned = html
@@ -461,6 +501,227 @@ function buildComparison(
   });
 }
 
+// ─── Bounded Fetch ────────────────────────────────────────────────────────────
+
+// Product pages run much larger than robots.txt, but JSON-LD sits in <head>
+// and the body copy the checks and the LLM need is comfortably within 1 MiB,
+// so cap there: still bounded against a hostile or misconfigured origin
+// instead of buffering an unbounded res.text() into memory.
+const MAX_PRODUCT_HTML_LENGTH = 1024 * 1024;
+
+/** Read at most `maxBytes` of a response body, streaming so a slow or huge
+ *  origin can't buffer hundreds of MB into memory before we slice, plus a
+ *  `truncated` flag so the raw analysis can disclose when only the first
+ *  1 MB was checked. Deliberately NO declared Content-Length fast-reject
+ *  here, unlike the crawler-access reader: an oversized product page is
+ *  still analyzable content, and returning "" would hand the LLM an empty
+ *  page (collapsing the visibility score) and trip the thin-HTML gate with
+ *  a false "blocking fetchers" message. The reader loop bounds memory the
+ *  same way and reports the truncation honestly. */
+async function readBoundedText(
+  response: Response,
+  maxBytes: number
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // No streamable body (not expected for a normal fetch 200); fall back.
+    const text = (await response.text()).slice(0, maxBytes);
+    return { text, truncated: text.length >= maxBytes };
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    // Stop the download as soon as we have enough (or hit the cap).
+    await reader.cancel().catch(() => {});
+  }
+  return { text: text.slice(0, maxBytes), truncated: text.length >= maxBytes };
+}
+
+// ─── Raw-HTML Analysis ────────────────────────────────────────────────────────
+
+// Thin-HTML gate thresholds. A real Shopify product page is tens of KB of
+// HTML with a few KB of visible text; a bot-protection interstitial or a
+// JavaScript-shell page (everything rendered client-side) is a fraction of
+// that. Below either threshold the checks would report a false wall of
+// "missing", so we refuse to run them and say why instead.
+const THIN_HTML_MIN_RAW_CHARS = 10_000;
+const THIN_HTML_MIN_TEXT_CHARS = 400;
+
+// A Product @type inside a JSON-LD block, case-insensitive, covering both
+// the string form ("@type": "Product") and the array form
+// ("@type": ["Product", ...]).
+const JSON_LD_PRODUCT_TYPE_RE = /"@type"\s*:\s*(?:\[[^\]]*)?"product"/i;
+
+/** Normalize text for the raw-substring checks: decode the entities Shopify
+ *  themes commonly emit, collapse whitespace, lowercase. Applied to BOTH the
+ *  needle (Shopify data) and the haystack (page text) so "Mugs & Cups"
+ *  still matches "Mugs &amp; Cups". */
+function normalizeForMatch(s: string): string {
+  return s
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .trim();
+}
+
+/** Tag-stripped visible text of a raw HTML document. Script and style
+ *  contents are dropped first: text that only lives inside a JS bundle is
+ *  invisible to a crawler's HTML pipeline (and would let a JS-shell page
+ *  slip past the thin-HTML gate on the sheer size of its bundle). Remaining
+ *  tags become spaces so text spanning inline markup stays matchable. */
+function visibleTextOf(rawHtml: string): string {
+  return normalizeForMatch(
+    rawHtml
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/<[^>]+>/g, " ")
+  );
+}
+
+/** Price presence in the raw bytes. Matches the two-decimal form with "."
+ *  or "," as the separator ("29.99" / "29,99"); when the decimal part is
+ *  zero, also the bare integer on a word boundary. Text-based, so unusual
+ *  currency formats (thousands separators, superscript decimals) can
+ *  produce a false "missing" - the UI copy discloses this. */
+function priceRawStatus(
+  price: string | null,
+  rawHtml: string
+): RawCheckStatus {
+  const amount = extractPriceNumber(price);
+  if (amount === null) return "not_checked";
+  const [intPart, fracPart] = Math.abs(amount).toFixed(2).split(".");
+  if (rawHtml.includes(`${intPart}.${fracPart}`)) return "present";
+  if (rawHtml.includes(`${intPart},${fracPart}`)) return "present";
+  if (fracPart === "00" && new RegExp(`\\b${intPart}\\b`).test(rawHtml)) {
+    return "present";
+  }
+  return "missing";
+}
+
+/** Review markup presence: aggregateRating inside any JSON-LD block, or a
+ *  DECIMAL rendering of the rating value in the crawler-visible haystack.
+ *  Only checked when the Shopify data actually carries a rating or review
+ *  count. "Missing" here is the classic finding this feature exists for: a
+ *  review widget that renders client-side only. */
+function reviewRawStatus(
+  product: ShopifyProductInput,
+  haystack: string,
+  jsonLdBlocks: string[]
+): RawCheckStatus {
+  if (product.rating === null && product.reviewCount <= 0) {
+    return "not_checked";
+  }
+  if (jsonLdBlocks.some((b) => /aggregateRating/i.test(b))) return "present";
+  if (product.rating !== null) {
+    // Match only decimal renderings ("4.5", "4.50", comma variants) in the
+    // crawler-visible haystack, never a bare integer against the raw
+    // bytes: a 5-star store's "5" would match essentially any document
+    // (attribute values, script constants), silently suppressing the
+    // JS-only-widget finding this check exists for.
+    const candidates = [product.rating.toFixed(1), product.rating.toFixed(2)];
+    for (const candidate of candidates) {
+      const [intPart, fracPart] = candidate.split(".");
+      if (new RegExp(`\\b${intPart}[.,]${fracPart}\\b`).test(haystack)) {
+        return "present";
+      }
+    }
+  }
+  return "missing";
+}
+
+/** The five deterministic raw-HTML checks. Runs ONLY on a real fetched body
+ *  (never on fallback HTML: scoring the synthetic ideal page would be a
+ *  false pass), at the single hook point before cleanHtml strips the markup
+ *  and before the platform fan-out. The raw bytes are shared across
+ *  platforms, so the analysis is naturally platform-independent. */
+function analyzeRawHtml(
+  rawHtml: string,
+  product: ShopifyProductInput,
+  htmlBytes: number,
+  truncated: boolean
+): RawHtmlAnalysis {
+  // Thin-HTML gate: a 200 response this small is a suspected bot-protection
+  // or JavaScript-shell page, not a real product page. Report not-run with
+  // no check rows so the UI can warn honestly instead of showing a false
+  // wall of "missing".
+  const visibleText = visibleTextOf(rawHtml);
+  if (
+    rawHtml.length < THIN_HTML_MIN_RAW_CHARS ||
+    visibleText.length < THIN_HTML_MIN_TEXT_CHARS
+  ) {
+    return {
+      ran: false,
+      skipReason: "thin_html",
+      checks: [],
+      htmlBytes,
+      truncated,
+    };
+  }
+
+  const jsonLdBlocks = extractJsonLdBlocks(rawHtml);
+  // Crawlers parse JSON-LD and meta tags too, so title/description text
+  // that only lives in a JSON-LD block or a <meta content="..."> attribute
+  // (meta description, og:description: the page-builder case where the
+  // head is server-rendered but the body copy is not) still counts as
+  // present in the raw page.
+  const metaContents: string[] = [];
+  const metaRe = /<meta\b[^>]*\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+  let metaMatch: RegExpExecArray | null;
+  while ((metaMatch = metaRe.exec(rawHtml)) !== null) {
+    metaContents.push(metaMatch[1] ?? metaMatch[2] ?? "");
+  }
+  const haystack = `${visibleText} ${normalizeForMatch(
+    `${jsonLdBlocks.join(" ")} ${metaContents.join(" ")}`
+  )}`;
+
+  const title = normalizeForMatch(product.title);
+  const titleStatus: RawCheckStatus =
+    title.length === 0
+      ? "not_checked"
+      : haystack.includes(title)
+        ? "present"
+        : "missing";
+
+  // First 80 chars of the normalized plain-text description; under 40 chars
+  // the snippet is too short to match reliably, so we don't pretend to check.
+  const description = normalizeForMatch(product.description ?? "");
+  const descriptionStatus: RawCheckStatus =
+    description.length < 40
+      ? "not_checked"
+      : haystack.includes(description.slice(0, 80))
+        ? "present"
+        : "missing";
+
+  const checks: RawHtmlCheck[] = [
+    {
+      key: "json_ld",
+      status: jsonLdBlocks.some((b) => JSON_LD_PRODUCT_TYPE_RE.test(b))
+        ? "present"
+        : "missing",
+    },
+    { key: "title", status: titleStatus },
+    { key: "price", status: priceRawStatus(product.price, rawHtml) },
+    { key: "description", status: descriptionStatus },
+    {
+      key: "review_markup",
+      status: reviewRawStatus(product, haystack, jsonLdBlocks),
+    },
+  ];
+
+  return { ran: true, skipReason: null, checks, htmlBytes, truncated };
+}
+
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
 function isPasswordPage(html: string): boolean {
@@ -649,6 +910,8 @@ export async function simulateAiView(
   let rawHtml = "";
   let usedFallback = false;
   let fallbackReason: string | null = null;
+  let htmlBytes = 0;
+  let htmlTruncated = false;
 
   try {
     const res = await fetch(productUrl, {
@@ -664,7 +927,12 @@ export async function simulateAiView(
       usedFallback = true;
       fallbackReason = `Product page returned HTTP ${res.status}. Showing what AI would see if the page were public.`;
     } else {
-      const body = await res.text();
+      const { text: body, truncated } = await readBoundedText(
+        res,
+        MAX_PRODUCT_HTML_LENGTH
+      );
+      htmlBytes = body.length;
+      htmlTruncated = truncated;
       if (isPasswordPage(body)) {
         usedFallback = true;
         fallbackReason =
@@ -678,6 +946,20 @@ export async function simulateAiView(
     fallbackReason =
       "Couldn't reach the live product page. Showing what AI would see if the page were public.";
   }
+
+  // Raw-HTML analysis happens HERE: on the real fetched bytes only, before
+  // the fallback substitutes a synthetic ideal page and before cleanHtml
+  // strips the markup. In fallback mode there is no raw HTML to analyze, so
+  // the checks report not-run instead of scoring the synthetic page.
+  const rawAnalysis: RawHtmlAnalysis = usedFallback
+    ? {
+        ran: false,
+        skipReason: "fallback",
+        checks: [],
+        htmlBytes: 0,
+        truncated: false,
+      }
+    : analyzeRawHtml(rawHtml, shopifyProductData, htmlBytes, htmlTruncated);
 
   if (usedFallback) {
     rawHtml = buildFallbackHtml(shopifyProductData);
@@ -782,5 +1064,6 @@ export async function simulateAiView(
     missingFields: primary.missingFields,
     usedFallback,
     fallbackReason,
+    rawAnalysis,
   };
 }
