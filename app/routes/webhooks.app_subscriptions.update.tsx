@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { planKeyFromSubscriptionName } from "../services/billing.server";
 import type { PlanKey } from "../services/billing.server";
+import { PLAN_LIMITS } from "../services/billing.shared";
 import prisma from "../db.server";
 
 // Fires when a subscription is created, updated, activated, cancelled, or expired.
@@ -87,6 +88,43 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: "ACTIVE",
       },
     });
+
+    // A plan switch (including a Pro -> Growth downgrade) fires this ACTIVE
+    // event. Prompt caps are only checked at creation time, so a downgrade
+    // would leave over-cap prompts firing scheduled multi-platform checks
+    // forever - an API-cost leak, and the advertised Growth 10-prompt cap
+    // would go unenforced. Pause the excess: keep the OLDEST cap prompts
+    // active and convert the newest-over-cap ones to a manual, deactivated
+    // state (schedule MANUAL + nextRunAt null + isActive false) so the
+    // scheduler tick (schedule != MANUAL, isActive, nextRunAt <= now) skips
+    // them. Bounded update, safe to run inline before the 2xx.
+    const cap = PLAN_LIMITS[planKey].maxTrackingPrompts;
+    if (Number.isFinite(cap)) {
+      const activeCount = await prisma.trackingPrompt.count({
+        where: { storeId: store.id, isActive: true },
+      });
+      if (activeCount > cap) {
+        // Keep the oldest `cap` active prompts; pause everything newer.
+        const toKeep = await prisma.trackingPrompt.findMany({
+          where: { storeId: store.id, isActive: true },
+          orderBy: { createdAt: "asc" },
+          take: cap,
+          select: { id: true },
+        });
+        const keepIds = toKeep.map((p) => p.id);
+        const paused = await prisma.trackingPrompt.updateMany({
+          where: {
+            storeId: store.id,
+            isActive: true,
+            id: { notIn: keepIds },
+          },
+          data: { isActive: false, schedule: "MANUAL", nextRunAt: null },
+        });
+        console.log(
+          `[GEO Rise] Downgrade to ${planKey} on ${shop}: paused ${paused.count} tracking prompt(s) over the ${cap}-prompt cap.`
+        );
+      }
+    }
   } else if (["CANCELLED", "EXPIRED", "DECLINED"].includes(status)) {
     // Plan switches use Shopify's STANDARD replacement behavior: approving a
     // new subscription immediately cancels the old one, and that cancellation
