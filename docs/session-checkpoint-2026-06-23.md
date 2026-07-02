@@ -56,24 +56,49 @@ through this date. Repo: /Users/lukas/Desktop/geo-app (lukasny/geo-app, main).
   em-dash scan -> per-task commits -> push (Render auto-deploys) -> health
   check curl on https://geo-app-hkhi.onrender.com.
 
-## NEXT STEP (agreed direction, not yet started)
+## UPDATE 2026-07-02: retention batch SHIPPED, evidence brief received
 
-Lukas asked for heavy building; recommendation accepted direction pending his
-word: the **"make it feel alive" retention batch**, then the FAQ generator.
-Batch contents (from docs/product-roadmap-2026-06.md):
-1. GEO score history + trend: ScoreSnapshot row per audit, dashboard hero
-   sparkline, "score rose N points" delta leading the weekly email (item 5).
-2. AI traffic beacon: theme extension pings an app-proxy endpoint on
-   AI-referred visits -> AiTrafficEvent visit rows now, no protected data;
-   AI Revenue page shows visits today (item 3).
-3. Citation alerts: first-ever citation, lost citation, competitor overtake;
-   email lead + dashboard callout (data already in AiCitation).
-4. Onboarding auto-seeds 2-3 weekly Intent Lab prompts for trial merchants.
-Then: item 4 FAQ generator + FAQPage JSON-LD (biggest competitive parity),
-then items 6-12 per the roadmap.
+The retention batch above is BUILT, adversarially reviewed, and deployed
+(commits 4eca014, 44e6604, a7b9dde, 0f78cbe; production health-checked, the
+ScoreSnapshot migration applied at boot). Spec:
+docs/superpowers/specs/2026-06-23-retention-batch-design.md. Review outcome:
+7 confirmed findings fixed in the shipped commits, notably (a) the visit
+beacon now fires ONLY on fresh referrer/utm detection, never from the 30-day
+attribution cookie, and (b) a PRE-EXISTING leak where the dashboard loader
+spread the raw Store row and serialized shopifyAccessToken to the browser;
+loaders must return explicit field picks, never `...store`. Deferred by
+decision: AiTrafficEvent visit-row retention/pruning (spec-accepted
+row-per-visit + 60/min throttle; revisit if volume grows).
+
+Also shipped 2026-07-02: /privacy and /terms are now 301 redirects to the
+live marketing site https://georise.app (b1a21af).
+
+Lukas delivered a GEO evidence brief (from his strategy Claude); it sits at
+~/Desktop/geo_app/geo-evidence-2026-07.md, fact-checked against the repo by
+7 agents. Pending HIS go: (1) amend and save it as
+docs/geo-evidence-2026-07.md + reference from CLAUDE.md (amendments: F1
+crawler checker is ~90% built already, the llms regen pattern is a
+latest-wins coalescer NOT an accumulating queue so IndexNow must not copy it
+verbatim, F4 cost notes point at the wrong files); (2) honest-copy pass, 3
+hard causal llms.txt claims: app.llms-txt.tsx lines ~677 and ~1296 (the
+Growth upsell CalloutCard needs a new value prop, not softer verbs) and
+docs/app-store-listing.md line 36, plus 4 soft claims; (3) his call whether
+the "never claim llms.txt/schema drives citations" rule also covers
+app-level taglines and the two unsourced "products with reviews are more
+likely to be cited" lines; (4) next build: F3 citation source gap analysis
+(listicle radar) recommended, then FAQ generator + FAQPage JSON-LD, then
+items 6-12 per the roadmap.
+
+## NEXT STEP
 
 ## Lukas-side items still open (not code)
 
+- Run `npx shopify app deploy --allow-updates` (the visit beacon changed the
+  theme extension; storefronts serve the old tracker until this runs).
+- Smoke test the retention batch on boda-brands: run the audit twice (second
+  run grows the dashboard sparkline), visit the storefront with
+  `?utm_source=chatgpt` and confirm the AI Revenue page counts it, send a
+  test weekly email.
 - Publish boda-brands products to Online Store, then Regenerate llms.txt.
 - Protected Customer Data application (Partner Dashboard) -> then un-comment
   orders/paid block in shopify.app.toml and redeploy (unlocks revenue
