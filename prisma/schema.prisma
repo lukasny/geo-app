@@ -115,6 +115,7 @@ model Store {
   blogPosts        BlogPost[]
   aiCrawlerHits    AiCrawlerHit[]
   scoreSnapshots   ScoreSnapshot[]
+  sourcePresences  SourcePresence[]
   subscription     Subscription?
 }
 
@@ -225,6 +226,9 @@ model AiCitation {
   sentiment        Sentiment  @default(NEUTRAL)
   competitorsCited Json?
   productsCited    Json?
+  // string[] of full source URLs the platform consulted or cited (max 20,
+  // each capped at 500 chars). Null on rows written before the source radar.
+  sourcesCited     Json?
   responseSnippet  String?    @db.Text
   checkedAt        DateTime   @default(now())
 
@@ -407,4 +411,22 @@ model BlogPost {
   @@index([storeId])
   @@index([storeId, status])
   @@index([storeId, createdAt])
+}
+
+// One row per (store, source URL) presence check, upserted by the on-demand
+// "check my presence" action on the tracking page. `present` records whether
+// the store's name or own domain appeared in the fetched page body. A non-2xx
+// response or fetch error never writes a row, so a missing/stale row honestly
+// means "not checked" rather than a fabricated miss.
+model SourcePresence {
+  id        String   @id @default(cuid())
+  storeId   String
+  url       String   @db.VarChar(500)
+  present   Boolean
+  checkedAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, url])
+  @@index([storeId, checkedAt])
 }

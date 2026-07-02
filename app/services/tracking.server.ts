@@ -246,12 +246,18 @@ Classify the tone toward the subject(s).`,
 
 const SYSTEM_PROMPT = `You are an AI shopping assistant similar to ChatGPT, Perplexity, or Gemini. When asked for product recommendations, search the web for current information and give concrete, specific recommendations. Name actual products and the stores or brands that sell them. Cite real sources.`;
 
-interface ClaudeWebSearchResponse {
+/** Shared response shape for all three platform askers. sourceDomains are
+ *  hostnames only and feed cited-detection plus competitor persistence;
+ *  sourceUrls are the FULL urls (deduped, insertion order) from the exact
+ *  same citation loops, and feed AiCitation.sourcesCited for the Citation
+ *  Source Radar. */
+interface WebSearchResponse {
   responseText: string;
   sourceDomains: string[];
+  sourceUrls: string[];
 }
 
-async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
+async function askClaudeWithWebSearch(prompt: string): Promise<WebSearchResponse> {
   const message = await withRetry(
     () =>
       anthropic.messages.create({
@@ -270,6 +276,7 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
 
   let responseText = "";
   const sourceDomains = new Set<string>();
+  const sourceUrls = new Set<string>();
 
   for (const block of message.content) {
     if (block.type === "text") {
@@ -286,7 +293,10 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
       if (citations) {
         for (const c of citations) {
           try {
-            if (c.url) sourceDomains.add(new URL(c.url).hostname.toLowerCase());
+            if (c.url) {
+              sourceDomains.add(new URL(c.url).hostname.toLowerCase());
+              sourceUrls.add(c.url);
+            }
           } catch {
             // skip unparseable URLs
           }
@@ -295,12 +305,16 @@ async function askClaudeWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
     }
   }
 
-  return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
+  return {
+    responseText: responseText.trim(),
+    sourceDomains: [...sourceDomains],
+    sourceUrls: [...sourceUrls],
+  };
 }
 
 /** OpenAI's gpt-4o-search-preview model has built-in web search. Citations
  *  come back as `message.annotations[].url_citation.url`. */
-async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
+async function askOpenAIWithWebSearch(prompt: string): Promise<WebSearchResponse> {
   if (!openai) throw new Error("OPENAI_API_KEY not configured");
 
   const completion = await withRetry(
@@ -318,6 +332,7 @@ async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
   const msg = completion.choices[0]?.message;
   const responseText = msg?.content ?? "";
   const sourceDomains = new Set<string>();
+  const sourceUrls = new Set<string>();
 
   // OpenAI returns inline citations on the message as `annotations`. The shape
   // is `{ type: "url_citation", url_citation: { url, title, ... } }`. Pull
@@ -331,19 +346,24 @@ async function askOpenAIWithWebSearch(prompt: string): Promise<ClaudeWebSearchRe
       if (!url) continue;
       try {
         sourceDomains.add(new URL(url).hostname.toLowerCase());
+        sourceUrls.add(url);
       } catch {
         // skip unparseable
       }
     }
   }
 
-  return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
+  return {
+    responseText: responseText.trim(),
+    sourceDomains: [...sourceDomains],
+    sourceUrls: [...sourceUrls],
+  };
 }
 
 /** Perplexity's `sonar` family has web search built in. Citations come back
  *  on the completion object as either `citations: string[]` (older) or
  *  `search_results: [{ url, ... }]` (newer). Handle both. */
-async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSearchResponse> {
+async function askPerplexityWithWebSearch(prompt: string): Promise<WebSearchResponse> {
   if (!perplexity) throw new Error("PERPLEXITY_API_KEY not configured");
 
   const completion = await withRetry(
@@ -360,6 +380,7 @@ async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSear
 
   const responseText = completion.choices[0]?.message?.content ?? "";
   const sourceDomains = new Set<string>();
+  const sourceUrls = new Set<string>();
 
   const extra = completion as unknown as {
     citations?: string[];
@@ -369,6 +390,7 @@ async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSear
     for (const url of extra.citations) {
       try {
         sourceDomains.add(new URL(url).hostname.toLowerCase());
+        sourceUrls.add(url);
       } catch {
         // skip
       }
@@ -379,13 +401,18 @@ async function askPerplexityWithWebSearch(prompt: string): Promise<ClaudeWebSear
       if (!item.url) continue;
       try {
         sourceDomains.add(new URL(item.url).hostname.toLowerCase());
+        sourceUrls.add(item.url);
       } catch {
         // skip
       }
     }
   }
 
-  return { responseText: responseText.trim(), sourceDomains: [...sourceDomains] };
+  return {
+    responseText: responseText.trim(),
+    sourceDomains: [...sourceDomains],
+    sourceUrls: [...sourceUrls],
+  };
 }
 
 // ─── Main Tracking Check ──────────────────────────────────────────────────────
@@ -445,7 +472,7 @@ async function processPlatformCitation(args: {
   productTitles: string[];
   vendors: string[];
   platform: AiPlatform;
-  apiResult: ClaudeWebSearchResponse;
+  apiResult: WebSearchResponse;
 }): Promise<{
   citationId: string;
   cited: boolean;
@@ -470,7 +497,7 @@ async function processPlatformCitation(args: {
     platform,
     apiResult,
   } = args;
-  const { responseText, sourceDomains } = apiResult;
+  const { responseText, sourceDomains, sourceUrls } = apiResult;
   const lower = responseText.toLowerCase();
 
   // Hosts that identify the merchant's own site. The primary storefront
@@ -543,6 +570,12 @@ async function processPlatformCitation(args: {
       productsCited: mentionedProducts.length > 0 ? mentionedProducts : undefined,
       competitorsCited:
         competitorsDetected.length > 0 ? competitorsDetected : undefined,
+      // Full source URLs for the Citation Source Radar. Capped at 20 urls of
+      // 500 chars each so a hostile search result can never bloat the row.
+      sourcesCited:
+        sourceUrls.length > 0
+          ? sourceUrls.slice(0, 20).map((u) => u.slice(0, 500))
+          : undefined,
       responseSnippet: responseText.slice(0, 2000),
     },
   });
