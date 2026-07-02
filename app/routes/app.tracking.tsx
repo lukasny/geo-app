@@ -15,6 +15,7 @@ import {
   Box,
   Divider,
   ButtonGroup,
+  Link,
   Modal,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
@@ -35,6 +36,14 @@ import type { PlanKey } from "~/services/billing.shared";
 import { sanitizeAiVendorError } from "~/services/ai-retry.server";
 import { getProductCitationStats } from "~/services/product-citations.server";
 import type { ProductCitationStats } from "~/services/product-citations.server";
+import {
+  getCitationSources,
+  checkSourcePresence,
+} from "~/services/citation-sources.server";
+import type {
+  CitedSource,
+  SourceBucket,
+} from "~/services/citation-sources.server";
 import { platformLabel } from "~/utils/platforms";
 import type { AiPlatformKey as AiPlatform } from "~/utils/platforms";
 import { timeAgo, relativeFuture } from "~/utils/time";
@@ -79,6 +88,15 @@ interface LoaderPrompt {
   platformBreakdown: { platform: AiPlatform; cited: boolean }[];
 }
 
+/** Loader slice for the "Where AI answers come from" card: the third-party
+ *  pages AI engines consulted or cited when answering the store's tracked
+ *  prompts, last 30 days. The service returns ISO strings and plain
+ *  numbers, so it's safe to pass through the loader boundary as-is. */
+interface CitedSourcesData {
+  sources: CitedSource[];
+  totalAnswersWithSources: number;
+}
+
 interface LoaderData {
   plan: PlanKey;
   prompts: LoaderPrompt[];
@@ -87,6 +105,9 @@ interface LoaderData {
   /** Per-product mention stats for the "Top cited products" card.
    *  Null when the plan has no tracking (the query is skipped). */
   productCitations: ProductCitationStats | null;
+  /** Cited-source aggregation for the "Where AI answers come from" card.
+   *  Null when the plan has no tracking (the query is skipped). */
+  citedSources: CitedSourcesData | null;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -105,6 +126,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       promptsRemaining: 0,
       storeId: "",
       productCitations: null,
+      citedSources: null,
     } satisfies LoaderData;
   }
 
@@ -202,13 +224,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const cap = limits.maxTrackingPrompts;
   const promptsRemaining = cap === Infinity ? null : Math.max(0, cap - used);
 
-  // Per-product mention stats. FREE has no tracking, and the card only
-  // renders when prompts exist, so skip the query in both cases. This
-  // mirrors the render condition exactly.
-  const productCitations =
+  // Per-product mention stats + cited-source aggregation. FREE has no
+  // tracking, and both cards only render when prompts exist, so skip the
+  // queries in both cases. This mirrors the render conditions exactly.
+  const [productCitations, citedSources] =
     limits.maxTrackingPrompts > 0 && prompts.length > 0
-      ? await getProductCitationStats(store.id)
-      : null;
+      ? await Promise.all([
+          getProductCitationStats(store.id),
+          getCitationSources(store.id),
+        ])
+      : [null, null];
 
   return {
     plan: planKey,
@@ -216,6 +241,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     promptsRemaining,
     storeId: store.id,
     productCitations,
+    citedSources,
   } satisfies LoaderData;
 };
 
@@ -349,6 +375,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (err) {
       return { error: sanitizeTrackingError(err) };
     }
+  }
+
+  if (intent === "checkSourcePresence") {
+    // Same entitlement guard as runCheck / suggestPrompts: presence checks
+    // fetch external pages on our infrastructure, so FREE (no tracking)
+    // can't trigger them by posting the intent directly.
+    if (planKey === "FREE" || limits.maxTrackingPrompts === 0) {
+      return {
+        error:
+          "Source presence checks are a Growth/Pro/Enterprise feature. Please upgrade.",
+      };
+    }
+    // Recompute the top sources server-side rather than trusting URLs from
+    // the client, so the check stays scoped to this store's own tracking
+    // data. Own-site sources are skipped: checking whether the merchant's
+    // own pages mention the merchant tells them nothing.
+    const { sources } = await getCitationSources(store.id);
+    const urls = sources
+      .filter((s) => s.bucket !== "own_site")
+      .slice(0, 10)
+      .map((s) => s.sampleUrl);
+    if (urls.length === 0) {
+      return {
+        error:
+          "No third-party sources to check yet. Run a tracking check first.",
+      };
+    }
+    const { checked, skipped } = await checkSourcePresence(store.id, urls);
+    return { success: true, intent, checked, skipped };
   }
 
   return { error: "Unknown action." };
@@ -504,7 +559,7 @@ function sanitizeTrackingError(err: unknown): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TrackingPage() {
-  const { plan, prompts, promptsRemaining, productCitations } =
+  const { plan, prompts, promptsRemaining, productCitations, citedSources } =
     useLoaderData<LoaderData>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -558,6 +613,15 @@ export default function TrackingPage() {
       } else {
         shopify.toast.show(`Generated ${list.length} prompt suggestions`);
       }
+    } else if (data.success && data.intent === "checkSourcePresence") {
+      const checked = (data.checked as number) ?? 0;
+      const skipped = (data.skipped as number) ?? 0;
+      const pages = checked === 1 ? "1 page" : `${checked} pages`;
+      shopify.toast.show(
+        skipped > 0
+          ? `Checked ${pages} (${skipped} skipped: recently checked or could not be reached)`
+          : `Checked ${pages}`
+      );
     }
   }, [fetcher.data, fetcher.state, addingSuggestion, shopify]);
 
@@ -574,6 +638,8 @@ export default function TrackingPage() {
     !addingSuggestion;
   const isSuggesting =
     isWorking && fetcher.formData?.get("intent") === "suggestPrompts";
+  const isCheckingSources =
+    isWorking && fetcher.formData?.get("intent") === "checkSourcePresence";
 
   const handleAddSuggestion = (sp: SuggestedPrompt) => {
     setAddingSuggestion(sp.prompt.trim());
@@ -809,6 +875,16 @@ export default function TrackingPage() {
             />
           ))
         )}
+
+        {/* ── Where AI answers come from ── */}
+        {canAddPrompts && citedSources && prompts.length > 0 && (
+          <CitationSourcesCard
+            data={citedSources}
+            isWorking={isWorking}
+            isCheckingSources={isCheckingSources}
+            fetcher={fetcher}
+          />
+        )}
       </BlockStack>
     </Page>
   );
@@ -885,6 +961,167 @@ function TopCitedProductsCard({ stats }: { stats: ProductCitationStats }) {
               </Box>
             ))}
         </BlockStack>
+      </BlockStack>
+    </Card>
+  );
+}
+
+// ─── Citation Sources ─────────────────────────────────────────────────────────
+
+/** Plain-language labels for the deterministic source buckets. The Badge
+ *  text carries the meaning; every bucket uses the standard tone (hard
+ *  rule: no custom-colored chips). */
+const BUCKET_LABELS: Record<SourceBucket, string> = {
+  reddit: "Reddit",
+  youtube: "YouTube",
+  review_platform: "Review platform",
+  marketplace: "Marketplace",
+  editorial: "Editorial",
+  competitor: "Competitor",
+  own_site: "Your site",
+  other: "Other",
+};
+
+/** Presence chip for one source. "No mention found" is attention, not
+ *  critical: a miss can be a false negative (see the disclaimer under the
+ *  list), so we flag it for a look rather than declaring it bad news. */
+function PresenceBadge({ presence }: { presence: CitedSource["presence"] }) {
+  if (presence === "present") {
+    return <Badge tone="success">Mentions you</Badge>;
+  }
+  if (presence === "absent") {
+    return <Badge tone="attention">No mention found</Badge>;
+  }
+  if (presence === "unknown") {
+    return <Badge>Could not check</Badge>;
+  }
+  return <Badge>Not checked yet</Badge>;
+}
+
+function CitationSourcesCard({
+  data,
+  isWorking,
+  isCheckingSources,
+  fetcher,
+}: {
+  data: CitedSourcesData;
+  isWorking: boolean;
+  isCheckingSources: boolean;
+  fetcher: ReturnType<typeof useFetcher>;
+}) {
+  const { sources, totalAnswersWithSources } = data;
+  // The presence check only visits third-party pages, so hide the button
+  // when there's nothing checkable (empty list, or own-site rows only).
+  const hasThirdParty = sources.some((s) => s.bucket !== "own_site");
+  const anyChecked = sources.some((s) => s.presence !== "unchecked");
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="start" gap="300" wrap={false}>
+          <BlockStack gap="100">
+            <Text as="h2" variant="headingMd">
+              Where AI answers come from
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Sources ChatGPT, Claude, and Perplexity consulted or cited when
+              answering your tracked prompts, last 30 days
+              {totalAnswersWithSources > 0
+                ? `, across ${
+                    totalAnswersWithSources === 1
+                      ? "1 AI answer"
+                      : `${totalAnswersWithSources} AI answers`
+                  } that included sources.`
+                : "."}
+            </Text>
+          </BlockStack>
+          {hasThirdParty && (
+            <fetcher.Form method="POST">
+              <input type="hidden" name="intent" value="checkSourcePresence" />
+              <Button
+                submit
+                loading={isCheckingSources}
+                disabled={isWorking && !isCheckingSources}
+              >
+                {isCheckingSources
+                  ? "Checking…"
+                  : "Check top pages for your store"}
+              </Button>
+            </fetcher.Form>
+          )}
+        </InlineStack>
+
+        {sources.length === 0 ? (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Run a tracking check and sources will appear here.
+          </Text>
+        ) : (
+          <>
+            <BlockStack gap="300">
+              {sources.map((s) => (
+                <Box
+                  key={s.domain}
+                  padding="300"
+                  background="bg-surface-secondary"
+                  borderRadius="200"
+                >
+                  <BlockStack gap="200">
+                    <InlineStack
+                      align="space-between"
+                      blockAlign="start"
+                      gap="300"
+                      wrap={false}
+                    >
+                      <InlineStack gap="200" blockAlign="center" wrap>
+                        <Link url={s.sampleUrl} target="_blank" removeUnderline>
+                          <Text as="span" variant="bodyMd" fontWeight="semibold">
+                            {s.domain}
+                          </Text>
+                        </Link>
+                        <Badge>{BUCKET_LABELS[s.bucket]}</Badge>
+                      </InlineStack>
+                      <PresenceBadge presence={s.presence} />
+                    </InlineStack>
+                    <InlineStack gap="200" wrap blockAlign="center">
+                      <Text as="span" variant="bodySm">
+                        {s.appearances === 1
+                          ? "Appeared in 1 answer"
+                          : `Appeared in ${s.appearances} answers`}
+                      </Text>
+                      {s.platforms.length > 0 && (
+                        <Text as="span" variant="bodySm" tone="subdued">
+                          {s.platforms.map((p) => platformLabel(p)).join(", ")}
+                        </Text>
+                      )}
+                      {s.lastCheckedAt && (
+                        <Text as="span" variant="bodySm" tone="subdued">
+                          Checked {timeAgo(s.lastCheckedAt)}
+                        </Text>
+                      )}
+                    </InlineStack>
+                  </BlockStack>
+                </Box>
+              ))}
+            </BlockStack>
+
+            <BlockStack gap="100">
+              <Text as="p" variant="bodySm" tone="subdued">
+                Pages that appear repeatedly are where AI finds your category.
+                Getting your store listed on them is high-leverage work: most
+                AI citations point at third-party pages like these, not at
+                brand sites.
+              </Text>
+              {anyChecked && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Presence checks fetch each page and look for your store name
+                  or domain. A page that loads its content with JavaScript or
+                  blocks automated visits can show "No mention found" even
+                  when it does mention you.
+                </Text>
+              )}
+            </BlockStack>
+          </>
+        )}
       </BlockStack>
     </Card>
   );
