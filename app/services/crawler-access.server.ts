@@ -1,11 +1,14 @@
 /**
- * robots.txt visibility checker + robots.txt.liquid snippet builder.
+ * Storefront public-file checks (robots.txt + sitemap) and the
+ * robots.txt.liquid snippet builder.
  *
  * The llms.txt "AI bot access" toggles only annotate the llms.txt file;
  * the thing crawlers actually obey is the storefront's robots.txt. This
  * module reads that file and reports, per known AI crawler, whether the
  * store currently blocks it at the root, and builds a copy-paste
- * robots.txt.liquid snippet that makes robots.txt match the toggles.
+ * robots.txt.liquid snippet that makes robots.txt match the toggles. It
+ * also checks that the storefront's sitemap.xml is reachable, which feeds
+ * the Bing indexing guidance page.
  */
 import prisma from "~/db.server";
 import { getFreshAccessToken } from "~/services/offline-admin.server";
@@ -258,6 +261,74 @@ export async function checkCrawlerAccess(
       status: statusFor(botName, groups),
     })),
   };
+}
+
+// ─── sitemap check ────────────────────────────────────────────────────────────
+
+const SITEMAP_FETCH_TIMEOUT_MS = 5000;
+
+// Shopify's sitemap index is tiny (a handful of child sitemaps), so a small
+// cap is plenty and bounds a misconfigured or hostile origin the same way
+// the robots reader does.
+const MAX_SITEMAP_LENGTH = 512 * 1024;
+
+export interface SitemapCheckResult {
+  /** True only on a definitive 200 read of the sitemap. False on timeout,
+   *  network error, or any non-2xx (entryCount 0, kind "unknown"). */
+  fetched: boolean;
+  sitemapUrl: string;
+  /** `<sitemapindex>` (Shopify's default: child sitemaps for products,
+   *  collections, pages, blogs), a direct `<urlset>`, or unknown. */
+  kind: "index" | "urlset" | "unknown";
+  /** Count of `<loc>` entries: child sitemaps for an index, pages for a
+   *  urlset. */
+  entryCount: number;
+}
+
+/** Check that the storefront's sitemap.xml is reachable and report what it
+ *  contains at the index level. Reads the merchant's own resolved primary
+ *  domain (same host the robots checker uses, not user input), so no new
+ *  SSRF surface; never throws. This confirms the sitemap is live, NOT that
+ *  Bing has indexed it (only Bing Webmaster Tools shows that). */
+export async function checkSitemap(
+  shopifyDomain: string
+): Promise<SitemapCheckResult> {
+  const base = await resolveStorefrontBase(shopifyDomain);
+  const sitemapUrl = `${base}/sitemap.xml`;
+
+  let body: string | null = null;
+  try {
+    const response = await fetch(sitemapUrl, {
+      signal: AbortSignal.timeout(SITEMAP_FETCH_TIMEOUT_MS),
+      headers: {
+        "User-Agent": "GEO-Rise-Sitemap-Checker/1.0",
+        Accept: "application/xml, text/xml, */*",
+      },
+    });
+    if (response.ok) {
+      body = await readBoundedText(response, MAX_SITEMAP_LENGTH);
+    }
+  } catch {
+    // Timeout / DNS / TLS failures fall through to the not-fetched result.
+  }
+
+  const entryCount = body ? (body.match(/<loc[\s>]/gi) ?? []).length : 0;
+  // A usable sitemap read means a 200 with at least one <loc> entry. An
+  // empty body (a genuinely blank 200, or the readBoundedText fast path
+  // returning "" when Content-Length exceeds the cap) or a body with zero
+  // entries is not a clean "live" result: reporting "live, 0 entries" would
+  // be self-contradictory, so treat it as not fetched.
+  if (body === null || entryCount === 0) {
+    return { fetched: false, sitemapUrl, kind: "unknown", entryCount: 0 };
+  }
+
+  const kind: SitemapCheckResult["kind"] = /<sitemapindex[\s>]/i.test(body)
+    ? "index"
+    : /<urlset[\s>]/i.test(body)
+      ? "urlset"
+      : "unknown";
+
+  return { fetched: true, sitemapUrl, kind, entryCount };
 }
 
 // ─── robots.txt.liquid snippet ────────────────────────────────────────────────

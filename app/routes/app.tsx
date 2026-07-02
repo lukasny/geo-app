@@ -35,6 +35,7 @@ export default function App() {
         <Link to="/app/faq-generator">FAQ Generator</Link>
         <Link to="/app/simulator">AI Simulator</Link>
         <Link to="/app/llms-txt">llms.txt Manager</Link>
+        <Link to="/app/bing-indexing">Bing Indexing</Link>
         <Link to="/app/tracking">AI Tracking</Link>
         <Link to="/app/competitors">Competitors</Link>
         <Link to="/app/revenue">AI Revenue</Link>
