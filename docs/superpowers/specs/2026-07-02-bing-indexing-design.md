@@ -112,6 +112,24 @@ reach your sitemap" on failure.
 - Nav: add `<Link to="/app/bing-indexing">Bing Indexing</Link>` after the
   llms.txt Manager link in app/routes/app.tsx.
 
+## V2 approach if IndexNow is ever pursued (deferred, not built)
+
+The clean way to handle the undocumented redirect behavior is to let the
+protocol self-report: create the root {key}.txt redirect (the production
+proven ensureRootLlmsRedirect pattern), submit one URL, and read the
+response. IndexNow returns 202 (validation pending) on the first submission,
+then 200 (accepted) or 403 (key not valid) once the engine has crawled the
+key file. So the app can DETECT per store, at runtime, whether Shopify's 301
+is followed, and enable ongoing submission only for stores that reached 200,
+never claiming success for stores stuck at 403. That turns the unverifiable
+redirect from a blocker into a runtime capability check. It still needs: a
+per-store IndexNow model (key, verified state, enabled flag), a proxy key
+route at /a/llms-txt/{key}.txt, a URL-set accumulator (NOT the latest-wins
+coalescer, which drops URLs in bursts), product create/update/delete webhook
+hooks (delete must read the cached Product row's handle BEFORE deletion), and
+the custom-domain resolver (skip, do not fall back to myshopify, on a host
+mismatch). Gate building it on a live dev-store test that observes 200 vs 403.
+
 ## Explicitly out of scope (v1)
 
 Any IndexNow key hosting, key-file redirect, or URL auto-submission (gated
