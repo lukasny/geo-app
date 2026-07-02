@@ -1,6 +1,8 @@
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { Prisma } from "@prisma/client";
 import prisma from "~/db.server";
+import type { ReadinessGapKey } from "./readiness.shared";
 import {
   isPermanentApiError,
   withRetry,
@@ -27,6 +29,7 @@ interface ShopifyVariant {
   title: string;
   price: string;
   sku: string | null;
+  barcode: string | null;
   availableForSale: boolean;
 }
 
@@ -51,6 +54,10 @@ interface ShopifyProductData {
   status: string;
   tags: string[];
   seo: ShopifySeo;
+  /** Shopify Standard Product Taxonomy node (TaxonomyCategory), nullable
+   *  when the merchant never picked a category. isLeaf false means a broad
+   *  parent node was picked instead of a specific subcategory. */
+  category: { id: string; fullName: string; isLeaf: boolean } | null;
   images: { edges: { node: ShopifyImage }[] };
   variants: { edges: { node: ShopifyVariant }[] };
   metafields: { edges: { node: ShopifyMetafield }[] };
@@ -628,6 +635,133 @@ function scoreProduct(product: ShopifyProductData, shopName: string): ScoreResul
   };
 }
 
+// ─── AI Shopping Readiness (F4) ───────────────────────────────────────────────
+//
+// A PARALLEL score, computed in the same audit run but fully separate from
+// the GEO rubric above: catalog attribute completeness for AI shopping
+// agents (category taxonomy, barcodes, brand, images, SKUs, reviews, spec
+// density). Constraints from the F4 design spec:
+// - scoreProduct's points and its helpers must not change AT ALL (the
+//   ScoreSnapshot history and weekly email delta must stay like-for-like).
+// - Readiness gaps are NOT AuditResult rows (action plan, auto-fix, email,
+//   and category unions all consume those; v1 stays out).
+// - Variant weight is deliberately NOT checked in v1: fetching it would
+//   blow the query cost cap (see the pageSize budget comment below).
+
+/** Stricter spec-density check used ONLY by the readiness rubric. The GEO
+ *  rubric's hasSpecificAttributes deliberately passes on any digit or
+ *  material word; do NOT reuse or tighten it, that would move GEO scores.
+ *  Readiness requires real attribute data: a number-plus-unit pattern
+ *  (dimensions, weight, volume, percent, or an "8 x 10" measurement) or at
+ *  least two numeric tokens in the description. */
+function hasDenseSpecs(plainDesc: string): boolean {
+  const lower = plainDesc.toLowerCase();
+  const numberWithUnit =
+    /\d+(\.\d+)?\s*(cm|mm|in|inch|inches|ft|feet|kg|g|oz|lb|lbs|ml|l|liter|liters)\b/.test(lower);
+  const numberWithPercent = /\d+(\.\d+)?\s*%/.test(lower);
+  const dimensionPair = /\d+(\.\d+)?\s*(x|by|×)\s*\d+(\.\d+)?/.test(lower);
+  if (numberWithUnit || numberWithPercent || dimensionPair) return true;
+  const numericTokens = lower.match(/\d+(\.\d+)?/g);
+  return (numericTokens?.length ?? 0) >= 2;
+}
+
+/** Readiness rubric: 8 checks, 100 points at full marks.
+ *  category 20 + barcodes 15 + vendor 10 + productType 5 + images 10
+ *  + SKUs 10 + reviews 15 + dense specs 15 = 100.
+ *  Each failed or partial check contributes its ReadinessGapKey. Reuses
+ *  fields.hasReviews / fields.reviewCount from scoreProduct's ScoreResult
+ *  so review detection has a single source of truth. */
+function scoreReadiness(
+  product: ShopifyProductData,
+  fields: ScoreResult["fields"]
+): { score: number; gaps: ReadinessGapKey[] } {
+  const gaps: ReadinessGapKey[] = [];
+  let score = 0;
+
+  // 1. Category taxonomy set: 20 (leaf) / 10 (non-leaf) / 0 (none)
+  if (product.category === null) {
+    gaps.push("missing_category");
+  } else if (!product.category.isLeaf) {
+    score += 10;
+    gaps.push("broad_category");
+  } else {
+    score += 20;
+  }
+
+  const variants = product.variants.edges.map((e) => e.node);
+
+  // 2. Barcode on variants: 15 (all) / 7 (some) / 0 (none)
+  const variantsWithBarcode = variants.filter(
+    (v) => v.barcode && v.barcode.trim().length > 0
+  ).length;
+  if (variants.length > 0 && variantsWithBarcode === variants.length) {
+    score += 15;
+  } else if (variantsWithBarcode > 0) {
+    score += 7;
+    gaps.push("partial_barcodes");
+  } else {
+    gaps.push("missing_barcodes");
+  }
+
+  // 3. Brand/vendor set: 10 (same detection as the GEO rubric's check)
+  if (product.vendor.trim().length > 0) {
+    score += 10;
+  } else {
+    gaps.push("missing_vendor");
+  }
+
+  // 4. Product type set: 5
+  if (product.productType.trim().length > 0) {
+    score += 5;
+  } else {
+    gaps.push("missing_product_type");
+  }
+
+  // 5. Images: 10 (3+) / 5 (1-2) / 0 (none)
+  const imageCount = product.images.edges.length;
+  if (imageCount >= 3) {
+    score += 10;
+  } else if (imageCount >= 1) {
+    score += 5;
+    gaps.push("few_images");
+  } else {
+    gaps.push("no_images");
+  }
+
+  // 6. SKUs on variants: 10 (all) / 5 (some) / 0 (none)
+  const variantsWithSku = variants.filter(
+    (v) => v.sku && v.sku.trim().length > 0
+  ).length;
+  if (variants.length > 0 && variantsWithSku === variants.length) {
+    score += 10;
+  } else if (variantsWithSku > 0) {
+    score += 5;
+    gaps.push("partial_skus");
+  } else {
+    gaps.push("missing_skus");
+  }
+
+  // 7. Reviews: 15 (5+ reviews) / 10 (any reviews) / 0 (none)
+  if (fields.hasReviews && fields.reviewCount >= 5) {
+    score += 15;
+  } else if (fields.hasReviews) {
+    score += 10;
+    gaps.push("few_reviews");
+  } else {
+    gaps.push("no_reviews");
+  }
+
+  // 8. Spec-dense description: 15
+  const plainDesc = stripHtml(product.descriptionHtml);
+  if (plainDesc.length > 0 && hasDenseSpecs(plainDesc)) {
+    score += 15;
+  } else {
+    gaps.push("thin_specs");
+  }
+
+  return { score: Math.min(100, Math.max(0, score)), gaps };
+}
+
 // ─── Shopify GraphQL Fetchers ─────────────────────────────────────────────────
 
 // Server-side status filter keeps draft/archived products from consuming
@@ -650,13 +784,14 @@ const PRODUCTS_AUDIT_QUERY = `#graphql
           status
           tags
           seo { title description }
+          category { id fullName isLeaf }
           onlineStoreUrl
           images(first: 10) {
             edges { node { id altText url } }
           }
           variants(first: 25) {
             edges {
-              node { id title price sku availableForSale }
+              node { id title price sku barcode availableForSale }
             }
           }
           metafields(first: 20) {
@@ -717,7 +852,7 @@ function isThrottledGraphqlError(err: unknown): boolean {
 }
 
 /** Retry delays for a throttled page fetch: 3 attempts at 2s/4s/8s before
- *  giving up. Each successful page costs ~950 points against a bucket that
+ *  giving up. Each successful page costs ~963 points against a bucket that
  *  restores 50-100 points/second, so a few seconds is usually enough. */
 const THROTTLE_RETRY_DELAYS_MS = [2000, 4000, 8000];
 
@@ -781,10 +916,15 @@ async function fetchAllProductsForAudit(
   // Page size is bounded by Shopify's 1,000-point requested-cost ceiling per
   // GraphQL query (enforced pre-execution on EVERY plan, so this is not
   // something a bigger API bucket lifts). Budget per product node:
-  // 1 (product) + 1 (seo) + 12 (images first:10) + 27 (variants first:25)
-  // + 22 (metafields first:20) = 63 points; products(first:15) costs
-  // 2 + 15 * 63 = 947, +1 for shop = 948 - just under the cap. Do NOT raise
-  // this page size or the query's nested `first`s without redoing the math.
+  // 1 (product) + 1 (seo) + 1 (category, subfields are scalars) + 12 (images
+  // first:10) + 27 (variants first:25) + 22 (metafields first:20) = 64
+  // points; `barcode` is a plain scalar on the variant node, +0.
+  // products(first:15) costs 2 + 15 * 64 = 962, +1 for shop = 963 - just
+  // under the cap. This is also why variant weight is NOT fetched: the
+  // 2025-07 path (inventoryItem { measurement { weight { value unit } } })
+  // adds +3 objects per variant and blows the query to 2088 points. Do NOT
+  // raise this page size or the query's nested `first`s without redoing the
+  // math.
   // The loop below paginates, so large catalogs still complete across pages;
   // finite plan caps (e.g. Free = 3) request only what they need.
   const MAX_PAGE_SIZE = 15;
@@ -871,6 +1011,9 @@ export async function runFullAudit(
   const auditResultsToCreate: AuditResultInput[] = [];
   const productUpserts: Promise<unknown>[] = [];
   let totalScore = 0;
+  // F4: per-product readiness scores that computed successfully this run,
+  // for the store-level rounded mean in step 6.
+  const readinessScores: number[] = [];
   // Track shopifyProductId alongside each issue so we can attach productId after upserts
   const issueShopifyProductIds: string[] = [];
 
@@ -878,6 +1021,24 @@ export async function runFullAudit(
     const { score, issues, fields } = scoreProduct(product, shopName || store.shopName);
 
     totalScore += score;
+
+    // F4 AI shopping readiness: a PARALLEL score computed beside the GEO
+    // rubric. It must NEVER be able to fail the GEO audit, so it gets its
+    // own try/catch (the step-6b ScoreSnapshot precedent): on throw, this
+    // product's readiness fields stay null and the audit continues.
+    let readinessScore: number | null = null;
+    let readinessGaps: ReadinessGapKey[] | null = null;
+    try {
+      const readiness = scoreReadiness(product, fields);
+      readinessScore = readiness.score;
+      readinessGaps = readiness.gaps;
+      readinessScores.push(readiness.score);
+    } catch (err) {
+      console.error(
+        `[GEO Rise audit] readiness scoring failed for ${product.id}:`,
+        err
+      );
+    }
 
     // Upsert product record
     productUpserts.push(
@@ -911,6 +1072,8 @@ export async function runFullAudit(
           variantsComplete: fields.variantsComplete,
           hasTags: fields.hasTags,
           aiReadinessScore: score,
+          readinessScore,
+          readinessGaps: readinessGaps ?? Prisma.DbNull,
           lastAuditedAt: new Date(),
         },
         update: {
@@ -938,6 +1101,11 @@ export async function runFullAudit(
           variantsComplete: fields.variantsComplete,
           hasTags: fields.hasTags,
           aiReadinessScore: score,
+          // P1-3 full-field-sync applies to readiness too: a failed
+          // computation writes null (never a stale previous score), so the
+          // UI renders a dash instead of outdated data.
+          readinessScore,
+          readinessGaps: readinessGaps ?? Prisma.DbNull,
           lastAuditedAt: new Date(),
         },
       })
@@ -982,12 +1150,28 @@ export async function runFullAudit(
   const storeScore =
     products.length > 0 ? Math.round(totalScore / products.length) : 0;
 
+  // F4: store readiness is the rounded mean of this run's per-product
+  // readiness scores, counting only products where computation succeeded.
+  // Same first-N semantics as geoScore on capped plans (both average the
+  // same capped product set). Plain-code average, cannot throw. If every
+  // product's readiness failed (or no products were audited), leave the
+  // column unchanged rather than writing a misleading 0.
+  const storeReadinessScore =
+    readinessScores.length > 0
+      ? Math.round(
+          readinessScores.reduce((sum, s) => sum + s, 0) / readinessScores.length
+        )
+      : null;
+
   await prisma.store.update({
     where: { id: storeId },
     data: {
       geoScore: storeScore,
       totalProducts: totalActive,
       auditedProducts: products.length,
+      ...(storeReadinessScore !== null
+        ? { readinessScore: storeReadinessScore }
+        : {}),
     },
   });
 

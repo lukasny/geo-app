@@ -96,6 +96,11 @@ model Store {
   weeklyInsightEnabled    Boolean   @default(true)
   lastInsightSentAt       DateTime?
   geoScore                Int       @default(0)
+  // F4 AI shopping readiness: rounded mean of the latest audit run's
+  // per-product readiness scores (catalog attribute completeness for AI
+  // shopping agents). Null until the first post-F4 audit; the UI renders
+  // a dash for null, never 0/100.
+  readinessScore          Int?
   totalProducts           Int       @default(0)
   auditedProducts         Int       @default(0)
   llmsTxtEnabled          Boolean   @default(false)
@@ -152,6 +157,12 @@ model Product {
   variantsComplete    Boolean   @default(false)
   hasTags             Boolean   @default(false)
   aiReadinessScore    Int       @default(0)
+  // F4 AI shopping readiness, PARALLEL to the GEO-facing score above. Null
+  // means "not computed yet": products audited before F4 keep null until
+  // their next audit and the UI renders a dash, never 0/100. readinessGaps
+  // is a JSON array of ReadinessGapKey strings (readiness.shared.ts).
+  readinessScore      Int?
+  readinessGaps       Json?
   lastAuditedAt       DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
