@@ -170,6 +170,30 @@
 }
 </script>
 
+{%- comment -%} FAQ for product {%- endcomment -%}
+{%- assign faq_value = product.metafields.geo_rise.faq.value -%}
+{%- if faq_value.size > 0 -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {%- for item in faq_value -%}
+    {
+      "@type": "Question",
+      "name": {{ item.question | strip_html | json }},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {{ item.answer | strip_html | json }}
+      }
+    }
+    {%- unless forloop.last -%},{%- endunless -%}
+    {%- endfor -%}
+  ]
+}
+</script>
+{%- endif -%}
+
 {%- endif -%}
 
 {%- comment -%} ── Collection Page ── {%- endcomment -%}
