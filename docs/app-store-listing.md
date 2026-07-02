@@ -1,6 +1,6 @@
 # GEO Rise: Shopify App Store Listing
 
-Last updated: 2026-06-12 (prices, features, and scopes match billing.shared.ts and shopify.app.toml as of this date).
+Last updated: 2026-07-03 (prices, features, and scopes match billing.shared.ts and shopify.app.toml as of this date; adjusted per the launch-readiness audit).
 
 ---
 
@@ -27,7 +27,7 @@ Make your store readable and recommendable for AI search engines
 
 **AI search is changing how shoppers find products. Is your store ready?**
 
-When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand", your store either shows up or it doesn't. Small brands get cited far less often than big ones, and most stores never even check where they stand. GEO Rise changes that.
+When someone asks ChatGPT "what's the best running shoe under $150?" or tells Gemini "find me a sustainable skincare brand", your store either shows up or it doesn't. Most stores have never checked how AI assistants describe them. GEO Rise shows you, and helps you fix what they miss.
 
 **What GEO Rise does**
 
@@ -57,14 +57,18 @@ Install GEO Rise free today and see where your store stands with AI search.
 
 ## Pricing
 
-| Plan       | Price     | Trial  |
-|------------|-----------|--------|
-| Free       | $0/month  | none   |
-| Growth     | $19/month | 7 days |
-| Pro        | $49/month | 7 days |
-| Enterprise | $99/month | 7 days |
+| Plan       | Price            | Trial  |
+|------------|------------------|--------|
+| Free       | $0/month         | none   |
+| Growth     | $19/month        | 7 days |
+| Pro        | $49/month        | 7 days |
+| Enterprise | Custom (contact) | none   |
 
-Prices are defined in `app/services/billing.shared.ts`; keep this table in sync with it.
+Prices for Free/Growth/Pro are defined in `app/services/billing.shared.ts`; keep this table in sync with it. Enterprise is contact-only (the in-app card is a "Contact us" mailto, not a self-serve Billing API purchase), so it is listed as custom pricing with no trial claim, per App Store guidance on custom-priced tiers.
+
+## Install requirements
+
+- **Merchant must have an online store.** The theme app embed (JSON-LD + AI-referral tracking), the public llms.txt at `{shop}/a/llms-txt`, and the `/llms.txt` redirect all require the Online Store sales channel. Set the "Merchant must have online store" field in the listing form.
 
 ---
 
@@ -76,16 +80,18 @@ Prices are defined in `app/services/billing.shared.ts`; keep this table in sync 
 
 | Scope | Why the app needs it |
 |---|---|
-| `write_products` | Auto-fix and bulk edit write product SEO fields and image alt text |
+| `write_products` | Auto-fix and bulk edit write product SEO fields and image alt text; the FAQ generator writes a product metafield |
 | `read_content`, `write_content` | llms.txt includes blog posts; the blog generator publishes articles |
-| `read_orders` | Revenue attribution reads AI-attributed orders (requires Protected Customer Data approval in the Partner Dashboard BEFORE submission) |
-| `read_reports` | Intent Lab reads store search analytics via ShopifyQL |
+| `read_reports` | Intent Lab reads store search analytics via ShopifyQL (requires Protected Customer Data approval) |
 | `read_markets`, `read_translations` | Multi-market llms.txt reads markets, locales, and translated content |
+| `write_online_store_navigation` | Creates a one-time URL redirect from `/llms.txt` to the app-proxy path, since AI crawlers probe the root path |
+
+> **`read_orders` is intentionally NOT in the current scope set for the initial submission.** Order-level revenue attribution (the order half of the AI Revenue page) and the `orders/paid` webhook stay disabled until Protected Customer Data (Level 2: orders) approval is granted in the Partner Dashboard. See the launch checklist and handoff for the decision. AI-referred VISIT tracking works today without it.
 
 ## Support
 - Support email: hello@boda.no
-- Privacy policy: https://geo-app-hkhi.onrender.com/privacy (public, no login)
-- Terms of service: https://geo-app-hkhi.onrender.com/terms (public, no login)
+- Privacy policy: https://georise.app/privacy (public, no login; the app's `/privacy` route 301-redirects here)
+- Terms of service: https://georise.app/terms (public, no login; the app's `/terms` route 301-redirects here)
 
 ---
 
@@ -97,7 +103,9 @@ Prices are defined in `app/services/billing.shared.ts`; keep this table in sync 
 4. **AI Simulator**: side-by-side comparison of what AI sees vs Shopify data
 5. **llms.txt Manager**: file preview with market picker and bot access controls
 6. **Bulk Edit**: product grid with template preview
-7. **Pricing**: 4-column plan comparison
+7. **Action Plan**: prioritized fixes across the catalog
+
+> Do NOT screenshot the Pricing page or any surface showing dollar amounts. App Store rule 4.2.2 prohibits pricing information in listing images (including the icon); all pricing lives only in the listing's Pricing section.
 
 ## Demo video script (30 seconds)
 - Open: "AI is the new Google. Is your store visible?"
