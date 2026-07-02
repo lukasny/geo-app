@@ -18,6 +18,7 @@ export const PLAN_LIMITS = {
     maxTrackingPrompts:      0,
     maxCompetitors:          0,
     maxBlogPostsPerMonth:    0,
+    maxProductFaqsPerMonth:  0,
     aiTracking:              false,
     competitorMonitoring:    false,
     revenueAttribution:      false,
@@ -37,6 +38,11 @@ export const PLAN_LIMITS = {
     // Growth gets 5, Pro gets 20, Enterprise gets 100. Roughly matches
     // Vizby's tier metering.
     maxBlogPostsPerMonth:    5,
+    // Phase F6 - product FAQ generation. Products you can generate FAQs for
+    // per month. Free has none, Growth 20, Pro 100, Enterprise 500. One run
+    // for one product = one unit; regenerating counts again (it is a new
+    // AI call).
+    maxProductFaqsPerMonth:  20,
     aiTracking:              true,
     // Growth gets competitor monitoring with the 3-competitor cap above.
     // (Previously this was `false` while maxCompetitors was already 3,
@@ -56,6 +62,7 @@ export const PLAN_LIMITS = {
     maxTrackingPrompts:     30,
     maxCompetitors:         10,
     maxBlogPostsPerMonth:   20,
+    maxProductFaqsPerMonth: 100,
     aiTracking:              true,
     competitorMonitoring:    true,
     revenueAttribution:      true,
@@ -72,6 +79,7 @@ export const PLAN_LIMITS = {
     maxTrackingPrompts:     50,
     maxCompetitors:         25,
     maxBlogPostsPerMonth:  100,
+    maxProductFaqsPerMonth: 500,
     aiTracking:              true,
     competitorMonitoring:    true,
     revenueAttribution:      true,

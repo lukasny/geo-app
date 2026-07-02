@@ -101,6 +101,10 @@ model Store {
   llmsTxtEnabled          Boolean   @default(false)
   schemaInjectionEnabled  Boolean   @default(false)
   onboardingCompleted     Boolean   @default(false)
+  // Phase F6 - FAQ generator. The product FAQ metafield definition (namespace
+  // geo_rise, key faq) is created lazily on the store's first publish. Once
+  // created we flip this true so later publishes skip the definitionCreate.
+  faqMetafieldDefinitionCreated Boolean @default(false)
   installedAt             DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
@@ -116,6 +120,7 @@ model Store {
   aiCrawlerHits    AiCrawlerHit[]
   scoreSnapshots   ScoreSnapshot[]
   sourcePresences  SourcePresence[]
+  productFaqs      ProductFaq[]
   subscription     Subscription?
 }
 
@@ -411,6 +416,37 @@ model BlogPost {
   @@index([storeId])
   @@index([storeId, status])
   @@index([storeId, createdAt])
+}
+
+// Phase F6 - FAQ generator. One row per generation run for one product:
+// Claude drafts answer-first Q/A pairs, the merchant reviews on screen, then
+// "Publish" writes them to the product's geo_rise.faq metafield (JSON) and the
+// theme extension renders them as FAQPage JSON-LD. Regenerating a product is a
+// new row (a new AI call) so it counts again toward the monthly cap. Soft-delete
+// via status "deleted" keeps monthly-usage counts honest after a delete.
+model ProductFaq {
+  id               String    @id @default(cuid())
+  storeId          String
+  // Stored in the same format the Product model uses (bare numeric id). We
+  // convert to gid://shopify/Product/<id> at metafield write time.
+  shopifyProductId String
+  // Denormalized so the "your FAQs" list renders without a Product join.
+  productTitle     String
+  // Array of { question: string; answer: string }, Claude's validated output.
+  questions        Json
+  // "generating" (in-flight placeholder) | "draft" | "published" (metafield
+  // written) | "failed" | "deleted" (soft-delete).
+  status           String    @default("draft")
+  publishedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, status])
+  @@index([storeId, createdAt])
+  @@index([storeId, shopifyProductId])
 }
 
 // One row per (store, source URL) presence check, upserted by the on-demand
