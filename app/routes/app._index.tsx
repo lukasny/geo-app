@@ -52,6 +52,8 @@ interface StoreData {
   email: string | null;
   plan: string;
   geoScore: number;
+  /** Null until an audit computes AI shopping readiness (F4). */
+  readinessScore: number | null;
   totalProducts: number;
   auditedProducts: number;
   onboardingCompleted: boolean;
@@ -289,6 +291,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       email: store.email,
       plan: store.plan,
       geoScore: store.geoScore,
+      readinessScore: store.readinessScore,
       totalProducts: store.totalProducts,
       auditedProducts: store.auditedProducts,
       onboardingCompleted: store.onboardingCompleted,
@@ -1578,6 +1581,14 @@ export default function Index() {
                       { label: "Products optimized", value: `${store.auditedProducts}/${store.totalProducts}` },
                       { label: "Issues found", value: String(issueCounts.total) },
                       { label: "Critical", value: String(issueCounts.critical) },
+                      // Dash (never 0/100) until an audit computes it.
+                      {
+                        label: "AI shopping readiness",
+                        value:
+                          store.readinessScore !== null
+                            ? `${store.readinessScore}/100`
+                            : "-",
+                      },
                     ].map(({ label, value }) => (
                       <BlockStack gap="050" key={label}>
                         <Text as="p" variant="bodyLg" fontWeight="bold">{value}</Text>

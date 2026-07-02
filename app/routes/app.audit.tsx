@@ -25,6 +25,11 @@ import prisma from "~/db.server";
 import { runFullAudit, autoFixIssues } from "~/services/audit-engine.server";
 import { timeAgo as timeAgoUtil } from "~/utils/time";
 import { PLAN_LIMITS } from "~/services/billing.shared";
+import {
+  READINESS_GAP_LABELS,
+  READINESS_GAP_HINTS,
+} from "~/services/readiness.shared";
+import type { ReadinessGapKey } from "~/services/readiness.shared";
 import { severityTone, severityLabel } from "~/utils/severity";
 import { ScorePill, scoreColor } from "~/components/ScorePill";
 import { brand } from "~/brand/tokens";
@@ -51,6 +56,10 @@ interface ProductRow {
   hasMetaDescription: boolean;
   lastAuditedAt: string | null;
   topIssue: TopIssue | null;
+  /** Null means readiness wasn't computed for this product yet (audited
+   *  before the F4 rollout, or its per-product computation failed). */
+  readinessScore: number | null;
+  readinessGaps: ReadinessGapKey[];
 }
 
 interface AuditResultItem {
@@ -75,6 +84,8 @@ interface LoaderData {
     geoScore: number;
     totalProducts: number;
     auditedProducts: number;
+    /** Null until the first audit that computed readiness (F4). */
+    readinessScore: number | null;
   } | null;
   products: ProductRow[];
   auditResults: AuditResultItem[];
@@ -107,6 +118,19 @@ function timeAgo(dateStr: string): string {
 
 const FREE_PLAN_LIMIT = PLAN_LIMITS.FREE.maxAuditProducts;
 
+// Defensive parse of the Product.readinessGaps Json column: only strings
+// that are known gap keys survive, so a manual DB edit or schema drift can
+// never inject arbitrary text into the UI (labels/hints render only from
+// readiness.shared.ts).
+function parseReadinessGaps(raw: unknown): ReadinessGapKey[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (gap): gap is ReadinessGapKey =>
+      typeof gap === "string" &&
+      Object.prototype.hasOwnProperty.call(READINESS_GAP_LABELS, gap)
+  );
+}
+
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -122,6 +146,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       geoScore: true,
       totalProducts: true,
       auditedProducts: true,
+      readinessScore: true,
     },
   });
 
@@ -168,6 +193,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       hasMetaTitle: true,
       hasMetaDescription: true,
       lastAuditedAt: true,
+      // Readiness fields ride the same cap-filtered query (P0-4 parity):
+      // capped plans only ever receive readiness data for the products
+      // this findMany already restricts them to.
+      readinessScore: true,
+      readinessGaps: true,
       auditResults: {
         orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
         take: 1,
@@ -210,6 +240,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     hasMetaTitle: p.hasMetaTitle,
     hasMetaDescription: p.hasMetaDescription,
     lastAuditedAt: p.lastAuditedAt?.toISOString() ?? null,
+    readinessScore: p.readinessScore,
+    readinessGaps: parseReadinessGaps(p.readinessGaps),
     topIssue: p.auditResults[0]
       ? {
           id: p.auditResults[0].id,
@@ -324,10 +356,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 function ProductDetailModal({
   product,
   issues,
+  shopifyDomain,
   onClose,
 }: {
   product: ProductRow | null;
   issues: AuditResultItem[];
+  shopifyDomain: string;
   onClose: () => void;
 }) {
   if (!product) return null;
@@ -353,6 +387,53 @@ function ProductDetailModal({
           </Text>
         </InlineStack>
       </Modal.Section>
+
+      {/* AI shopping readiness: only for products whose readiness was
+          computed (null = audited before F4 or computation failed). Labels
+          and hints come exclusively from readiness.shared.ts. */}
+      {product.readinessScore !== null && (
+        <Modal.Section>
+          <BlockStack gap="300">
+            <InlineStack gap="200" blockAlign="center">
+              <Text as="span" variant="headingSm">
+                AI shopping readiness:
+              </Text>
+              <ScorePill score={product.readinessScore} />
+              <Text as="span" variant="bodySm" tone="subdued">
+                /100
+              </Text>
+            </InlineStack>
+            {product.readinessGaps.length > 0 ? (
+              <BlockStack gap="200">
+                {product.readinessGaps.map((gap) => (
+                  <BlockStack gap="050" key={gap}>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      {READINESS_GAP_LABELS[gap]}
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {READINESS_GAP_HINTS[gap]}
+                    </Text>
+                  </BlockStack>
+                ))}
+              </BlockStack>
+            ) : (
+              <Text as="p" variant="bodySm" tone="success">
+                No catalog attribute gaps found.
+              </Text>
+            )}
+            <InlineStack>
+              {/* target="_blank" is mandatory: an in-frame navigation to the
+                  Shopify admin breaks the embedded app session. */}
+              <Button
+                url={`https://${shopifyDomain}/admin/products/${product.shopifyProductId.split("/").pop()}`}
+                target="_blank"
+              >
+                Edit product in Shopify admin
+              </Button>
+            </InlineStack>
+          </BlockStack>
+        </Modal.Section>
+      )}
 
       {sorted.length === 0 && (
         <Modal.Section>
@@ -443,6 +524,19 @@ export default function AuditPage() {
       total: fixable.length,
     };
   }, [auditResults]);
+
+  // Aggregate readiness gap counts across the loader's products. The
+  // loader already applies the plan cap server-side (P0-4), so capped
+  // plans only ever count gaps for products they're allowed to see.
+  const topReadinessGaps = useMemo(() => {
+    const counts = new Map<ReadinessGapKey, number>();
+    for (const product of products) {
+      for (const gap of product.readinessGaps) {
+        counts.set(gap, (counts.get(gap) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }, [products]);
 
   // ── Loading flags ──
   const isRunningAudit =
@@ -855,6 +949,71 @@ export default function AuditPage() {
           </BlockStack>
         )}
 
+        {/* ── AI shopping readiness ── */}
+        {/* Parallel score, deliberately framed apart from the GEO score:
+            this one is catalog attribute completeness for AI shopping
+            agents, not on-page readability. Null store score means no
+            audit has computed readiness yet (never render 0/100). */}
+        {hasRunAudit && store && (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">
+                AI shopping readiness
+              </Text>
+              {store.readinessScore === null ? (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Run an audit to compute your AI shopping readiness score.
+                </Text>
+              ) : (
+                <BlockStack gap="300">
+                  <span
+                    style={{
+                      fontSize: "48px",
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      color: scoreColor(store.readinessScore),
+                    }}
+                  >
+                    {store.readinessScore}
+                    <span
+                      style={{
+                        fontSize: "24px",
+                        fontWeight: 400,
+                        color: brand.neutral[500],
+                      }}
+                    >
+                      /100
+                    </span>
+                  </span>
+                  <Text as="p" variant="bodyMd">
+                    Measures how complete your catalog attributes are for AI
+                    shopping agents: category, barcodes, brand, images, SKUs,
+                    reviews, and spec detail. Your GEO score measures on-page
+                    readability; this measures feed completeness.
+                  </Text>
+                  {topReadinessGaps.length > 0 && (
+                    <BlockStack gap="100">
+                      <Text as="p" variant="bodySm" fontWeight="semibold">
+                        Top gaps
+                      </Text>
+                      {topReadinessGaps.map(([gap, count]) => (
+                        <Text as="p" variant="bodySm" key={gap}>
+                          {count} product{count !== 1 ? "s" : ""}:{" "}
+                          {READINESS_GAP_LABELS[gap]}
+                        </Text>
+                      ))}
+                    </BlockStack>
+                  )}
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Weight is not checked yet. Scores update when you run an
+                    audit.
+                  </Text>
+                </BlockStack>
+              )}
+            </BlockStack>
+          </Card>
+        )}
+
         {/* ── Free plan upgrade banner ── */}
         {/* Gate on the store's real catalog size, not the truncated loader
             payload: the loader caps products at FREE_PLAN_LIMIT for Free
@@ -953,6 +1112,7 @@ export default function AuditPage() {
       <ProductDetailModal
         product={selectedProduct}
         issues={modalIssues}
+        shopifyDomain={store?.shopifyDomain ?? ""}
         onClose={() => setSelectedProduct(null)}
       />
 
