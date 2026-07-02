@@ -27,8 +27,31 @@ Since the retention batch, all pushed to main and health-checked:
 F6 FULLY VERIFIED 2026-07-02: Lukas released geo-rise-10 from geo-app (the
 correct folder), then smoke-tested on boda-brands: FAQs generated, published,
 and the FAQPage JSON-LD confirmed rendering in the product page source. F3
-needed no deploy. F4 (AI shopping readiness, parallel score) spec 4fa9176,
-build in flight the same day.
+needed no deploy.
+
+EVIDENCE QUEUE COMPLETE 2026-07-02 (same session, continued): every feature
+candidate in docs/geo-evidence-2026-07.md is now shipped and live:
+- F4 AI shopping readiness (5442f4a, 9b8aeda): parallel score, GEO rubric
+  and ScoreSnapshot untouched.
+- F7 prompt tuning (3bad635): answer-first/entity-first prompts with
+  anti-fabrication guards.
+- F5 Bing indexing page (cc3a814): guidance + sitemap check; IndexNow
+  auto-submission verified NOT buildable (spec records the self-verifying
+  v2 gated on a live redirect test).
+- F1 completion (191347c): bot-type groups on the robots checker, 18
+  patterns; review corrected Amazonbot (Amazon split its bots; added
+  Amzn-SearchBot/Amzn-User) and Google-Extended (controls Gemini grounding,
+  so it is retrieval, not training-only).
+- F2 raw-HTML check (55a8325, 8d262cf): "What the AI bot actually sees"
+  simulator card; bounded 1 MiB fetch; honest fallback/thin-HTML states;
+  review fixes (no Content-Length fast-reject, decimal-only rating match
+  against the crawler-visible haystack, meta-tag content counts as raw
+  visible).
+No Shopify deploy is pending; nothing in the tree is uncommitted. Remaining
+from the brief: only the deferred IndexNow v2 (gated) and the Lukas-side
+Protected Customer Data application (gates App Store submission and order
+revenue attribution). Next build candidates come from
+docs/product-roadmap-2026-06.md items 8-12 or a new decision.
 
 ## Where the product is RIGHT NOW
 
