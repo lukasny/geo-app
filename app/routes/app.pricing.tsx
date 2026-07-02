@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
   Page,
@@ -34,12 +33,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
 
-  // Returning from Shopify billing approval - sync subscription
+  // Returning from Shopify billing approval - sync subscription. We arrive here
+  // via the admin.shopify.com deep-link returnUrl (see createSubscription), so
+  // Shopify has re-embedded the app with shop/host/id_token intact and this
+  // request is authenticated. Do NOT redirect to a clean URL afterwards: a
+  // second hop to /app/pricing?synced=1 strips those embedded params and drops
+  // the merchant to /auth/login. syncSubscriptionFromShopify is idempotent, so
+  // returning the synced flag inline (an F5 just re-syncs harmlessly) is safe.
   const chargeId = url.searchParams.get("charge_id");
+  const justSynced = Boolean(chargeId);
   if (chargeId) {
     await syncSubscriptionFromShopify(admin, session.shop);
-    // Redirect to clean URL so F5 doesn't re-sync
-    return redirect("/app/pricing?synced=1");
   }
 
   const [store, activeShopifySub] = await Promise.all([
@@ -60,7 +64,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shopName: store?.shopName ?? "",
     shopifySubId: activeShopifySub?.id ?? null,
     trialEndsAt: store?.subscription?.trialEndsAt?.toISOString() ?? null,
-    justSynced: url.searchParams.has("synced"),
+    justSynced,
   };
 };
 
@@ -106,13 +110,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "cancel") {
     const subscriptionId = formData.get("subscriptionId") as string;
     if (!subscriptionId) {
-      // No active Shopify subscription to cancel - just ensure DB is on FREE
+      // No active Shopify subscription to cancel - just ensure DB is on FREE.
+      // Update BOTH the store row and the Subscription mirror, matching what
+      // cancelSubscription does, so the billing mirror never lags on a stale
+      // ACTIVE row after a subscription that Shopify no longer reports.
       const store = await prisma.store.findUnique({
         where: { shopifyDomain: session.shop },
         select: { id: true },
       });
       if (store) {
         await prisma.store.update({ where: { id: store.id }, data: { plan: "FREE" } });
+        await prisma.subscription.upsert({
+          where: { storeId: store.id },
+          update: { plan: "FREE", status: "CANCELLED", shopifySubscriptionId: null },
+          create: {
+            storeId: store.id,
+            plan: "FREE",
+            status: "CANCELLED",
+            shopifySubscriptionId: null,
+          },
+        });
       }
       return { success: true, message: "You are now on the Free plan." };
     }
@@ -241,6 +258,12 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
   const isPopular = planKey === "GROWTH";
   const isEnterprise = planKey === "ENTERPRISE";
 
+  // Only merchants on Free get a trial. Any paid-to-paid switch passes
+  // skipTrial (see the action), so Shopify bills immediately with trialDays:0.
+  // Showing trial copy in that case would be a lie, so gate all trial copy on
+  // the merchant currently being on Free.
+  const showTrial = currentPlan === "FREE" && def.trialDays > 0;
+
   const featureValues: FeatureValue[] = [
     def.name === "Free"
       ? `${PLAN_LIMITS.FREE.maxProductsInLlmsTxt}`
@@ -310,7 +333,7 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
                 <Text as="p" variant="bodyMd" tone="subdued">/month</Text>
               )}
             </InlineStack>
-            {def.trialDays > 0 && !isCurrent && isUpgrade && (
+            {showTrial && !isCurrent && isUpgrade && (
               <Badge tone="success">{`${def.trialDays}-day free trial`}</Badge>
             )}
           </BlockStack>
@@ -347,7 +370,9 @@ function PlanCard({ planKey, currentPlan, shopifySubId, fetcher }: PlanCardProps
                 );
               }}
             >
-              {`Start ${def.trialDays}-day free trial`}
+              {showTrial
+                ? `Start ${def.trialDays}-day free trial`
+                : `Upgrade to ${def.name}`}
             </Button>
           ) : isDowngrade && planKey === "FREE" ? (
             // Moving to Free = cancelling the subscription. Confirmed via
@@ -519,7 +544,7 @@ export default function PricingPage() {
             Choose your GEO Rise plan
           </Text>
           <Text as="p" variant="bodyMd" tone="subdued" alignment="center">
-            All paid plans start with a {PLAN_DEFINITIONS.GROWTH.trialDays}-day free trial. Billed through your Shopify account.
+            New subscriptions start with a {PLAN_DEFINITIONS.GROWTH.trialDays}-day free trial. Billed through your Shopify account.
           </Text>
         </BlockStack>
 
@@ -539,11 +564,13 @@ export default function PricingPage() {
           </Banner>
         )}
 
-        {/* 4-column plan cards */}
+        {/* Plan cards: four across on wide screens, wrapping to fewer columns
+            (down to one) as the embedded frame narrows so the cards stay
+            readable on small viewports. Native CSS grid, not Polaris Grid. */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
             gap: 16,
             alignItems: "start",
           }}

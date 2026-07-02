@@ -1,8 +1,8 @@
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import { redirect } from "@remix-run/node";
 import prisma from "~/db.server";
-import { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
-import type { PlanKey, PlanLimitKey } from "~/services/billing.shared";
+import { PLAN_DEFINITIONS } from "~/services/billing.shared";
+import type { PlanKey } from "~/services/billing.shared";
 export { PLAN_DEFINITIONS, PLAN_LIMITS } from "~/services/billing.shared";
 export type { PlanKey, PlanLimitKey } from "~/services/billing.shared";
 
@@ -49,7 +49,14 @@ export async function createSubscription(
   options: { skipTrial?: boolean } = {}
 ): Promise<string> {
   const plan = PLAN_DEFINITIONS[planKey];
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/pricing`;
+  // Return the merchant to an admin.shopify.com deep link, NOT a bare app URL.
+  // After approval Shopify redirects TOP-LEVEL with only ?charge_id appended;
+  // a raw ${SHOPIFY_APP_URL}/app/pricing hop has no shop/host, so
+  // shopify-app-remix throws to /auth/login and the charge_id sync never runs.
+  // The admin deep link re-embeds the app (Shopify supplies shop/host/id_token),
+  // and the loader's charge_id sync + "Plan updated" toast fire as intended.
+  const storeHandle = shopDomain.replace(".myshopify.com", "");
+  const returnUrl = `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}/app/pricing`;
 
   // Detect dev stores via shop.plan.partnerDevelopment. Dev stores must use
   // Shopify test billing (test: true) so no real payment method is required and
@@ -353,71 +360,6 @@ export async function syncSubscriptionFromShopify(
   });
 
   return planKey;
-}
-
-// ─── checkAndEnforceLimits ────────────────────────────────────────────────────
-
-export interface LimitCheckResult {
-  allowed: boolean;
-  limit: number | null;
-  current: number | null;
-  upgradeRequired: PlanKey | null;
-}
-
-export async function checkAndEnforceLimits(
-  storeId: string,
-  planKey: PlanKey,
-  feature: PlanLimitKey
-): Promise<LimitCheckResult> {
-  const limits = PLAN_LIMITS[planKey];
-  const limitValue = limits[feature];
-
-  // Boolean feature
-  if (typeof limitValue === "boolean") {
-    if (limitValue) return { allowed: true, limit: null, current: null, upgradeRequired: null };
-
-    // Find cheapest plan that unlocks this
-    const upgradeRequired = (PLAN_ORDER.find((p) => {
-      const v = PLAN_LIMITS[p][feature];
-      return typeof v === "boolean" ? v : (v as number) > 0;
-    }) ?? null) as PlanKey | null;
-
-    return { allowed: false, limit: null, current: null, upgradeRequired };
-  }
-
-  // Numeric feature
-  const limit = limitValue as number;
-  if (limit === Infinity) return { allowed: true, limit: null, current: null, upgradeRequired: null };
-
-  let current = 0;
-
-  if (feature === "maxAuditProducts") {
-    current = await prisma.product.count({
-      where: { storeId, lastAuditedAt: { not: null } },
-    });
-  } else if (feature === "maxTrackingPrompts") {
-    current = await prisma.trackingPrompt.count({ where: { storeId } });
-  } else if (feature === "maxCompetitors") {
-    current = await prisma.competitor.count({ where: { storeId } });
-  } else if (feature === "maxProductsInLlmsTxt") {
-    const llms = await prisma.llmsFile.findFirst({
-      where: { storeId, marketCode: "default" },
-      select: { productCount: true },
-    });
-    current = llms?.productCount ?? 0;
-  }
-  // maxSimulations - not tracked in DB yet; allow and return 0
-
-  const allowed = current < limit;
-
-  if (allowed) return { allowed: true, limit, current, upgradeRequired: null };
-
-  const upgradeRequired = (PLAN_ORDER.find((p) => {
-    const v = PLAN_LIMITS[p][feature];
-    return v === Infinity || (typeof v === "number" && v > limit);
-  }) ?? null) as PlanKey | null;
-
-  return { allowed: false, limit, current, upgradeRequired };
 }
 
 // ─── ensurePlan ───────────────────────────────────────────────────────────────
