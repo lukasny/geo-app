@@ -73,6 +73,18 @@ row-per-visit + 60/min throttle; revisit if volume grows).
 Also shipped 2026-07-02: /privacy and /terms are now 301 redirects to the
 live marketing site https://georise.app (b1a21af).
 
+INCIDENT 2026-07-02 (resolved, know why geo-rise-8 exists): Lukas ran
+`npx shopify app deploy` from the DEPRECATED ~/Desktop/geo-rise snapshot
+folder, releasing geo-rise-8 with stale config (application_url, app proxy,
+and auth redirects all https://example.com; old 2025-01 webhooks; old scopes
+incl. read_themes) and the old theme extension (no tracker, no beacon).
+Fixed within the hour by re-releasing geo-rise-9 from ~/Desktop/geo-app.
+Any webhooks fired during the window were lost (harmless on the dev store).
+Prevention: the deprecated folder's shopify.app.toml is renamed to
+shopify.app.toml.deprecated with a DEPRECATED-DO-NOT-DEPLOY.md beside it,
+so the CLI can no longer deploy from there. Shopify deploys run ONLY from
+~/Desktop/geo-app.
+
 Lukas delivered a GEO evidence brief (from his strategy Claude); it sits at
 ~/Desktop/geo_app/geo-evidence-2026-07.md, fact-checked against the repo by
 7 agents. Pending HIS go: (1) amend and save it as
