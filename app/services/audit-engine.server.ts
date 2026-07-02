@@ -1270,7 +1270,7 @@ async function generateMetaDescriptionWithClaude(
           messages: [
             {
               role: "user",
-              content: `Write a meta description (strictly between 120 and 158 characters - count carefully and stop at a complete sentence; do not end mid-word) for this product. Lead with the product itself, not a verb. Include the key product benefit or feature, mention the brand if available, and entice a click. No clickbait, no all-caps, no emojis, no "Discover/Unlock/Dive into".
+              content: `Write a meta description (strictly between 120 and 158 characters - count carefully and stop at a complete sentence; do not end mid-word) for this product. Lead with the product itself, not a verb. Include one concrete attribute the product data provides (material, use, or a standout feature) alongside the key benefit, and mention the brand if available. Do not invent specs. No clickbait, no all-caps, no emojis, no "Discover/Unlock/Dive into".
 
 Product title: ${product.title}
 ${plainDesc ? `Product description: ${plainDesc}` : "Product description: (none provided)"}
@@ -1391,9 +1391,9 @@ async function generateProductDescriptionWithClaude(
       type: "text",
       text: `Write a product description for an e-commerce store. The description should be 150–250 words, formatted as 2–3 short HTML paragraphs (<p>...</p>).
 
-The first paragraph should describe what the product is and its main benefit. The second paragraph should cover features, materials, and what makes it distinctive. If applicable, a third paragraph can cover use cases or who the product is for.
+The first sentence should name the product and state its primary use or benefit directly, so an AI assistant can lift a clean one-line answer; the rest of the first paragraph expands on what it is. The second paragraph should cover features, materials, and what makes it distinctive, stating concrete attributes (materials, colors, form, components) that are present in the data or clearly visible in the image. If applicable, a third paragraph can cover use cases or who the product is for.
 
-Write in natural, conversational prose. Mention specific details visible in the image - colors, materials, design elements. Do NOT invent specifications you can't verify (don't guess dimensions, weights, or quantities). Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion", "elevate", "unlock", "dive into"). Do NOT use all-caps or emojis.
+Write in natural, conversational prose. Do NOT invent specifications you can't verify (don't guess dimensions, weights, quantities, or performance figures) and never fabricate statistics, studies, or awards. Do NOT use generic marketing fluff ("premium quality", "perfect for any occasion", "elevate", "unlock", "dive into"). Do NOT use all-caps or emojis.
 
 Product title: ${product.title}
 ${product.vendor ? `Brand: ${product.vendor}` : ""}
