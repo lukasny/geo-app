@@ -47,11 +47,34 @@ candidate in docs/geo-evidence-2026-07.md is now shipped and live:
   review fixes (no Content-Length fast-reject, decimal-only rating match
   against the crawler-visible haystack, meta-tag content counts as raw
   visible).
-No Shopify deploy is pending; nothing in the tree is uncommitted. Remaining
-from the brief: only the deferred IndexNow v2 (gated) and the Lukas-side
-Protected Customer Data application (gates App Store submission and order
-revenue attribution). Next build candidates come from
-docs/product-roadmap-2026-06.md items 8-12 or a new decision.
+UPDATE 2026-07-03/04: LAUNCH-READINESS + OPS READINESS SHIPPED.
+- Launch-readiness audit (7 auditors vs live shopify.dev requirements): 17
+  confirmed findings, all fixed and live (commits 59f7042, 59a9163, bc568bd,
+  0d4f590, 8f7327c): real public root page (scaffold placeholder was LIVE in
+  prod), consent-gated storefront tracker (loadFeatures + gate-in-callback;
+  the first cut failed open during the async-load window, caught by review),
+  GDPR order redaction wired (gid-format-correct), billing return URL =
+  admin deep link + honest trial copy, sanitized AI errors, zero-product
+  honesty across wizard/audit/dashboard/simulator, password-protected
+  sitemap detection, downgrade prompt-pausing, read_orders DROPPED for
+  initial submission (Lukas decision; re-add post-launch with PCD).
+  Listing + launch-checklist rewritten; PART 0 = Lukas's pre-submission
+  actions; a paste-ready reviewer-instructions block exists in PART 4.
+- Day-one ops readiness (spec 1d5c2e4, commits 8ba71ff, 35af19a): ErrorEvent
+  dedupe + captureError + Remix handleError central hook (router-internal
+  404s deliberately skipped: scanner noise must not burn the 5/day alert
+  cap), sendOpsMail via Resend, AiUsageDaily ledger hooked in withRetry
+  (options param; kill switch AI_FEATURES_DISABLED; AI_DAILY_CALL_BUDGET
+  pauses cron checks only), founder ops digest cron (06:00 UTC,
+  OPS_DIGEST daily|weekly|off), OpsEvent lifecycle records. All ops
+  features no-op until OPS_ALERT_EMAIL is set in Render (checklist PART 0
+  item 6).
+
+No Shopify deploy from Claude is pending; the tree is clean. LUKAS: work
+docs/launch-checklist.md PART 0 top to bottom, then submit. Deferred:
+IndexNow v2 (gated on a live redirect test), read_orders + orders/paid +
+PCD post-launch, AiTrafficEvent retention decision. Next build candidates:
+post-launch, driven by real merchant behavior.
 
 ## Where the product is RIGHT NOW
 
