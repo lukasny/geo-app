@@ -19,6 +19,7 @@ These gate submission. The code fixes from the audit are already in the repo; th
 3. **Always-on Render instance.** Confirm the Render service is a paid always-on plan, not free/hobby with spin-down. A cold start (30-60s) fails the <3s first-load bar and silently stops the in-process cron scheduler.
 4. **Theme extension deploy.** The consent-gating fix (below) changes the theme extension, so after this batch ships you must run `npx shopify app deploy --allow-updates` from `~/Desktop/geo-app` for it to reach storefronts.
 5. **Provider no-training terms (Feb 2026 Partner Program rule).** Add one sentence to georise.app/privacy stating merchant data sent to AI providers is used only for inference, not model training (Anthropic and OpenAI commercial APIs default to no-training; verify Perplexity Sonar's current terms).
+6. **Ops alerts + founder digest env vars in Render (day-one ops readiness, added 2026-07-04).** Set `OPS_ALERT_EMAIL` (your inbox) in Render before launch so error alert emails and the founder ops digest are live on day one; without it the app runs fine but nothing tells you when something breaks. Optional but recommended for launch week: `OPS_DIGEST=daily` (default is weekly, sent Mondays at 06:00 UTC) and `AI_DAILY_CALL_BUDGET` (global daily AI call cap; when reached, scheduled tracking checks pause until tomorrow and you get one email). `AI_FEATURES_DISABLED=true` is the emergency kill switch, leave it unset.
 
 ---
 

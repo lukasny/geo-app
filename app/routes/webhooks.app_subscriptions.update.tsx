@@ -78,6 +78,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { plan: planKey },
     });
 
+    // Ops trail: record the plan change for the founder digest. Only when
+    // the plan actually moved - Shopify redelivers webhooks, and an ACTIVE
+    // re-delivery for the same plan is not a change. Fire-and-forget: a
+    // failed ops write must never fail the webhook 2xx.
+    if (store.plan !== planKey) {
+      void prisma.opsEvent
+        .create({
+          data: {
+            type: "plan_change",
+            shopDomain: shop,
+            detail: `${store.plan} to ${planKey} (${status})`,
+          },
+        })
+        .catch((err) =>
+          console.error(
+            `[GEO Rise] Failed to record plan_change OpsEvent for ${shop}:`,
+            err
+          )
+        );
+    }
+
     await prisma.subscription.upsert({
       where: { storeId: store.id },
       update: { shopifySubscriptionId: eventSubId, plan: planKey, status: "ACTIVE" },
@@ -144,6 +165,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: store.id },
       data: { plan: "FREE" },
     });
+
+    // Ops trail: same rules as the ACTIVE branch above - only on an actual
+    // move, fire-and-forget, never blocks the 2xx.
+    if (store.plan !== "FREE") {
+      void prisma.opsEvent
+        .create({
+          data: {
+            type: "plan_change",
+            shopDomain: shop,
+            detail: `${store.plan} to FREE (${status})`,
+          },
+        })
+        .catch((err) =>
+          console.error(
+            `[GEO Rise] Failed to record plan_change OpsEvent for ${shop}:`,
+            err
+          )
+        );
+    }
 
     // Convert any scheduled tracking prompts back to MANUAL - FREE doesn't
     // include automatic scheduling. Without this, the scheduler tick would

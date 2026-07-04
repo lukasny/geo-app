@@ -77,7 +77,7 @@ geo-rise/
 │   ├── entry.server.tsx           # Boots the scheduler via side-effect import
 │   └── db.server.ts               # Singleton Prisma client
 ├── prisma/
-│   └── schema.prisma              # Full DB schema (16 models, 7 enums; F4 added readiness columns to Product/Store, no new models)
+│   └── schema.prisma              # Full DB schema (19 models, 7 enums; ops readiness 2026-07-04 added ErrorEvent, AiUsageDaily, OpsEvent)
 ├── extensions/
 │   └── geo-rise-schema/           # Theme app extension
 │       ├── blocks/schema-injection.liquid  # JSON-LD injection + AI referral tracker
@@ -105,6 +105,10 @@ SCOPES=write_products,read_content,write_content,read_reports,read_markets,read_
 SCHEDULER_ENABLED=             # Optional: "false" disables the tracking-check + insight-email crons (default: enabled)
 RESEND_API_KEY=                # Optional: Resend API key - enables weekly insight emails. Without it, the UI surface exists but sends are no-ops.
 INSIGHT_FROM_EMAIL=            # Optional: "Display Name <addr@domain>" sender. Default: "GEO Rise <onboarding@resend.dev>". Set to a verified-domain address for production.
+OPS_ALERT_EMAIL=               # Optional: founder inbox for error alerts + the ops digest (via Resend). Unset = no ops emails at all.
+OPS_DIGEST=                    # Optional: ops digest cadence, "daily" | "weekly" | "off". Default: weekly (sent Mondays at 06:00 UTC).
+AI_FEATURES_DISABLED=          # Optional: "true" pauses every AI call app-wide with a merchant-safe message (the kill switch).
+AI_DAILY_CALL_BUDGET=          # Optional: integer; when today's global AI call count reaches it, scheduled tracking checks pause and one alert email fires. Unset/0 = unlimited.
 ```
 
 Multi-platform tracking is opt-in per platform. With only `ANTHROPIC_API_KEY` set, the AI Tracking feature runs Claude only (current behavior). Adding `OPENAI_API_KEY` and/or `PERPLEXITY_API_KEY` makes each tracking-check fan out to those platforms too - one `AiCitation` row per platform per check, displayed alongside Claude on each prompt card.
@@ -131,6 +135,9 @@ See `prisma/schema.prisma` for full definitions. Key models:
 | `SimulationUsage` | One row per AI Simulator run, counted monthly to enforce plan caps |
 | `AiCrawlerHit` | Daily counter of AI-crawler fetches of the public llms.txt proxy, per store/bot/UTC day |
 | `ScoreSnapshot` | One row per full audit (score, audited products, issue count) - powers the dashboard sparkline and weekly email delta |
+| `ErrorEvent` | Deduped server errors: one row per distinct error signature per UTC day (upsert increment). No FK to Store - error history survives uninstalls |
+| `AiUsageDaily` | Global AI call counters, one row per vendor per UTC day (max 3 rows/day) - feeds the daily call budget and the ops digest |
+| `OpsEvent` | Lifecycle log (install / uninstall / plan_change) with shopDomain + detail. No FK to Store - uninstall history survives the cascade delete |
 
 **Enums (7):** `Plan` (FREE/GROWTH/PRO/ENTERPRISE), `Severity` (CRITICAL/HIGH/MEDIUM/LOW), `AiPlatform`, `AuditCategory`, `Sentiment`, `TrackingSchedule` (MANUAL/DAILY/WEEKLY), `SubscriptionStatus`
 
@@ -336,6 +343,7 @@ This deploys both the app config (`shopify.app.toml`) and the theme extension to
 - [x] Bing Indexing page (F5, `/app/bing-indexing`, free): why Bing matters (ChatGPT runs on its index) + automated sitemap reachability check (`checkSitemap` in crawler-access.server.ts, reuses the robots resolver/bounded-read) + Bing Webmaster Tools steps + HONEST IndexNow note. Auto-submission verified NOT buildable on Shopify (directory-prefix rule + undocumented redirect behavior); deferred to a v2 gated on a live redirect test
 - [x] Bot-type labels (F1 completion): 18 crawler patterns carry doc-verified types (training/retrieval/user_fetch/general); robots checker groups by what blocking actually does. Google-Extended = retrieval (controls Gemini grounding, not just training); Amazon's newer Amzn-SearchBot/Amzn-User added
 - [x] Raw-HTML visibility check (F2): "What the AI bot actually sees" card on simulator results, 5 deterministic checks of the raw bytes (JSON-LD/title/price/description/review markup) with honest fallback/thin-HTML not-run states; simulator fetch now bounded (1 MiB streaming). Score math untouched
+- [x] Day-one ops readiness (2026-07-04): central error capture (`handleError` in entry.server.tsx + `captureError`, deduped into `ErrorEvent` per signature per UTC day, alert email on first daily sighting, 5 capped alerts/day), AI spend guardrails (`AI_FEATURES_DISABLED` kill switch + `AI_DAILY_CALL_BUDGET` global daily cap that pauses SCHEDULED tracking checks only, counted in `AiUsageDaily` via `recordAiCall`), and a founder ops digest email (installs/uninstalls/plan changes from `OpsEvent`, plan mix, AI calls by vendor, top errors) at 06:00 UTC per `OPS_DIGEST` cadence. Everything no-ops when the ops env vars are unset; capture/alert paths never throw or block a request
 
 ### Planned / Not yet built ❌
 - [ ] Activate `orders/paid` webhook (after Protected Customer Data approval) to complete revenue attribution

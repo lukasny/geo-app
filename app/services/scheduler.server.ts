@@ -1,6 +1,14 @@
 import cron from "node-cron";
 import { runDueTrackingChecks } from "./tracking-scheduler.server";
 import { runWeeklyInsightDigest } from "./insight-email.server";
+import { runOpsDigest } from "./ops-digest.server";
+import { captureError } from "./error-capture.server";
+import { sendOpsMail } from "./ops-alerts.server";
+import {
+  aiDailyBudget,
+  aiKillSwitchOn,
+  getGlobalCallsToday,
+} from "./ai-usage.server";
 
 // ─── HMR-safe singleton ───────────────────────────────────────────────────────
 
@@ -15,6 +23,13 @@ interface SchedulerState {
   /** Separate guard for the weekly digest tick - it runs much less often
    *  than tracking, but conceivably could overlap on slow days. */
   isDigestRunning: boolean;
+  /** Guard for the founder ops-digest tick (06:00 UTC). */
+  isOpsDigestRunning: boolean;
+  /** UTC day ("YYYY-MM-DD") the AI-budget alert last fired. A paused
+   *  scheduler should email the founder once per day, not once per
+   *  15-minute tick; keeping the guard in the HMR-safe state also stops
+   *  dev reloads from re-alerting. */
+  budgetAlertDay: string | null;
 }
 
 declare global {
@@ -28,6 +43,8 @@ const state: SchedulerState =
     registered: false,
     isRunning: false,
     isDigestRunning: false,
+    isOpsDigestRunning: false,
+    budgetAlertDay: null,
   });
 
 // ─── Cron registration ────────────────────────────────────────────────────────
@@ -51,6 +68,39 @@ if (ENABLED && !state.registered) {
       );
       return;
     }
+    // Ops guardrails (day-one ops readiness). The kill switch pauses ALL AI
+    // work app-wide; the global daily call budget pauses SCHEDULED checks
+    // only - merchant-interactive AI calls continue, they are plan-capped.
+    // Neither gate applies to the digest ticks below: those send email, not
+    // AI calls.
+    if (aiKillSwitchOn()) {
+      console.log(
+        "[scheduler] AI kill switch on (AI_FEATURES_DISABLED=true), skipping tracking tick"
+      );
+      return;
+    }
+    const budget = aiDailyBudget();
+    if (budget > 0) {
+      const callsToday = await getGlobalCallsToday();
+      if (callsToday >= budget) {
+        const today = new Date().toISOString().slice(0, 10);
+        if (state.budgetAlertDay !== today) {
+          state.budgetAlertDay = today;
+          // Fire-and-forget: sendOpsMail never throws, and a slow email
+          // must not hold the tick open.
+          void sendOpsMail(
+            "GEO Rise: AI daily call budget reached",
+            `Today's global AI call count (${callsToday}) reached AI_DAILY_CALL_BUDGET (${budget}). ` +
+              "Scheduled tracking checks are paused until tomorrow (UTC). " +
+              "Merchant-triggered AI features keep working; they are capped per plan."
+          );
+        }
+        console.log(
+          `[scheduler] AI daily call budget reached (${callsToday}/${budget}), skipping tracking tick`
+        );
+        return;
+      }
+    }
     state.isRunning = true;
     const startedAt = Date.now();
     try {
@@ -62,6 +112,7 @@ if (ENABLED && !state.registered) {
       }
     } catch (err) {
       console.error("[scheduler] tracking tick failed:", err);
+      captureError("cron:tracking", err);
     } finally {
       state.isRunning = false;
     }
@@ -93,6 +144,7 @@ if (ENABLED && !state.registered) {
       }
     } catch (err) {
       console.error("[scheduler] insight-digest tick failed:", err);
+      captureError("cron:insight-digest", err);
     } finally {
       state.isDigestRunning = false;
     }
@@ -101,6 +153,39 @@ if (ENABLED && !state.registered) {
   console.log(
     "[scheduler] registered weekly insight-digest cron (daily @ 09:00 UTC)"
   );
+
+  // Founder ops digest at 06:00 UTC. Cadence comes from OPS_DIGEST: "daily",
+  // "weekly" (the default, sent Mondays; unrecognized values fall back to
+  // weekly), or "off". Requires OPS_ALERT_EMAIL - without it the tick is a
+  // silent no-op, matching the ops rule that unset env vars leave the app
+  // behaving exactly as before. Email work only, so the AI kill switch and
+  // call budget above deliberately do not gate this tick.
+  cron.schedule("0 6 * * *", async () => {
+    const cadence = process.env.OPS_DIGEST ?? "weekly";
+    if (!process.env.OPS_ALERT_EMAIL || cadence === "off") return;
+    if (cadence !== "daily" && new Date().getUTCDay() !== 1) return;
+    if (state.isOpsDigestRunning) {
+      console.log(
+        "[scheduler] previous ops-digest tick still running, skipping this one"
+      );
+      return;
+    }
+    state.isOpsDigestRunning = true;
+    const startedAt = Date.now();
+    try {
+      const sent = await runOpsDigest(cadence === "daily" ? "daily" : "weekly");
+      console.log(
+        `[scheduler] ops-digest tick: sent=${sent} in ${Date.now() - startedAt}ms`
+      );
+    } catch (err) {
+      console.error("[scheduler] ops-digest tick failed:", err);
+      captureError("cron:ops-digest", err);
+    } finally {
+      state.isOpsDigestRunning = false;
+    }
+  });
+
+  console.log("[scheduler] registered ops-digest cron (daily @ 06:00 UTC)");
 }
 
 export {}; // make this a module

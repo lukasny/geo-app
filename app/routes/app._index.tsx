@@ -130,6 +130,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopName: session.shop.replace(".myshopify.com", ""),
       },
     });
+    // Ops trail: record the install for the founder ops digest. Fire-and-
+    // forget: a failed ops write must never delay the merchant's first
+    // dashboard load.
+    void prisma.opsEvent
+      .create({ data: { type: "install", shopDomain: session.shop } })
+      .catch((err) =>
+        console.error("[GEO Rise] Failed to record install OpsEvent:", err)
+      );
   }
 
   // Backfill `store.email` from Shopify the first time the merchant lands
