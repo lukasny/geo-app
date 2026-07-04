@@ -891,7 +891,8 @@ async function extractWithOpenAI(cleanedHtml: string): Promise<ExtractResult> {
           },
         ],
       }),
-    "extractWithOpenAI"
+    "extractWithOpenAI",
+    { vendor: "OPENAI" }
   );
 
   const rawResponse = completion.choices[0]?.message?.content ?? "";

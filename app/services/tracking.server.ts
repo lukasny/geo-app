@@ -326,7 +326,8 @@ async function askOpenAIWithWebSearch(prompt: string): Promise<WebSearchResponse
           { role: "user", content: prompt },
         ],
       }),
-    "askOpenAIWithWebSearch"
+    "askOpenAIWithWebSearch",
+    { vendor: "OPENAI" }
   );
 
   const msg = completion.choices[0]?.message;
@@ -375,7 +376,8 @@ async function askPerplexityWithWebSearch(prompt: string): Promise<WebSearchResp
           { role: "user", content: prompt },
         ],
       }),
-    "askPerplexityWithWebSearch"
+    "askPerplexityWithWebSearch",
+    { vendor: "PERPLEXITY" }
   );
 
   const responseText = completion.choices[0]?.message?.content ?? "";

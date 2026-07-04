@@ -477,3 +477,63 @@ model SourcePresence {
   @@unique([storeId, url])
   @@index([storeId, checkedAt])
 }
+
+// ─── Ops readiness (founder-facing, deliberately store-relation-free) ─────────
+// The three models below have NO relation to Store: ErrorEvent and OpsEvent
+// must survive store deletion (uninstall history and error history persist
+// after the cascade delete), and AiUsageDaily is a global counter with no
+// store at all. shopDomain is a plain string, never a foreign key.
+
+// One row per distinct error signature per UTC day, upsert-incremented by
+// captureError (error-capture.server.ts). signature is sha1 of source plus
+// the message with volatile parts (digits, gids, emails, hex ids) normalized
+// to "#", so table growth is bounded by error variety, not by traffic. The
+// upsert that CREATES a row (first occurrence of that signature today) also
+// fires one ops alert email.
+model ErrorEvent {
+  id          String   @id @default(cuid())
+  signature   String
+  source      String
+  // Capped before insert: 500 chars of message, 800 of stack head. Enough
+  // to identify the bug without letting a pathological error bloat rows.
+  message     String   @db.Text
+  stackHead   String?  @db.Text
+  shopDomain  String?
+  // UTC calendar day, "YYYY-MM-DD".
+  day         String
+  count       Int      @default(1)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  @@unique([signature, day])
+  @@index([day])
+}
+
+// Global (not per-store) AI call counters: at most three rows per UTC day,
+// one per vendor (ANTHROPIC | OPENAI | PERPLEXITY), upsert-incremented once
+// per withRetry invocation (retries are the same logical call). Powers the
+// AI_DAILY_CALL_BUDGET gate on scheduled tracking checks and the founder
+// digest's spend summary. Call-level, not token-level, by design.
+model AiUsageDaily {
+  id     String @id @default(cuid())
+  // UTC calendar day, "YYYY-MM-DD".
+  day    String
+  vendor String
+  calls  Int    @default(0)
+
+  @@unique([day, vendor])
+}
+
+// One row per store lifecycle moment (type: install | uninstall |
+// plan_change), written fire-and-forget by the dashboard loader and the
+// webhook handlers. detail carries the plan context ("PRO" on uninstall,
+// "FREE to GROWTH (ACTIVE)" on plan change). Feeds the founder ops digest.
+model OpsEvent {
+  id         String   @id @default(cuid())
+  type       String
+  shopDomain String
+  detail     String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}

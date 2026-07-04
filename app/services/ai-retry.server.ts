@@ -1,6 +1,24 @@
 // Shared retry + error-classification utilities for any code that calls a
 // third-party AI vendor (Anthropic, OpenAI, Perplexity). Server-only because
 // the helpers reference `console` and don't need to ship in the client bundle.
+// Also the single choke point for the ops guardrails: every AI call passes
+// through withRetry, so this is where the AI_FEATURES_DISABLED kill switch,
+// the global per-vendor usage counters, and final-failure error capture live.
+// Import direction is one-way (ai-retry -> ai-usage and ai-retry ->
+// error-capture -> ops-alerts); nothing in those modules imports back.
+
+import {
+  aiKillSwitchOn,
+  recordAiCall,
+  type AiVendor,
+} from "./ai-usage.server";
+import { captureError } from "./error-capture.server";
+
+// Thrown by withRetry before any vendor request when the kill switch is on.
+// Merchant-safe by construction, and sanitizeAiVendorError passes it through
+// verbatim so no context-specific rewrite ever replaces it.
+const KILL_SWITCH_MESSAGE =
+  "AI features are temporarily unavailable. Please try again later.";
 
 /** A "permanent" error means: this won't recover by retrying. The user (or
  *  GEO Rise itself) needs to fix something external - top up credits, fix
@@ -44,6 +62,12 @@ export function sanitizeAiVendorError(
 ): string {
   const raw = err instanceof Error ? err.message : String(err);
   console.error(`[ai-error] ${opts.logTag ?? opts.context}:`, raw);
+  // The kill-switch message is already merchant-safe; without this
+  // pass-through the generic fallback below would rewrite it into
+  // "<context> failed", losing the "temporarily unavailable" framing.
+  if (raw === KILL_SWITCH_MESSAGE) {
+    return raw;
+  }
   if (/credit balance.*too low|insufficient_quota|billing/i.test(raw)) {
     return `${opts.context} is temporarily unavailable. Please try again in a few minutes.`;
   }
@@ -62,17 +86,34 @@ export function sanitizeAiVendorError(
   return `${opts.context} failed. Please try again in a moment.`;
 }
 
-/** Retry an async AI call up to `maxAttempts` times with exponential backoff.
- *  Bails immediately on permanent errors (credit/auth/bad model) so we don't
- *  waste time retrying things that will never succeed.
+/** Retry an async AI call up to `opts.maxAttempts` times (default 3) with
+ *  exponential backoff. Bails immediately on permanent errors
+ *  (credit/auth/bad model) so we don't waste time retrying things that will
+ *  never succeed.
+ *
+ *  Ops guardrails, all before/around the vendor call and none of them able
+ *  to block it: the AI_FEATURES_DISABLED kill switch throws the
+ *  merchant-safe KILL_SWITCH_MESSAGE before any vendor request; each
+ *  invocation counts ONCE toward the global daily usage counter for
+ *  `opts.vendor` (default "ANTHROPIC" - retries are the same logical call,
+ *  so they are not re-counted); and the FINAL failure of a call (permanent
+ *  error, non-transient error, or retries exhausted) is recorded via
+ *  captureError("ai:" + label) before the throw.
  *
  *  Backoff schedule: 500ms, 1s, 2s (between attempts 1→2, 2→3, 3→4).
  *  `maxAttempts: 3` total means 1 initial try + 2 retries. */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  maxAttempts = 3
+  opts?: { maxAttempts?: number; vendor?: AiVendor }
 ): Promise<T> {
+  if (aiKillSwitchOn()) {
+    // Deliberately NOT captured: while the switch is on, every merchant
+    // click would otherwise generate an error row and alert email.
+    throw new Error(KILL_SWITCH_MESSAGE);
+  }
+  const maxAttempts = opts?.maxAttempts ?? 3;
+  recordAiCall(opts?.vendor ?? "ANTHROPIC");
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -80,9 +121,11 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err;
       if (isPermanentApiError(err)) {
+        captureError(`ai:${label}`, err);
         throw err;
       }
       if (attempt === maxAttempts || !isTransientApiError(err)) {
+        captureError(`ai:${label}`, err);
         throw err;
       }
       const backoffMs = 500 * 2 ** (attempt - 1); // 500ms, 1s, 2s
@@ -94,5 +137,8 @@ export async function withRetry<T>(
       await new Promise<void>((r) => setTimeout(r, backoffMs));
     }
   }
+  // Unreachable with maxAttempts >= 1 (the loop always returns or throws);
+  // kept for completeness, and captured like the throws above.
+  captureError(`ai:${label}`, lastErr);
   throw lastErr;
 }
