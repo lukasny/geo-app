@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { runDueTrackingChecks } from "./tracking-scheduler.server";
 import { runWeeklyInsightDigest } from "./insight-email.server";
 import { runOpsDigest } from "./ops-digest.server";
+import { runGeoResearchDigest } from "./geo-research.server";
 import { captureError } from "./error-capture.server";
 import { sendOpsMail } from "./ops-alerts.server";
 import {
@@ -25,6 +26,8 @@ interface SchedulerState {
   isDigestRunning: boolean;
   /** Guard for the founder ops-digest tick (06:00 UTC). */
   isOpsDigestRunning: boolean;
+  /** Guard for the weekly GEO research digest tick (Mondays 07:00 UTC). */
+  isGeoResearchRunning: boolean;
   /** UTC day ("YYYY-MM-DD") the AI-budget alert last fired. A paused
    *  scheduler should email the founder once per day, not once per
    *  15-minute tick; keeping the guard in the HMR-safe state also stops
@@ -44,6 +47,7 @@ const state: SchedulerState =
     isRunning: false,
     isDigestRunning: false,
     isOpsDigestRunning: false,
+    isGeoResearchRunning: false,
     budgetAlertDay: null,
   });
 
@@ -186,6 +190,48 @@ if (ENABLED && !state.registered) {
   });
 
   console.log("[scheduler] registered ops-digest cron (daily @ 06:00 UTC)");
+
+  // Founder GEO research digest, Mondays at 07:00 UTC (~09:00 Oslo). One Claude
+  // web-search pass on recent GEO / AI-search developments, distilled to an
+  // action verdict and emailed to OPS_ALERT_EMAIL. cron's day-of-week field
+  // (the trailing 1) handles the Monday-only cadence. Requires OPS_ALERT_EMAIL
+  // (recipient) and ANTHROPIC_API_KEY; a silent no-op without either. Set
+  // GEO_RESEARCH_DIGEST=off to disable. It makes AI calls, so it respects the
+  // kill switch; it is not gated by the daily call budget (two calls a week is
+  // negligible, and the budget guard is for the high-volume tracking tick).
+  cron.schedule("0 7 * * 1", async () => {
+    if (process.env.GEO_RESEARCH_DIGEST === "off") return;
+    if (!process.env.OPS_ALERT_EMAIL || !process.env.ANTHROPIC_API_KEY) return;
+    if (aiKillSwitchOn()) {
+      console.log(
+        "[scheduler] AI kill switch on (AI_FEATURES_DISABLED=true), skipping GEO research digest"
+      );
+      return;
+    }
+    if (state.isGeoResearchRunning) {
+      console.log(
+        "[scheduler] previous GEO research digest still running, skipping this one"
+      );
+      return;
+    }
+    state.isGeoResearchRunning = true;
+    const startedAt = Date.now();
+    try {
+      const sent = await runGeoResearchDigest();
+      console.log(
+        `[scheduler] GEO research digest tick: sent=${sent} in ${Date.now() - startedAt}ms`
+      );
+    } catch (err) {
+      console.error("[scheduler] GEO research digest tick failed:", err);
+      captureError("cron:geo-research-digest", err);
+    } finally {
+      state.isGeoResearchRunning = false;
+    }
+  });
+
+  console.log(
+    "[scheduler] registered GEO research digest cron (Mondays @ 07:00 UTC)"
+  );
 }
 
 export {}; // make this a module
